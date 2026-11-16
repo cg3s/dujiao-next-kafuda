@@ -4,14 +4,13 @@ import (
 	"context"
 	"sort"
 
-	"github.com/dujiao-next/internal/constants"
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	"github.com/shopspring/decimal"
 )
 
 func (s *WriteService) validateDirectTypeChange(product *productdomain.Product) error {
-	if product.IsMapped || product.ManualStockTotal != 0 || product.ManualStockLocked != 0 || s.orders == nil {
+	if product.IsMapped || product.ManualStockTotal != 0 || product.ManualStockLocked != 0 || product.ManualStockSold != 0 || s.orders == nil || s.skus == nil || s.cardSecrets == nil {
 		return productcontract.ErrFulfillmentInvalid
 	}
 	count, err := s.orders.CountOrderItemsByProduct(product.ID)
@@ -21,17 +20,23 @@ func (s *WriteService) validateDirectTypeChange(product *productdomain.Product) 
 	if count != 0 {
 		return productcontract.ErrFulfillmentInvalid
 	}
-	if product.FulfillmentType == constants.FulfillmentTypeAuto {
-		if s.cardSecrets == nil {
+	skus, err := s.skus.ListByProduct(product.ID, false)
+	if err != nil {
+		return err
+	}
+	for _, sku := range skus {
+		if sku.ManualStockTotal != 0 || sku.ManualStockLocked != 0 || sku.ManualStockSold != 0 {
 			return productcontract.ErrFulfillmentInvalid
 		}
-		total, available, reserved, err := s.cardSecrets.CountByProduct(product.ID, 0)
-		if err != nil {
-			return err
-		}
-		if total != 0 || available != 0 || reserved != 0 {
-			return productcontract.ErrProductSKUHasCardSecretStock
-		}
+	}
+	// Card secrets remain associated with their original product even if a
+	// previous edit changed its fulfillment type. Inspect every source type.
+	total, available, used, err := s.cardSecrets.CountByProduct(product.ID, 0)
+	if err != nil {
+		return err
+	}
+	if total != 0 || available != 0 || used != 0 {
+		return productcontract.ErrProductSKUHasCardSecretStock
 	}
 	return nil
 }

@@ -2,12 +2,17 @@ package integrationtest
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
 	"strconv"
 	"testing"
 
+	cardsecretdomain "github.com/dujiao-next/internal/modules/cardsecret/domain"
 	productwrite "github.com/dujiao-next/internal/modules/catalog/product/application/write"
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 
 	categorydomain "github.com/dujiao-next/internal/modules/catalog/category/domain"
 
@@ -16,6 +21,140 @@ import (
 	"github.com/dujiao-next/internal/shared/money"
 	"github.com/shopspring/decimal"
 )
+
+func TestDirectTypeChangePreservesIncompatibleProductData(t *testing.T) {
+	for _, test := range []struct {
+		name                         string
+		cardStatus                   string
+		skuTotal, skuLocked, skuSold int
+		productSold                  int
+		mapped, history, outgoing    bool
+	}{
+		{name: "available_cards_on_manual", cardStatus: cardsecretdomain.StatusAvailable},
+		{name: "reserved_cards_on_manual", cardStatus: cardsecretdomain.StatusReserved},
+		{name: "used_cards_on_manual", cardStatus: cardsecretdomain.StatusUsed},
+		{name: "sku_stock", skuTotal: 2},
+		{name: "sku_unlimited", skuTotal: -1},
+		{name: "sku_locked", skuLocked: 1},
+		{name: "sku_sold", skuSold: 1},
+		{name: "product_sold", productSold: 1},
+		{name: "mapped", mapped: true},
+		{name: "order_history", history: true},
+		{name: "outgoing_order_history", history: true, outgoing: true},
+		{name: "outgoing_cards", cardStatus: cardsecretdomain.StatusUsed, outgoing: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			svc, db := newProductServiceForTest(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			original, target := constants.FulfillmentTypeManual, constants.FulfillmentTypeKafudaGPT
+			if test.outgoing {
+				original, target = target, original
+			}
+			product := productdomain.Product{Slug: "protected", TitleJSON: jsonmap.JSON{"zh-CN": "original"}, FulfillmentType: original, PurchaseType: constants.ProductPurchaseMember, PriceAmount: money.FromDecimal(decimal.NewFromInt(10)), IsMapped: test.mapped, ManualStockSold: test.productSold}
+			if err := db.Create(&product).Error; err != nil {
+				t.Fatal(err)
+			}
+			sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: "original", PriceAmount: money.FromDecimal(decimal.NewFromInt(10)), ManualStockTotal: test.skuTotal, ManualStockLocked: test.skuLocked, ManualStockSold: test.skuSold}
+			if err := db.Create(&sku).Error; err != nil {
+				t.Fatal(err)
+			}
+			if test.cardStatus != "" {
+				if err := db.Create(&cardsecretdomain.Secret{ProductID: product.ID, SKUID: sku.ID, Status: test.cardStatus, Secret: "test-only-card"}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.history {
+				order := orderdomain.Order{OrderNo: "type-change-history", Status: constants.OrderStatusCompleted, Currency: "CNY"}
+				if err := db.Create(&order).Error; err != nil {
+					t.Fatal(err)
+				}
+				item := orderdomain.OrderItem{OrderID: order.ID, ProductID: product.ID, SKUID: sku.ID, Quantity: 1, FulfillmentType: original, TitleJSON: jsonmap.JSON{"zh-CN": "paid snapshot"}, SKUSnapshotJSON: jsonmap.JSON{"sku_code": sku.SKUCode}, CostPrice: money.FromDecimal(decimal.NewFromInt(4)), UnitPrice: money.FromDecimal(decimal.NewFromInt(10))}
+				if err := db.Create(&item).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			var beforeProduct productdomain.Product
+			var beforeSKUs []productdomain.ProductSKU
+			var beforeCards []cardsecretdomain.Secret
+			var beforeItems []orderdomain.OrderItem
+			if err := db.First(&beforeProduct, product.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Where("product_id = ?", product.ID).Find(&beforeSKUs).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Where("product_id = ?", product.ID).Find(&beforeCards).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Where("product_id = ?", product.ID).Find(&beforeItems).Error; err != nil {
+				t.Fatal(err)
+			}
+			_, err = svc.Write.Update(fmt.Sprint(product.ID), productwrite.CreateProductInput{Slug: "changed", TitleJSON: map[string]interface{}{"zh-CN": "changed"}, FulfillmentType: target, PriceAmount: decimal.NewFromInt(20)})
+			want := productcontract.ErrFulfillmentInvalid
+			if test.cardStatus != "" {
+				want = productcontract.ErrProductSKUHasCardSecretStock
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("type change error = %v, want %v", err, want)
+			}
+			var afterProduct productdomain.Product
+			var afterSKUs []productdomain.ProductSKU
+			var afterCards []cardsecretdomain.Secret
+			var afterItems []orderdomain.OrderItem
+			if err := db.First(&afterProduct, product.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Where("product_id = ?", product.ID).Find(&afterSKUs).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Where("product_id = ?", product.ID).Find(&afterCards).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Where("product_id = ?", product.ID).Find(&afterItems).Error; err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(beforeProduct, afterProduct) || !reflect.DeepEqual(beforeSKUs, afterSKUs) || !reflect.DeepEqual(beforeCards, afterCards) || !reflect.DeepEqual(beforeItems, afterItems) {
+				t.Fatal("rejected conversion modified product, SKUs, card secrets or order snapshots")
+			}
+		})
+	}
+}
+
+func TestEmptyProductsCanSwitchDirectFulfillmentType(t *testing.T) {
+	for _, source := range []string{constants.FulfillmentTypeAuto, constants.FulfillmentTypeManual, constants.FulfillmentTypeKafudaGPT} {
+		t.Run(source, func(t *testing.T) {
+			svc, db := newProductServiceForTest(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			product := productdomain.Product{Slug: "empty", TitleJSON: jsonmap.JSON{"zh-CN": "empty"}, PurchaseType: constants.ProductPurchaseMember, FulfillmentType: source, PriceAmount: money.FromDecimal(decimal.NewFromInt(10))}
+			if err := db.Create(&product).Error; err != nil {
+				t.Fatal(err)
+			}
+			sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: productdomain.DefaultSKUCode, PriceAmount: product.PriceAmount}
+			if err := db.Create(&sku).Error; err != nil {
+				t.Fatal(err)
+			}
+			target := constants.FulfillmentTypeKafudaGPT
+			if source == target {
+				target = constants.FulfillmentTypeManual
+			}
+			svc.Write.SetDirectCatalog(&directProductTestCatalog{options: []kafudacontract.SKUOption{{SKUCode: kafudacontract.SKUCode("plus", "PH"), Plan: "plus", Country: "PH", Available: true}}})
+			updated, err := svc.Write.Update(fmt.Sprint(product.ID), productwrite.CreateProductInput{Slug: product.Slug, TitleJSON: map[string]interface{}{"zh-CN": "empty"}, FulfillmentType: target, PriceAmount: decimal.NewFromInt(10)})
+			if err != nil || updated.FulfillmentType != target {
+				t.Fatalf("empty product conversion failed: %+v, %v", updated, err)
+			}
+		})
+	}
+}
 
 func TestProductServiceUpdateKeepsMappedProductFulfillmentUpstream(t *testing.T) {
 	svc, db := newProductServiceForTest(t)
