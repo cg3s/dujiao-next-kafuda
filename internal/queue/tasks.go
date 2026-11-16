@@ -33,6 +33,8 @@ const (
 	TaskProcurementPollStatus = constants.TaskProcurementPollStatus
 	// TaskProcurementSyncAccepted 采购单定时巡检任务
 	TaskProcurementSyncAccepted = constants.TaskProcurementSyncAccepted
+	// TaskKafudaRecoverChecks 恢复进程中断留下的过期凭据检查。
+	TaskKafudaRecoverChecks = constants.TaskKafudaRecoverChecks
 	// TaskDownstreamCallback 下游回调通知任务
 	TaskDownstreamCallback = constants.TaskDownstreamCallback
 	// TaskReconciliationRun 对账执行任务
@@ -154,6 +156,11 @@ func NewAffiliateConfirmCommissionsTask() *asynq.Task {
 // NewResellerConfirmLedgerTask 创建分销商账务到期确认任务。
 func NewResellerConfirmLedgerTask() *asynq.Task {
 	return asynq.NewTask(TaskResellerConfirmLedger, nil)
+}
+
+// NewKafudaRecoverChecksTask scans persisted leases without carrying credentials.
+func NewKafudaRecoverChecksTask() *asynq.Task {
+	return asynq.NewTask(TaskKafudaRecoverChecks, nil)
 }
 
 // NewUpstreamSyncStockTask 创建上游库存同步任务
