@@ -104,7 +104,7 @@ func TestPublicProductHTTPPromotionUsesDisplayPrice(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/products/display-price", nil)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
-	for _, field := range []string{"cost_price_amount", "direct_cost_configured"} {
+	for _, field := range []string{"cost_price_amount", "direct_cost_configured", "direct_catalog_revision"} {
 		if strings.Contains(recorder.Body.String(), field) {
 			t.Fatalf("public response exposed %s", field)
 		}

@@ -7,10 +7,11 @@ import (
 )
 
 type SKUOption struct {
-	SKUCode string `json:"sku_code"`
-	Plan    string `json:"plan"`
-	Country string `json:"country"`
-	Label   string `json:"label"`
+	CatalogRevision uint64 `json:"catalog_revision"`
+	SKUCode         string `json:"sku_code"`
+	Plan            string `json:"plan"`
+	Country         string `json:"country"`
+	Label           string `json:"label"`
 	// Available reflects supplier listing state. Purchasing also requires a fresh catalog.
 	Available bool `json:"available"`
 }
@@ -28,7 +29,7 @@ type PurchaseTerms struct {
 
 type CommercePolicy interface {
 	SKUOptions(context.Context) ([]SKUOption, error)
-	PurchaseTerms(context.Context, string, string) (*PurchaseTerms, error)
+	PurchaseTerms(context.Context, string, string, uint64) (*PurchaseTerms, error)
 }
 
 func SKUCode(plan, country string) string {

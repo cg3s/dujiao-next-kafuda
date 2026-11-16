@@ -481,6 +481,9 @@ func TestAutoMigrateOwnsKafudaGPTSchema(t *testing.T) {
 	if !db.Migrator().HasColumn(&productdomain.ProductSKU{}, "DirectCostConfigured") {
 		t.Error("direct cost confirmation column missing")
 	}
+	if !db.Migrator().HasColumn(&productdomain.ProductSKU{}, "DirectCatalogRevision") || !db.Migrator().HasColumn("kafuda_gpt_catalogs", "availability_revisions") {
+		t.Error("catalog review revision columns missing")
+	}
 }
 
 func TestAutoMigrateAddsDirectCostConfirmationWithoutChangingLegacyPrices(t *testing.T) {
@@ -511,7 +514,7 @@ func TestAutoMigrateAddsDirectCostConfirmationWithoutChangingLegacyPrices(t *tes
 	if err := db.First(&sku, 7).Error; err != nil {
 		t.Fatal(err)
 	}
-	if sku.DirectCostConfigured || !sku.CostPriceAmount.Equal(decimal.NewFromInt(45)) || !sku.PriceAmount.Equal(decimal.NewFromInt(100)) {
+	if sku.DirectCostConfigured || sku.DirectCatalogRevision != 0 || !sku.CostPriceAmount.Equal(decimal.NewFromInt(45)) || !sku.PriceAmount.Equal(decimal.NewFromInt(100)) {
 		t.Fatalf("migration changed legacy price or invented cost confirmation: %+v", sku)
 	}
 }

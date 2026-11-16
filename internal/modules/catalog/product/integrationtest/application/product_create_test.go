@@ -172,7 +172,7 @@ func (c *directProductTestCatalog) SKUOptions(context.Context) ([]kafudacontract
 	return c.options, nil
 }
 
-func (*directProductTestCatalog) PurchaseTerms(context.Context, string, string) (*kafudacontract.PurchaseTerms, error) {
+func (*directProductTestCatalog) PurchaseTerms(context.Context, string, string, uint64) (*kafudacontract.PurchaseTerms, error) {
 	return nil, fmt.Errorf("purchase terms are outside product configuration")
 }
 
@@ -361,7 +361,7 @@ func TestDirectCatalogExpiryPreservesAdministratorConfiguration(t *testing.T) {
 				MaxCostCents: 2000, AllowedKinds: []string{"new"}, WorkerReady: func(context.Context) bool { return true },
 			})
 			svc.Write.SetDirectCatalog(policy)
-			if _, err := policy.PurchaseTerms(ctx, "plus", "PH"); err != nil {
+			if _, err := policy.PurchaseTerms(ctx, "plus", "PH", 0); err != nil {
 				t.Fatalf("fresh catalog rejected: %v", err)
 			}
 			input := productwrite.CreateProductInput{
@@ -385,7 +385,7 @@ func TestDirectCatalogExpiryPreservesAdministratorConfiguration(t *testing.T) {
 			if err := store.SaveCatalog(ctx, catalog); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := policy.PurchaseTerms(ctx, "plus", "PH"); !errors.Is(err, kafudaapp.ErrQuoteUnavailable) {
+			if _, err := policy.PurchaseTerms(ctx, "plus", "PH", 0); !errors.Is(err, kafudaapp.ErrQuoteUnavailable) {
 				t.Fatalf("expired catalog allowed purchase terms: %v", err)
 			}
 			input.SKUs = nil
@@ -413,7 +413,7 @@ func TestDirectCatalogExpiryPreservesAdministratorConfiguration(t *testing.T) {
 			if err := store.SaveCatalog(ctx, catalog); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := policy.PurchaseTerms(ctx, "plus", "PH"); !errors.Is(err, kafudaapp.ErrQuoteUnavailable) {
+			if _, err := policy.PurchaseTerms(ctx, "plus", "PH", 0); !errors.Is(err, kafudaapp.ErrQuoteUnavailable) {
 				t.Fatalf("unavailable plan allowed purchase terms: %v", err)
 			}
 			if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
@@ -424,5 +424,104 @@ func TestDirectCatalogExpiryPreservesAdministratorConfiguration(t *testing.T) {
 				t.Fatalf("confirmed removal did not disable SKU on save: %+v, %v", product, err)
 			}
 		})
+	}
+}
+
+func TestDirectProductRequiresReviewAfterCatalogOnlyRemoval(t *testing.T) {
+	svc, db := newProductServiceForTest(t)
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = pool.Close() })
+	if err := db.AutoMigrate(&kafudadomain.Catalog{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, now := context.Background(), time.Now().UTC()
+	store := kafudastore.New(db)
+	catalog := &kafudadomain.Catalog{
+		Profile: "default", Enabled: true, SyncedAt: now, ExpiresAt: now.Add(time.Hour),
+		Options: []kafudadomain.CatalogOption{{Plan: "plus", Country: "PH", Product: "gpt", Label: "Plus", Available: true}},
+		Cards:   []kafudadomain.CardProduct{{ProductCode: "test-card"}},
+	}
+	if err := store.SaveCatalog(ctx, catalog); err != nil {
+		t.Fatal(err)
+	}
+	policy := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+		Catalog:      kafudaapp.NewCatalogService(store, nil, "default", time.Hour),
+		SalesEnabled: true, ReferenceLookupVerified: true, ProductCode: "test-card",
+		MaxCostCents: 2000, AllowedKinds: []string{"new"}, WorkerReady: func(context.Context) bool { return true },
+	})
+	svc.Write.SetDirectCatalog(policy)
+	active := true
+	input := productwrite.CreateProductInput{
+		Slug: "review", TitleJSON: map[string]interface{}{"zh-CN": "Direct"}, FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+		SKUs: []productwrite.ProductSKUInput{{SKUCode: kafudacontract.SKUCode("plus", "PH"), PriceAmount: decimal.NewFromInt(100), CostPriceAmount: decimal.NewFromInt(45), CostPriceProvided: true, IsActive: &active, SortOrder: 23}},
+	}
+	product, err := svc.Write.Create(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	product, err = svc.Read.GetAdminByID(fmt.Sprint(product.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := product.SKUs[0]
+	removed := *catalog
+	removed.SyncedAt, removed.Options = now.Add(time.Second), []kafudadomain.CatalogOption{}
+	if err := store.SaveCatalog(ctx, &removed); err != nil {
+		t.Fatal(err)
+	}
+	catalog.SyncedAt = now.Add(2 * time.Second)
+	if err := store.SaveCatalog(ctx, catalog); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.PurchaseTerms(ctx, "plus", "PH", first.DirectCatalogRevision); !errors.Is(err, kafudaapp.ErrQuoteUnavailable) {
+		t.Fatalf("catalog restoration accepted old approval: %v", err)
+	}
+	// The pre-removal editor cannot silently acknowledge the new revision.
+	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); !errors.Is(err, productcontract.ErrProductSKUInvalid) {
+		t.Fatalf("legacy stale editor re-enabled variant: %v", err)
+	}
+	oldRevision := uint64(0)
+	input.SKUs[0].DirectCatalogRevision = &oldRevision
+	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); !errors.Is(err, productcontract.ErrProductSKUInvalid) {
+		t.Fatalf("stale revision re-enabled variant: %v", err)
+	}
+	input.SKUs = nil
+	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
+		t.Fatal(err)
+	}
+	product, err = svc.Read.GetAdminByID(fmt.Sprint(product.ID))
+	if err != nil || product.SKUs[0].IsActive {
+		t.Fatalf("catalog-only save re-enabled variant: %+v, %v", product, err)
+	}
+	options, err := policy.SKUOptions(ctx)
+	if err != nil || len(options) != 1 {
+		t.Fatalf("review options missing: %+v, %v", options, err)
+	}
+	revision := options[0].CatalogRevision
+	if revision != 1 {
+		t.Fatalf("revision = %d, want 1", revision)
+	}
+	input.SKUs = []productwrite.ProductSKUInput{{SKUCode: first.SKUCode, PriceAmount: decimal.NewFromInt(100), IsActive: &active, DirectCatalogRevision: &revision, SortOrder: 23}}
+	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
+		t.Fatal(err)
+	}
+	input.SKUs = nil
+	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
+		t.Fatal(err)
+	}
+	product, err = svc.Read.GetAdminByID(fmt.Sprint(product.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sku := product.SKUs[0]
+	if !sku.IsActive || sku.DirectCatalogRevision != 1 || sku.ID != first.ID || !sku.CostPriceAmount.Equal(decimal.NewFromInt(45)) || !sku.PriceAmount.Equal(decimal.NewFromInt(100)) || sku.SortOrder != 23 {
+		t.Fatalf("review lost configuration: %+v", sku)
+	}
+	if _, err := policy.PurchaseTerms(ctx, "plus", "PH", sku.DirectCatalogRevision); err != nil {
+		t.Fatalf("reviewed variant rejected: %v", err)
 	}
 }

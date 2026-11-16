@@ -28,12 +28,39 @@ type CardProduct struct {
 }
 
 type Catalog struct {
-	Profile   string          `gorm:"primaryKey;type:varchar(64)" json:"-"`
-	Options   []CatalogOption `gorm:"serializer:json;type:json;not null" json:"-"`
-	Cards     []CardProduct   `gorm:"serializer:json;type:json;not null" json:"-"`
-	Enabled   bool            `gorm:"not null;default:false" json:"-"`
-	SyncedAt  time.Time       `json:"-"`
-	ExpiresAt time.Time       `gorm:"not null" json:"-"`
+	AvailabilityRevisions map[string]uint64 `gorm:"serializer:json;type:json" json:"-"`
+	Profile               string            `gorm:"primaryKey;type:varchar(64)" json:"-"`
+	Options               []CatalogOption   `gorm:"serializer:json;type:json;not null" json:"-"`
+	Cards                 []CardProduct     `gorm:"serializer:json;type:json;not null" json:"-"`
+	Enabled               bool              `gorm:"not null;default:false" json:"-"`
+	SyncedAt              time.Time         `json:"-"`
+	ExpiresAt             time.Time         `gorm:"not null" json:"-"`
+}
+
+func (c Catalog) Revision(plan, country string) uint64 {
+	return c.AvailabilityRevisions[plan+"\x00"+country]
+}
+
+// Preserve revisions even while a pair is absent. Expiry alone does not change
+// supplier availability or invalidate an administrator's approval.
+func (c *Catalog) MergeAvailabilityHistory(previous *Catalog) {
+	c.AvailabilityRevisions = make(map[string]uint64)
+	if previous == nil {
+		return
+	}
+	for key, revision := range previous.AvailabilityRevisions {
+		c.AvailabilityRevisions[key] = revision
+	}
+	listed := make(map[string]bool, len(c.Options))
+	for _, option := range c.Options {
+		listed[option.Plan+"\x00"+option.Country] = c.Enabled && option.Available
+	}
+	for _, option := range previous.Options {
+		key := option.Plan + "\x00" + option.Country
+		if previous.Enabled && option.Available && !listed[key] {
+			c.AvailabilityRevisions[key]++
+		}
+	}
 }
 
 func (Catalog) TableName() string { return "kafuda_gpt_catalogs" }

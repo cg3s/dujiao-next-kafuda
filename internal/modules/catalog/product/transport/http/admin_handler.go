@@ -193,14 +193,15 @@ func (h *AdminProductHandler) GetAdminProduct(c *gin.Context) {
 // ====================  商品管理  ====================
 
 type ProductSKURequest struct {
-	ID               uint                   `json:"id"`
-	SKUCode          string                 `json:"sku_code" binding:"required"`
-	SpecValuesJSON   map[string]interface{} `json:"spec_values"`
-	PriceAmount      float64                `json:"price_amount"`
-	CostPriceAmount  *float64               `json:"cost_price_amount"`
-	ManualStockTotal *int                   `json:"manual_stock_total"`
-	IsActive         *bool                  `json:"is_active"`
-	SortOrder        int                    `json:"sort_order"`
+	DirectCatalogRevision *uint64                `json:"direct_catalog_revision"`
+	ID                    uint                   `json:"id"`
+	SKUCode               string                 `json:"sku_code" binding:"required"`
+	SpecValuesJSON        map[string]interface{} `json:"spec_values"`
+	PriceAmount           float64                `json:"price_amount"`
+	CostPriceAmount       *float64               `json:"cost_price_amount"`
+	ManualStockTotal      *int                   `json:"manual_stock_total"`
+	IsActive              *bool                  `json:"is_active"`
+	SortOrder             int                    `json:"sort_order"`
 }
 
 type WholesalePriceRequest struct {
@@ -267,15 +268,16 @@ func toProductSKUInputs(items []ProductSKURequest) []productwrite.ProductSKUInpu
 			cost = decimal.NewFromFloat(*item.CostPriceAmount)
 		}
 		result = append(result, productwrite.ProductSKUInput{
-			ID:                item.ID,
-			SKUCode:           item.SKUCode,
-			SpecValuesJSON:    item.SpecValuesJSON,
-			PriceAmount:       decimal.NewFromFloat(item.PriceAmount),
-			CostPriceAmount:   cost,
-			CostPriceProvided: item.CostPriceAmount != nil,
-			ManualStockTotal:  item.ManualStockTotal,
-			IsActive:          item.IsActive,
-			SortOrder:         item.SortOrder,
+			ID:                    item.ID,
+			SKUCode:               item.SKUCode,
+			SpecValuesJSON:        item.SpecValuesJSON,
+			PriceAmount:           decimal.NewFromFloat(item.PriceAmount),
+			CostPriceAmount:       cost,
+			CostPriceProvided:     item.CostPriceAmount != nil,
+			DirectCatalogRevision: item.DirectCatalogRevision,
+			ManualStockTotal:      item.ManualStockTotal,
+			IsActive:              item.IsActive,
+			SortOrder:             item.SortOrder,
 		})
 	}
 	return result

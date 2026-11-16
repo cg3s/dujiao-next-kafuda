@@ -42,6 +42,7 @@ const catalogBusy = ref(false)
 const catalogStale = ref(true)
 const catalogSyncedAt = ref('')
 const directAvailability = ref<Record<string, boolean>>({})
+const directReviewRequired = ref<Record<string, boolean>>({})
 let catalogRequest = 0
 const newTag = ref('')
 const currentLang = ref('zh-CN')
@@ -95,6 +96,7 @@ const isProductCategorySelectable = (categoryID: number | null | undefined) => {
 }
 
 type SKUFormItem = {
+  direct_catalog_revision: number
   id: number
   sku_code: string
   spec_values: Record<string, string>
@@ -140,6 +142,7 @@ const resolveEditableSKURows = (product: AdminProduct): SKUFormItem[] => {
 }
 
 const createSKUFormItem = (raw?: Partial<AdminProductSKU>, direct = false): SKUFormItem => ({
+  direct_catalog_revision: Number(raw?.direct_catalog_revision || 0),
   id: Number(raw?.id || 0),
   sku_code: String(raw?.sku_code || '').trim(),
   spec_values: {
@@ -490,6 +493,7 @@ const normalizeSKUsForSubmit = () => {
       spec_values: specValues,
       price_amount: priceAmount,
       cost_price_amount: costPriceAmount,
+      direct_catalog_revision: isDirect.value ? item.direct_catalog_revision : undefined,
       manual_stock_total: stockUnchanged ? undefined : manualStockTotal,
       is_active: isActive,
       sort_order: Number(item.sort_order) || 0,
@@ -589,7 +593,7 @@ const populateForm = (product: AdminProduct) => {
 
 const isDirect = computed(() => form.fulfillment_type === 'kafuda_gpt_direct')
 
-type DirectOption = { sku_code: string; plan: string; country: string; label: string; available: boolean }
+type DirectOption = { sku_code: string; plan: string; country: string; label: string; available: boolean; catalog_revision: number }
 
 const loadDirectCatalog = async (sync: boolean) => {
   const request = ++catalogRequest
@@ -601,20 +605,25 @@ const loadDirectCatalog = async (sync: boolean) => {
     const options: DirectOption[] = Array.isArray(catalog.options) ? catalog.options : []
     const old = new Map(form.skus.filter((item) => item.sku_code.startsWith('KGPT_')).map((item) => [item.sku_code, item]))
     const available: Record<string, boolean> = {}
+    const reviewRequired: Record<string, boolean> = {}
     const merged: SKUFormItem[] = options.map((option) => {
       available[option.sku_code] = option.available
       const existing = old.get(option.sku_code)
+      const revision = Number(option.catalog_revision || 0)
+      reviewRequired[option.sku_code] = Boolean(existing && existing.direct_catalog_revision !== revision)
       old.delete(option.sku_code)
       return {
         ...createSKUFormItem({ sku_code: option.sku_code, is_active: false }, true),
         ...existing,
         spec_values: { ...createEmptyLocaleText(), plan: option.plan, country: option.country },
-        is_active: Boolean(existing?.is_active && option.available),
+        is_active: Boolean(existing?.is_active && option.available && existing.direct_catalog_revision === revision),
+        direct_catalog_revision: revision,
       }
     })
     for (const item of old.values()) merged.push({ ...item, is_active: false })
     form.skus = merged
     directAvailability.value = available
+    directReviewRequired.value = reviewRequired
     catalogStale.value = Boolean(catalog.stale)
     catalogSyncedAt.value = catalog.synced_at ? new Date(catalog.synced_at).toLocaleString() : ''
   } catch (error) {
@@ -1070,6 +1079,7 @@ watch(
                   <template v-if="isDirect">
                     <p class="text-sm">{{ sku.spec_values.plan }} · {{ sku.spec_values.country }}</p>
                     <p v-if="!directAvailability[sku.sku_code]" class="text-xs text-amber-600">{{ t('kafuda.unavailable') }}</p>
+                    <p v-else-if="directReviewRequired[sku.sku_code]" class="text-xs text-amber-600">{{ t('kafuda.review') }}</p>
                   </template>
                   <Input v-else v-model="sku.spec_values[currentLang]" :placeholder="t('admin.products.form.skuSpecPlaceholder')" :disabled="editingIsMapped" />
                 </div>

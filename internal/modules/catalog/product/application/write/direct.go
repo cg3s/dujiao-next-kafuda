@@ -70,7 +70,7 @@ func (s *WriteService) prepareDirectSKUs(inputs []ProductSKUInput, existing map[
 		active := false
 		item := ProductSKUInput{SKUCode: option.SKUCode, PriceAmount: decimal.Zero, CostPriceAmount: decimal.Zero, IsActive: &active}
 		if old, ok := oldByCode[option.SKUCode]; ok {
-			active = old.IsActive
+			active = old.IsActive && old.DirectCatalogRevision == option.CatalogRevision
 			item.ID, item.PriceAmount, item.CostPriceAmount = old.ID, old.PriceAmount.Decimal, old.CostPriceAmount.Decimal
 			item.CostPriceProvided, item.SortOrder = old.DirectCostConfigured, old.SortOrder
 		}
@@ -89,6 +89,14 @@ func (s *WriteService) prepareDirectSKUs(inputs []ProductSKUInput, existing map[
 		if !option.Available {
 			active = false
 		}
+		if input, supplied := provided[option.SKUCode]; active && supplied {
+			if (option.CatalogRevision > 0 && input.DirectCatalogRevision == nil) ||
+				(input.DirectCatalogRevision != nil && *input.DirectCatalogRevision != option.CatalogRevision) {
+				return nil, productcontract.ErrProductSKUInvalid
+			}
+		}
+		revision := option.CatalogRevision
+		item.DirectCatalogRevision = &revision
 		if active && !item.CostPriceProvided {
 			return nil, productcontract.ErrProductPriceInvalid
 		}
@@ -101,7 +109,8 @@ func (s *WriteService) prepareDirectSKUs(inputs []ProductSKUInput, existing map[
 			continue
 		}
 		active := false
-		result = append(result, ProductSKUInput{ID: old.ID, SKUCode: code, SpecValuesJSON: old.SpecValuesJSON, PriceAmount: old.PriceAmount.Decimal, CostPriceAmount: old.CostPriceAmount.Decimal, CostPriceProvided: old.DirectCostConfigured, IsActive: &active, SortOrder: old.SortOrder})
+		revision := old.DirectCatalogRevision
+		result = append(result, ProductSKUInput{ID: old.ID, SKUCode: code, SpecValuesJSON: old.SpecValuesJSON, PriceAmount: old.PriceAmount.Decimal, CostPriceAmount: old.CostPriceAmount.Decimal, CostPriceProvided: old.DirectCostConfigured, DirectCatalogRevision: &revision, IsActive: &active, SortOrder: old.SortOrder})
 		seen[code] = true
 	}
 	for code := range provided {

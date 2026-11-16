@@ -126,12 +126,23 @@ func (s *Store) SaveCatalog(ctx context.Context, catalog *kafudadomain.Catalog) 
 	if err := catalog.Validate(); err != nil {
 		return err
 	}
-	// A slower older sync must not replace a newer valid directory.
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "profile"}},
-		DoUpdates: clause.AssignmentColumns([]string{"options", "cards", "enabled", "synced_at", "expires_at"}),
-		Where:     clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "excluded.synced_at > kafuda_gpt_catalogs.synced_at"}}},
-	}).Create(catalog).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		candidate := *catalog
+		candidate.MergeAvailabilityHistory(nil)
+		// Establish the profile before locking it, including concurrent first syncs.
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&candidate).Error; err != nil {
+			return err
+		}
+		previous, err := first[kafudadomain.Catalog](tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("profile = ?", catalog.Profile))
+		if err != nil {
+			return err
+		}
+		if previous == nil || !catalog.SyncedAt.After(previous.SyncedAt) {
+			return nil
+		}
+		candidate.MergeAvailabilityHistory(previous)
+		return tx.Save(&candidate).Error
+	})
 }
 
 func first[T any](query *gorm.DB) (*T, error) {

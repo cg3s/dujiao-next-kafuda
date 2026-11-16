@@ -36,12 +36,12 @@ func (s *CommerceService) SKUOptions(ctx context.Context) ([]kafudacontract.SKUO
 	}
 	result := make([]kafudacontract.SKUOption, 0, len(catalog.Options))
 	for _, entry := range catalog.Options {
-		result = append(result, kafudacontract.SKUOption{SKUCode: kafudacontract.SKUCode(entry.Plan, entry.Country), Plan: entry.Plan, Country: entry.Country, Label: entry.Label, Available: catalog.Enabled && entry.Available})
+		result = append(result, kafudacontract.SKUOption{SKUCode: kafudacontract.SKUCode(entry.Plan, entry.Country), Plan: entry.Plan, Country: entry.Country, Label: entry.Label, Available: catalog.Enabled && entry.Available, CatalogRevision: catalog.Revision(entry.Plan, entry.Country)})
 	}
 	return result, nil
 }
 
-func (s *CommerceService) PurchaseTerms(ctx context.Context, plan, country string) (*kafudacontract.PurchaseTerms, error) {
+func (s *CommerceService) PurchaseTerms(ctx context.Context, plan, country string, reviewedRevision uint64) (*kafudacontract.PurchaseTerms, error) {
 	opt := s.options
 	if !opt.SalesEnabled || !opt.ReferenceLookupVerified || opt.ProductCode == "" || opt.MaxCostCents <= 0 || len(opt.AllowedKinds) == 0 || opt.WorkerReady == nil || !opt.WorkerReady(ctx) {
 		return nil, ErrQuoteUnavailable
@@ -50,7 +50,7 @@ func (s *CommerceService) PurchaseTerms(ctx context.Context, plan, country strin
 	if err != nil {
 		return nil, err
 	}
-	if catalog == nil || !catalog.Available(plan, country, time.Now()) {
+	if catalog == nil || !catalog.Available(plan, country, time.Now()) || catalog.Revision(plan, country) != reviewedRevision {
 		return nil, ErrQuoteUnavailable
 	}
 	cardAllowed := false
