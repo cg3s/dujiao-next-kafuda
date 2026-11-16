@@ -1,7 +1,9 @@
 package integrationtest
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	productwrite "github.com/dujiao-next/internal/modules/catalog/product/application/write"
@@ -11,6 +13,7 @@ import (
 	categorydomain "github.com/dujiao-next/internal/modules/catalog/category/domain"
 
 	"github.com/dujiao-next/internal/constants"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/shopspring/decimal"
 )
@@ -154,5 +157,97 @@ func TestProductServiceCreateRollsBackProductAndSKUWhenWholesaleValidationFails(
 	}
 	if skuCount != 0 {
 		t.Fatalf("transaction must roll back default SKU, got %d rows", skuCount)
+	}
+}
+
+type directProductTestCatalog struct {
+	options []kafudacontract.SKUOption
+}
+
+func (c *directProductTestCatalog) SKUOptions(context.Context) ([]kafudacontract.SKUOption, error) {
+	return c.options, nil
+}
+
+func (*directProductTestCatalog) PurchaseTerms(context.Context, string, string) (*kafudacontract.PurchaseTerms, error) {
+	return nil, fmt.Errorf("purchase terms are outside product configuration")
+}
+
+func TestDirectProductCreateKeepsUnconfiguredVariantsDisabled(t *testing.T) {
+	for _, configureOne := range []bool{false, true} {
+		t.Run(fmt.Sprintf("configured_%t", configureOne), func(t *testing.T) {
+			svc, db := newProductServiceForTest(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			code := kafudacontract.SKUCode("plus", "PH")
+			catalog := &directProductTestCatalog{options: []kafudacontract.SKUOption{
+				{SKUCode: code, Plan: "plus", Country: "PH", Available: true},
+				{SKUCode: kafudacontract.SKUCode("go", "US"), Plan: "go", Country: "US", Available: true},
+			}}
+			svc.Write.SetDirectCatalog(catalog)
+			input := productwrite.CreateProductInput{
+				Slug: "direct-defaults", TitleJSON: map[string]interface{}{"zh-CN": "Direct"},
+				FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+			}
+			if configureOne {
+				active := true
+				input.SKUs = []productwrite.ProductSKUInput{{
+					SKUCode: code, PriceAmount: decimal.NewFromInt(100),
+					CostPriceAmount: decimal.Zero, CostPriceProvided: true, IsActive: &active,
+				}}
+			}
+			product, err := svc.Write.Create(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			product, err = svc.Read.GetAdminByID(fmt.Sprint(product.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if product.IsActive != configureOne {
+				t.Errorf("product active = %t, want %t", product.IsActive, configureOne)
+			}
+			if len(product.SKUs) != 2 {
+				t.Fatalf("got %d variants, want 2", len(product.SKUs))
+			}
+			for _, sku := range product.SKUs {
+				wantActive := configureOne && sku.SKUCode == code
+				if sku.IsActive != wantActive {
+					t.Errorf("variant %s active = %t, want %t", sku.SKUCode, sku.IsActive, wantActive)
+				}
+			}
+
+			// A later catalog addition must also stay disabled when saved.
+			catalog.options = append(catalog.options, kafudacontract.SKUOption{
+				SKUCode: kafudacontract.SKUCode("plus", "JP"), Plan: "plus", Country: "JP", Available: true,
+			})
+			updated, err := svc.Write.Update(fmt.Sprint(product.ID), input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated, err = svc.Read.GetAdminByID(fmt.Sprint(updated.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(updated.SKUs) != 3 {
+				t.Fatalf("got %d variants after update, want 3", len(updated.SKUs))
+			}
+			for _, sku := range updated.SKUs {
+				wantActive := configureOne && sku.SKUCode == code
+				if sku.IsActive != wantActive {
+					t.Errorf("updated variant %s active = %t, want %t", sku.SKUCode, sku.IsActive, wantActive)
+				}
+			}
+			var persisted productdomain.Product
+			if err := db.First(&persisted, product.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if persisted.IsActive != configureOne {
+				t.Errorf("persisted product active = %t, want %t", persisted.IsActive, configureOne)
+			}
+		})
 	}
 }

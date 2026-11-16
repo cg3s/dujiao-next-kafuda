@@ -347,6 +347,14 @@ func (s *WriteService) applyProductSKUsWithStockGuard(
 		if err := skuRepo.Create(&item); err != nil {
 			return err
 		}
+		// GORM applies the schema's true default to a false bool on insert.
+		// Persist the requested disabled state inside the product transaction.
+		if !row.IsActive {
+			item.IsActive = false
+			if err := skuRepo.Update(&item); err != nil {
+				return err
+			}
+		}
 		kept[item.ID] = struct{}{}
 	}
 
