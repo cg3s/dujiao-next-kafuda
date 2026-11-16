@@ -41,6 +41,8 @@ func BuiltinRoleSeeds() []RoleSeed {
 			Inherits: []string{"readonly_auditor"},
 			Policies: []Policy{
 				{Object: "/admin/products", Action: "*"},
+				{Object: "/admin/kafuda-gpt/catalog", Action: "GET"},
+				{Object: "/admin/kafuda-gpt/catalog/sync", Action: "POST"},
 				{Object: "/admin/products/:id", Action: "*"},
 				{Object: "/admin/products/:id/wholesale-prices", Action: "PATCH"},
 				{Object: "/admin/categories", Action: "*"},

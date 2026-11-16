@@ -2,6 +2,16 @@ import { createI18n } from 'vue-i18n'
 
 const messages = {
   'zh-CN': {
+    kafuda: {
+      type: 'Kafuda GPT Direct（直充）',
+      sync: '刷新直充套餐',
+      tip: '套餐和地区来自 Kafuda。请逐个确认成本价与售价，再启用规格；目录刷新保留您的价格。此商品不使用卡密或人工库存。',
+      stale: '目录尚未同步或已过期，请刷新后复核可售规格。',
+      unavailable: '该规格暂不可售',
+      lastSync: '最近同步：{time}',
+      neverSynced: '尚未同步',
+      failed: '直充目录加载失败，请稍后重试',
+    },
     common: {
       api: {
         responseMissing: '响应内容为空',
@@ -4604,6 +4614,16 @@ const messages = {
     },
   },
   'zh-TW': {
+    kafuda: {
+      type: 'Kafuda GPT Direct（直充）',
+      sync: '更新直充套餐',
+      tip: '套餐與地區來自 Kafuda。請逐項確認成本價與售價後再啟用規格；目錄更新保留您的價格。此商品不使用卡密或人工庫存。',
+      stale: '目錄尚未同步或已過期，請更新後確認可售規格。',
+      unavailable: '此規格暫不可售',
+      lastSync: '最近同步：{time}',
+      neverSynced: '尚未同步',
+      failed: '直充目錄載入失敗，請稍後重試',
+    },
     common: {
       api: {
         responseMissing: '回應內容為空',
@@ -9206,6 +9226,16 @@ const messages = {
     },
   },
   'en-US': {
+    kafuda: {
+      type: 'Kafuda GPT Direct',
+      sync: 'Refresh recharge plans',
+      tip: 'Plans and regions come from Kafuda. Confirm each cost and selling price before enabling a variant. Refreshes preserve your prices. This product uses no card-key or manual inventory.',
+      stale: 'The catalog is missing or expired. Refresh it and review availability.',
+      unavailable: 'This variant is currently unavailable',
+      lastSync: 'Last synced: {time}',
+      neverSynced: 'Not synced yet',
+      failed: 'Could not load recharge plans. Please try again later.',
+    },
     common: {
       api: {
         responseMissing: 'Empty response',

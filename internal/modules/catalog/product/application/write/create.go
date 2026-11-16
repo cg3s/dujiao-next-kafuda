@@ -44,6 +44,13 @@ func (s *WriteService) Create(input CreateProductInput) (*productdomain.Product,
 	if fulfillmentType == "" {
 		return nil, productcontract.ErrFulfillmentInvalid
 	}
+	if fulfillmentType == constants.FulfillmentTypeKafudaGPT {
+		input.SKUs, err = s.prepareDirectSKUs(input.SKUs, nil)
+		if err != nil {
+			return nil, err
+		}
+		purchaseType = constants.ProductPurchaseMember
+	}
 
 	priceAmount := input.PriceAmount.Round(2)
 	if len(input.SKUs) == 0 && priceAmount.LessThanOrEqual(decimal.Zero) {
@@ -90,6 +97,13 @@ func (s *WriteService) Create(input CreateProductInput) (*productdomain.Product,
 			return nil, normalizeErr
 		}
 		costPriceAmount = minActiveCostPrice(normalizedSKUs)
+	}
+	if fulfillmentType == constants.FulfillmentTypeKafudaGPT {
+		minPurchaseQuantity, maxPurchaseQuantity = 1, 1
+		stockDisplayMode = constants.ProductStockDisplayHidden
+		if !priceAmount.IsPositive() {
+			isActive = false
+		}
 	}
 	paymentChannelIDs, err := s.filterAvailablePaymentChannelIDs(input.PaymentChannelIDs)
 	if err != nil {

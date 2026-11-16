@@ -17,7 +17,7 @@ import (
 // Update 更新商品
 func (s *WriteService) Update(id string, input CreateProductInput) (*productdomain.Product, error) {
 	priceAmount := input.PriceAmount.Round(2)
-	if len(input.SKUs) == 0 && priceAmount.LessThanOrEqual(decimal.Zero) {
+	if len(input.SKUs) == 0 && priceAmount.LessThanOrEqual(decimal.Zero) && strings.TrimSpace(input.FulfillmentType) != constants.FulfillmentTypeKafudaGPT {
 		return nil, productcontract.ErrProductPriceInvalid
 	}
 	product, err := s.products.GetByID(id)
@@ -27,6 +27,7 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 	if product == nil {
 		return nil, productcontract.ErrNotFound
 	}
+	originalFulfillmentType := product.FulfillmentType
 	if err := productdomain.ValidateCategoryAssignment(s.categories, input.CategoryID, product.CategoryID, productcontract.ErrProductCategoryInvalid); err != nil {
 		return nil, err
 	}
@@ -96,6 +97,11 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 	if fulfillmentType == "" {
 		return nil, productcontract.ErrFulfillmentInvalid
 	}
+	if fulfillmentType != originalFulfillmentType && (fulfillmentType == constants.FulfillmentTypeKafudaGPT || originalFulfillmentType == constants.FulfillmentTypeKafudaGPT) {
+		if err := s.validateDirectTypeChange(product); err != nil {
+			return nil, err
+		}
+	}
 	// 对接商品的真实交付类型必须保持 upstream，后台返回的 auto/manual 仅用于展示。
 	if product.IsMapped {
 		fulfillmentType = constants.FulfillmentTypeUpstream
@@ -118,7 +124,7 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 	}
 
 	var normalizedSKUs []normalizedProductSKU
-	if len(input.SKUs) > 0 {
+	if len(input.SKUs) > 0 || fulfillmentType == constants.FulfillmentTypeKafudaGPT {
 		if s.skus == nil {
 			return nil, productcontract.ErrProductSKUInvalid
 		}
@@ -130,6 +136,12 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 		for _, sku := range existingSKUs {
 			existingSKUMap[sku.ID] = sku
 		}
+		if fulfillmentType == constants.FulfillmentTypeKafudaGPT {
+			input.SKUs, err = s.prepareDirectSKUs(input.SKUs, existingSKUMap)
+			if err != nil {
+				return nil, err
+			}
+		}
 		var normalizeErr error
 		normalizedSKUs, priceAmount, manualStockTotal, normalizeErr = s.normalizeProductSKUInputs(input.SKUs, fulfillmentType, existingSKUMap)
 		if normalizeErr != nil {
@@ -138,6 +150,13 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 	}
 
 	product.PriceAmount = money.FromDecimal(priceAmount)
+	if fulfillmentType == constants.FulfillmentTypeKafudaGPT {
+		product.PurchaseType, product.MinPurchaseQuantity, product.MaxPurchaseQuantity = constants.ProductPurchaseMember, 1, 1
+		product.StockDisplayMode = constants.ProductStockDisplayHidden
+		if !priceAmount.IsPositive() {
+			product.IsActive = false
+		}
+	}
 	if len(normalizedSKUs) > 0 {
 		product.CostPriceAmount = money.FromDecimal(minActiveCostPrice(normalizedSKUs))
 	} else {

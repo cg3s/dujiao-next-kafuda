@@ -16,6 +16,8 @@ const (
 
 var messages = map[string]map[string]string{
 	LocaleZH: {
+		"error.kafuda_not_configured":                    "Kafuda GPT 直充尚未配置，请联系管理员",
+		"error.kafuda_catalog_failed":                    "获取 Kafuda GPT 目录失败，上次有效目录已保留",
 		"error.jwt_secret_missing":                       "JWT secret 未配置",
 		"error.auth_header_missing":                      "缺少 Authorization header",
 		"error.auth_header_invalid":                      "Authorization header 格式错误",
@@ -398,6 +400,8 @@ var messages = map[string]map[string]string{
 		"error.invalid_product_status":              "无效的商品状态参数",
 	},
 	LocaleTW: {
+		"error.kafuda_not_configured":                    "Kafuda GPT 直充尚未設定，請聯絡管理員",
+		"error.kafuda_catalog_failed":                    "取得 Kafuda GPT 目錄失敗，已保留上次有效目錄",
 		"error.jwt_secret_missing":                       "JWT secret 未配置",
 		"error.auth_header_missing":                      "缺少 Authorization header",
 		"error.auth_header_invalid":                      "Authorization header 格式錯誤",
@@ -780,6 +784,8 @@ var messages = map[string]map[string]string{
 		"error.invalid_product_status":              "無效的商品狀態參數",
 	},
 	LocaleEN: {
+		"error.kafuda_not_configured":                    "Kafuda GPT direct recharge is not configured. Please contact an administrator.",
+		"error.kafuda_catalog_failed":                    "Could not load the Kafuda GPT catalog. The last valid catalog has been retained.",
 		"error.jwt_secret_missing":                       "JWT secret is not configured",
 		"error.auth_header_missing":                      "Missing Authorization header",
 		"error.auth_header_invalid":                      "Invalid Authorization header format",

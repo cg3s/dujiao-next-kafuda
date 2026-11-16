@@ -25,6 +25,7 @@ const (
 	FulfillmentTypeAuto        = "auto"
 	FulfillmentTypeManual      = "manual"
 	FulfillmentTypeUpstream    = "upstream"
+	FulfillmentTypeKafudaGPT   = "kafuda_gpt_direct"
 	FulfillmentStatusPending   = "pending"
 	FulfillmentStatusDelivered = "delivered"
 )

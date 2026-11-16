@@ -322,6 +322,8 @@ export interface ComplianceAcknowledgePayload {
 }
 
 export const adminAPI = {
+	getKafudaCatalog: () => api.get('/admin/kafuda-gpt/catalog'),
+	syncKafudaCatalog: () => api.post('/admin/kafuda-gpt/catalog/sync', {}),
   login: (data: AdminLoginRequest) => api.post('/admin/login', data),
   verify2FA: (data: Verify2FAPayload) => api.post('/admin/login/verify-2fa', data),
   // 合规声明

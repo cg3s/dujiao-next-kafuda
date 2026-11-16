@@ -3,6 +3,7 @@ package container
 import (
 	"errors"
 
+	kafudawiring "github.com/dujiao-next/internal/bootstrap/kafudagpt"
 	"github.com/dujiao-next/internal/cache"
 	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/constants"
@@ -18,6 +19,7 @@ import (
 	tokenpayadapter "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/adapters/tokenpay"
 	wechatpayadapter "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/adapters/wechatpay"
 	paymentprovider "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/provider"
+	"github.com/dujiao-next/internal/platform/database/gormdb"
 	"github.com/dujiao-next/internal/queue"
 )
 
@@ -46,6 +48,11 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 		PaymentProviderRegistry: newPaymentProviderRegistry(),
 	}
 	if err := c.initRepositories(); err != nil {
+		return nil, err
+	}
+	var err error
+	c.KafudaGPT, err = kafudawiring.New(gormdb.DB, cfg.KafudaGPT)
+	if err != nil {
 		return nil, err
 	}
 	c.initServices()

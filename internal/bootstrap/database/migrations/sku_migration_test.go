@@ -453,6 +453,33 @@ func TestAutoMigrateOwnsResellerSchemaAndCrossModuleConstraints(t *testing.T) {
 	}
 }
 
+func TestAutoMigrateOwnsKafudaGPTSchema(t *testing.T) {
+	db := setupRegistryMigrationTestDB(t)
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+	for range 2 {
+		if err := AutoMigrate(); err != nil {
+			t.Fatalf("idempotent auto migrate: %v", err)
+		}
+	}
+	for _, table := range []string{"kafuda_gpt_catalogs", "kafuda_gpt_recharges", "kafuda_gpt_attempts"} {
+		if !db.Migrator().HasTable(table) {
+			t.Errorf("missing direct-recharge table %s", table)
+		}
+		for _, forbidden := range []string{"session", "session_token", "access_token", "api_key", "account_email"} {
+			if db.Migrator().HasColumn(table, forbidden) {
+				t.Errorf("credential/PII column %s exists in %s", forbidden, table)
+			}
+		}
+	}
+	if !db.Migrator().HasIndex("kafuda_gpt_attempts", "idx_kafuda_gpt_active_order") {
+		t.Error("active-attempt uniqueness index missing")
+	}
+}
+
 func TestBackfillPendingOrderRiskIPsHandlesLegacyNullsAndIPv6(t *testing.T) {
 	db := setupSKUMigrationTestDB(t)
 	if err := db.AutoMigrate(&orderdomain.Order{}); err != nil {

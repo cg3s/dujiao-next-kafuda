@@ -142,4 +142,7 @@ func (c *Container) initIdentityAndCatalogServices() {
 	c.ProductReadService = productServices.Read
 	c.ProductAdminService = productServices.Admin
 	c.ProductWriteService = productServices.Write
+	if c.KafudaGPT != nil {
+		c.ProductWriteService.SetDirectCatalog(c.KafudaGPT.Commerce)
+	}
 }

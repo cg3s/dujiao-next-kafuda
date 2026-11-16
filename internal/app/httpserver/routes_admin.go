@@ -4,6 +4,7 @@ import (
 	"github.com/dujiao-next/internal/app/container"
 	"github.com/dujiao-next/internal/app/httpserver/middleware"
 	affiliatebootstrap "github.com/dujiao-next/internal/bootstrap/affiliate"
+	kafudawiring "github.com/dujiao-next/internal/bootstrap/kafudagpt"
 	settingsbootstrap "github.com/dujiao-next/internal/bootstrap/settingshttp"
 	"github.com/dujiao-next/internal/config"
 	adproxytransport "github.com/dujiao-next/internal/modules/adproxy/transport/http"
@@ -25,6 +26,7 @@ import (
 	adminauthztransport "github.com/dujiao-next/internal/modules/identity/adminauthorization/transport/http"
 	invitecodetransport "github.com/dujiao-next/internal/modules/identity/invitecode/transport/http"
 	adminusertransport "github.com/dujiao-next/internal/modules/identity/user/transport/http/admin"
+	kafudahttp "github.com/dujiao-next/internal/modules/kafudagpt/transport/http"
 	memberleveltransport "github.com/dujiao-next/internal/modules/memberlevel/transport/http"
 	notificationtransport "github.com/dujiao-next/internal/modules/notification/transport/http"
 	ordertransport "github.com/dujiao-next/internal/modules/order/transport/http"
@@ -108,6 +110,7 @@ func registerAdminRoutes(
 
 	// 商品 / 分类管理
 	producthttp.RegisterAdminRoutes(authorized, adminCatalogProductHandler)
+	kafudahttp.RegisterAdminRoutes(authorized, kafudawiring.NewAdminHandler(c.KafudaGPT))
 	contenttransport.RegisterAdminRoutes(authorized, adminContentHandler)
 	categoryhttp.RegisterAdminRoutes(authorized, adminCatalogCategoryHandler)
 

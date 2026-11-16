@@ -196,8 +196,8 @@ type ProductSKURequest struct {
 	ID               uint                   `json:"id"`
 	SKUCode          string                 `json:"sku_code" binding:"required"`
 	SpecValuesJSON   map[string]interface{} `json:"spec_values"`
-	PriceAmount      float64                `json:"price_amount" binding:"required"`
-	CostPriceAmount  float64                `json:"cost_price_amount"`
+	PriceAmount      float64                `json:"price_amount"`
+	CostPriceAmount  *float64               `json:"cost_price_amount"`
 	ManualStockTotal *int                   `json:"manual_stock_total"`
 	IsActive         *bool                  `json:"is_active"`
 	SortOrder        int                    `json:"sort_order"`
@@ -220,7 +220,7 @@ type CreateProductRequest struct {
 	ContentJSON         map[string]interface{}   `json:"content"`
 	InstructionsJSON    map[string]interface{}   `json:"instructions"`
 	ManualFormSchema    map[string]interface{}   `json:"manual_form_schema"`
-	PriceAmount         float64                  `json:"price_amount" binding:"required"`
+	PriceAmount         float64                  `json:"price_amount"`
 	CostPriceAmount     float64                  `json:"cost_price_amount"`
 	WholesalePrices     *[]WholesalePriceRequest `json:"wholesale_prices"`
 	Images              []string                 `json:"images"`
@@ -262,15 +262,20 @@ func toProductSKUInputs(items []ProductSKURequest) []productwrite.ProductSKUInpu
 	}
 	result := make([]productwrite.ProductSKUInput, 0, len(items))
 	for _, item := range items {
+		cost := decimal.Zero
+		if item.CostPriceAmount != nil {
+			cost = decimal.NewFromFloat(*item.CostPriceAmount)
+		}
 		result = append(result, productwrite.ProductSKUInput{
-			ID:               item.ID,
-			SKUCode:          item.SKUCode,
-			SpecValuesJSON:   item.SpecValuesJSON,
-			PriceAmount:      decimal.NewFromFloat(item.PriceAmount),
-			CostPriceAmount:  decimal.NewFromFloat(item.CostPriceAmount),
-			ManualStockTotal: item.ManualStockTotal,
-			IsActive:         item.IsActive,
-			SortOrder:        item.SortOrder,
+			ID:                item.ID,
+			SKUCode:           item.SKUCode,
+			SpecValuesJSON:    item.SpecValuesJSON,
+			PriceAmount:       decimal.NewFromFloat(item.PriceAmount),
+			CostPriceAmount:   cost,
+			CostPriceProvided: item.CostPriceAmount != nil,
+			ManualStockTotal:  item.ManualStockTotal,
+			IsActive:          item.IsActive,
+			SortOrder:         item.SortOrder,
 		})
 	}
 	return result

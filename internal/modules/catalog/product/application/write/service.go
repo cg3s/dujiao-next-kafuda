@@ -1,6 +1,7 @@
 package productwrite
 
 import (
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
 
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
@@ -55,6 +56,8 @@ type UnitOfWork interface {
 
 // Options 描述商品写入应用服务依赖。
 type Options struct {
+	Orders          interface{ CountOrderItemsByProduct(uint) (int64, error) }
+	CardSecrets     CardSecretStockRepository
 	Products        ProductRepository
 	SKUs            SKURepository
 	Categories      CategoryRepository
@@ -64,6 +67,9 @@ type Options struct {
 
 // WriteService 编排商品创建、更新和 SKU 同步。
 type WriteService struct {
+	orders          interface{ CountOrderItemsByProduct(uint) (int64, error) }
+	cardSecrets     CardSecretStockRepository
+	directCatalog   kafudacontract.CommercePolicy
 	products        ProductRepository
 	skus            SKURepository
 	categories      CategoryRepository
@@ -71,9 +77,14 @@ type WriteService struct {
 	transactions    UnitOfWork
 }
 
+func (s *WriteService) SetDirectCatalog(policy kafudacontract.CommercePolicy) {
+	s.directCatalog = policy
+}
+
 // NewWriteService 创建商品写入应用服务。
 func NewWriteService(options Options) *WriteService {
 	return &WriteService{
+		orders: options.Orders, cardSecrets: options.CardSecrets,
 		products:        options.Products,
 		skus:            options.SKUs,
 		categories:      options.Categories,
@@ -113,11 +124,12 @@ type CreateProductInput struct {
 
 // ProductSKUInput 描述商品 SKU 的完整写入值。
 type ProductSKUInput struct {
-	ID              uint
-	SKUCode         string
-	SpecValuesJSON  map[string]interface{}
-	PriceAmount     decimal.Decimal
-	CostPriceAmount decimal.Decimal
+	ID                uint
+	SKUCode           string
+	SpecValuesJSON    map[string]interface{}
+	PriceAmount       decimal.Decimal
+	CostPriceAmount   decimal.Decimal
+	CostPriceProvided bool
 	// ManualStockTotal 为 nil 表示保持该 SKU 现有的实时库存（新建 SKU 视为 0），
 	// 避免后台用打开表单时的旧值覆盖期间被下单预占后的库存。
 	ManualStockTotal *int

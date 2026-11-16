@@ -2,6 +2,7 @@ package container
 
 import (
 	"github.com/dujiao-next/internal/authz"
+	kafudawiring "github.com/dujiao-next/internal/bootstrap/kafudagpt"
 	"github.com/dujiao-next/internal/config"
 	adproxyapp "github.com/dujiao-next/internal/modules/adproxy/application"
 	affiliateapp "github.com/dujiao-next/internal/modules/affiliate/application"
@@ -85,6 +86,7 @@ import (
 
 // Container 声明应用运行期共享的依赖表面；具体构造过程按职责拆分在同包装配文件中。
 type Container struct {
+	KafudaGPT   *kafudawiring.Module
 	Config      *config.Config
 	QueueClient *queue.Client
 

@@ -211,6 +211,8 @@ func New(dependencies Dependencies) Services {
 		Transactions: newProductAdminUnitOfWork(dependencies.Products, dependencies.SKUs, dependencies.CardSecrets, dependencies.CardSecretBatches, dependencies.MemberLevelPrices, dependencies.UserPrices, dependencies.Carts, dependencies.ProductMappings),
 	})
 	write := productwrite.NewWriteService(productwrite.Options{
+		Orders:          dependencies.Orders,
+		CardSecrets:     dependencies.CardSecrets,
 		Products:        dependencies.Products,
 		SKUs:            dependencies.SKUs,
 		Categories:      dependencies.Categories,

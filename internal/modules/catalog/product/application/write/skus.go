@@ -158,6 +158,10 @@ func (s *WriteService) normalizeProductSKUInputs(inputs []ProductSKUInput, fulfi
 	hasUnlimitedStock := false
 
 	for _, input := range inputs {
+		isActive := fulfillmentType != constants.FulfillmentTypeKafudaGPT
+		if input.IsActive != nil {
+			isActive = *input.IsActive
+		}
 		skuCode := strings.TrimSpace(input.SKUCode)
 		if skuCode == "" {
 			return nil, decimal.Zero, 0, productcontract.ErrProductSKUInvalid
@@ -169,7 +173,7 @@ func (s *WriteService) normalizeProductSKUInputs(inputs []ProductSKUInput, fulfi
 		seenCode[codeKey] = struct{}{}
 
 		priceAmount := input.PriceAmount.Round(2)
-		if priceAmount.LessThanOrEqual(decimal.Zero) {
+		if priceAmount.LessThanOrEqual(decimal.Zero) && !(fulfillmentType == constants.FulfillmentTypeKafudaGPT && !isActive && priceAmount.IsZero()) {
 			return nil, decimal.Zero, 0, productcontract.ErrProductPriceInvalid
 		}
 		costPriceAmount := input.CostPriceAmount.Round(2)
@@ -199,10 +203,6 @@ func (s *WriteService) normalizeProductSKUInputs(inputs []ProductSKUInput, fulfi
 			manualTotal = 0
 		}
 
-		isActive := true
-		if input.IsActive != nil {
-			isActive = *input.IsActive
-		}
 		specValues := jsonmap.JSON{}
 		if input.SpecValuesJSON != nil {
 			specValues = jsonmap.JSON(input.SpecValuesJSON)
@@ -235,7 +235,7 @@ func (s *WriteService) normalizeProductSKUInputs(inputs []ProductSKUInput, fulfi
 		}
 	}
 
-	if !hasActive {
+	if !hasActive && fulfillmentType != constants.FulfillmentTypeKafudaGPT {
 		return nil, decimal.Zero, 0, productcontract.ErrProductSKUInvalid
 	}
 	if fulfillmentType != constants.FulfillmentTypeManual {

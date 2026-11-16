@@ -1,0 +1,801 @@
+{
+    "data": {
+        "enabled": true,
+        "plans": [
+            {
+                "plan": "go",
+                "label": "Go",
+                "credit": false,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 470,
+                        "estimated_pool_price_cents": 492,
+                        "estimated_local_minor": 30000,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": 675,
+                        "estimated_pool_price_cents": 698,
+                        "estimated_local_minor": 6714,
+                        "local_exponent": 0,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": 360,
+                        "estimated_pool_price_cents": 382,
+                        "estimated_local_minor": 19298,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": 797,
+                        "estimated_pool_price_cents": 820,
+                        "estimated_local_minor": 1273,
+                        "local_exponent": 0,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": 800,
+                        "estimated_pool_price_cents": 823,
+                        "estimated_local_minor": 800,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            },
+            {
+                "plan": "plus",
+                "label": "Plus",
+                "credit": false,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 1537,
+                        "estimated_pool_price_cents": 1562,
+                        "estimated_local_minor": 98214,
+                        "local_exponent": 2,
+                        "success_rate_7d": 100
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": 1688,
+                        "estimated_pool_price_cents": 1714,
+                        "estimated_local_minor": 16798,
+                        "local_exponent": 0,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": 1633,
+                        "estimated_pool_price_cents": 1658,
+                        "estimated_local_minor": 87718,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": 1707,
+                        "estimated_pool_price_cents": 1733,
+                        "estimated_local_minor": 2727,
+                        "local_exponent": 0,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": 2000,
+                        "estimated_pool_price_cents": 2026,
+                        "estimated_local_minor": 2000,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            },
+            {
+                "plan": "plus_half",
+                "label": "Plus 半价",
+                "credit": false,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 769,
+                        "estimated_pool_price_cents": 792,
+                        "estimated_local_minor": 49107,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            },
+            {
+                "plan": "pro_5x",
+                "label": "Pro 5x",
+                "credit": false,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 9067,
+                        "estimated_pool_price_cents": 9115,
+                        "estimated_local_minor": 579464,
+                        "local_exponent": 2,
+                        "success_rate_7d": 40
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": 8677,
+                        "estimated_pool_price_cents": 8724,
+                        "estimated_local_minor": 86365,
+                        "local_exponent": 0,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": 8815,
+                        "estimated_pool_price_cents": 8862,
+                        "estimated_local_minor": 473684,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": 9559,
+                        "estimated_pool_price_cents": 9608,
+                        "estimated_local_minor": 15273,
+                        "local_exponent": 0,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": 10000,
+                        "estimated_pool_price_cents": 10050,
+                        "estimated_local_minor": 10000,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            },
+            {
+                "plan": "pro_20x",
+                "label": "Pro 20x",
+                "credit": false,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 13957,
+                        "estimated_pool_price_cents": 14019,
+                        "estimated_local_minor": 891964,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": 16884,
+                        "estimated_pool_price_cents": 16955,
+                        "estimated_local_minor": 168059,
+                        "local_exponent": 0,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": 16323,
+                        "estimated_pool_price_cents": 16392,
+                        "estimated_local_minor": 877192,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": 17069,
+                        "estimated_pool_price_cents": 17141,
+                        "estimated_local_minor": 27273,
+                        "local_exponent": 0,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": 20000,
+                        "estimated_pool_price_cents": 20080,
+                        "estimated_local_minor": 20000,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            },
+            {
+                "plan": "pro_50x",
+                "label": "Pro 50x",
+                "credit": false,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 45390,
+                        "estimated_pool_price_cents": 45547,
+                        "estimated_local_minor": 2900893,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": 43056,
+                        "estimated_pool_price_cents": 43206,
+                        "estimated_local_minor": 428563,
+                        "local_exponent": 0,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": 44071,
+                        "estimated_pool_price_cents": 44224,
+                        "estimated_local_minor": 2368421,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": 47792,
+                        "estimated_pool_price_cents": 47956,
+                        "estimated_local_minor": 76364,
+                        "local_exponent": 0,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": 50000,
+                        "estimated_pool_price_cents": 50170,
+                        "estimated_local_minor": 50000,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            },
+            {
+                "plan": "credit250",
+                "label": "Codex 点数 250",
+                "credit": true,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 885,
+                        "estimated_pool_price_cents": 908,
+                        "estimated_local_minor": 56500,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            },
+            {
+                "plan": "credit500",
+                "label": "Codex 点数 500",
+                "credit": true,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 1769,
+                        "estimated_pool_price_cents": 1795,
+                        "estimated_local_minor": 113000,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            },
+            {
+                "plan": "credit1000",
+                "label": "Codex 点数 1000",
+                "credit": true,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 3537,
+                        "estimated_pool_price_cents": 3568,
+                        "estimated_local_minor": 226000,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            },
+            {
+                "plan": "credit2500",
+                "label": "Codex 点数 2500",
+                "credit": true,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 8841,
+                        "estimated_pool_price_cents": 8888,
+                        "estimated_local_minor": 565000,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            },
+            {
+                "plan": "credit5000",
+                "label": "Codex 点数 5000",
+                "credit": true,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 17681,
+                        "estimated_pool_price_cents": 17755,
+                        "estimated_local_minor": 1130000,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            },
+            {
+                "plan": "credit25000",
+                "label": "Codex 点数 25000",
+                "credit": true,
+                "service_price_cents": 20,
+                "regions": [
+                    {
+                        "country": "PH",
+                        "currency": "PHP",
+                        "estimated_plan_usd_cents": 88405,
+                        "estimated_pool_price_cents": 88691,
+                        "estimated_local_minor": 5650000,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "CL",
+                        "currency": "CLP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "EG",
+                        "currency": "EGP",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "JP",
+                        "currency": "JPY",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    },
+                    {
+                        "country": "US",
+                        "currency": "USD",
+                        "estimated_plan_usd_cents": null,
+                        "estimated_pool_price_cents": null,
+                        "estimated_local_minor": null,
+                        "local_exponent": 2,
+                        "success_rate_7d": null
+                    }
+                ]
+            }
+        ],
+        "regions": [
+            {
+                "country": "PH",
+                "currency": "PHP"
+            },
+            {
+                "country": "CL",
+                "currency": "CLP"
+            },
+            {
+                "country": "EG",
+                "currency": "EGP"
+            },
+            {
+                "country": "JP",
+                "currency": "JPY"
+            },
+            {
+                "country": "US",
+                "currency": "USD"
+            }
+        ],
+        "auto_card_products": [
+            {
+                "product_code": "XL537872",
+                "name": "卡BIN-537872（通用）",
+                "network": "Mastercard",
+                "issuing_area": "美国",
+                "restriction_reason": null,
+                "gpt_recommended": true,
+                "grok_recommended": false,
+                "open_fee_cents": 100,
+                "min_amount_cents": 1000,
+                "max_amount_cents": 5000000
+            },
+            {
+                "product_code": "XL537882",
+                "name": "卡BIN-537882（通用）",
+                "network": "Mastercard",
+                "issuing_area": "美国",
+                "restriction_reason": null,
+                "gpt_recommended": true,
+                "grok_recommended": false,
+                "open_fee_cents": 100,
+                "min_amount_cents": 1000,
+                "max_amount_cents": 5000000
+            },
+            {
+                "product_code": "11106307P",
+                "name": "卡BIN-446602",
+                "network": "Visa",
+                "issuing_area": "美国",
+                "restriction_reason": null,
+                "gpt_recommended": false,
+                "grok_recommended": false,
+                "open_fee_cents": 100,
+                "min_amount_cents": 1000,
+                "max_amount_cents": 3000000
+            },
+            {
+                "product_code": "11107407P",
+                "name": "卡BIN-486555",
+                "network": "Visa",
+                "issuing_area": "美国",
+                "restriction_reason": null,
+                "gpt_recommended": false,
+                "grok_recommended": false,
+                "open_fee_cents": 100,
+                "min_amount_cents": 1000,
+                "max_amount_cents": 3000000
+            },
+            {
+                "product_code": "11108407P",
+                "name": "卡BIN-428852",
+                "network": "Visa",
+                "issuing_area": "美国",
+                "restriction_reason": null,
+                "gpt_recommended": false,
+                "grok_recommended": false,
+                "open_fee_cents": 100,
+                "min_amount_cents": 3000,
+                "max_amount_cents": 3000000
+            },
+            {
+                "product_code": "P5378OX",
+                "name": "卡BIN-537872（限制微信）",
+                "network": "Mastercard",
+                "issuing_area": "美国",
+                "restriction_reason": null,
+                "gpt_recommended": false,
+                "grok_recommended": false,
+                "open_fee_cents": 100,
+                "min_amount_cents": 2000,
+                "max_amount_cents": 5000000
+            },
+            {
+                "product_code": "P5378XB",
+                "name": "卡BIN-537882（限制微信）",
+                "network": "Mastercard",
+                "issuing_area": "美国",
+                "restriction_reason": null,
+                "gpt_recommended": false,
+                "grok_recommended": false,
+                "open_fee_cents": 100,
+                "min_amount_cents": 2000,
+                "max_amount_cents": 5000000
+            },
+            {
+                "product_code": "P5556XV",
+                "name": "卡BIN-555659",
+                "network": "Mastercard",
+                "issuing_area": "美国",
+                "restriction_reason": null,
+                "gpt_recommended": false,
+                "grok_recommended": false,
+                "open_fee_cents": 100,
+                "min_amount_cents": 2000,
+                "max_amount_cents": 5000000
+            },
+            {
+                "product_code": "PP5450RC",
+                "name": "卡BIN-545020",
+                "network": "Mastercard",
+                "issuing_area": "香港",
+                "restriction_reason": "香港卡仅支持 Grok 订阅充值，请选择其他卡片",
+                "gpt_recommended": false,
+                "grok_recommended": false,
+                "open_fee_cents": 100,
+                "min_amount_cents": 2100,
+                "max_amount_cents": 5000000
+            },
+            {
+                "product_code": "PP5583RC",
+                "name": "卡BIN-558325",
+                "network": "Mastercard",
+                "issuing_area": "香港",
+                "restriction_reason": "香港卡仅支持 Grok 订阅充值，请选择其他卡片",
+                "gpt_recommended": false,
+                "grok_recommended": false,
+                "open_fee_cents": 100,
+                "min_amount_cents": 2000,
+                "max_amount_cents": 5000000
+            },
+            {
+                "product_code": "XL474613",
+                "name": "卡BIN-474613",
+                "network": "Visa",
+                "issuing_area": "美国",
+                "restriction_reason": null,
+                "gpt_recommended": false,
+                "grok_recommended": false,
+                "open_fee_cents": 100,
+                "min_amount_cents": 1000,
+                "max_amount_cents": 5000000
+            }
+        ],
+        "fx_buffer_bps": 300,
+        "user_pool_enabled": false
+    }
+}

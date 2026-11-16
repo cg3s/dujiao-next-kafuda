@@ -38,6 +38,11 @@ const originalManualStockTotal = ref<number | null>(null)
 const paymentChannels = ref<AdminPaymentChannel[]>([])
 const editingIsMapped = ref(false)
 const initialCategoryID = ref<number | null>(null)
+const catalogBusy = ref(false)
+const catalogStale = ref(true)
+const catalogSyncedAt = ref('')
+const directAvailability = ref<Record<string, boolean>>({})
+let catalogRequest = 0
 const newTag = ref('')
 const currentLang = ref('zh-CN')
 
@@ -465,7 +470,7 @@ const normalizeSKUsForSubmit = () => {
     seenCode.add(codeKey)
 
     const priceAmount = Number(item.price_amount)
-    if (!Number.isFinite(priceAmount) || priceAmount <= 0) {
+    if (!Number.isFinite(priceAmount) || (priceAmount <= 0 && !(isDirect.value && !item.is_active && priceAmount === 0))) {
       throw new Error(t('admin.products.errors.skuPriceInvalid', { index: index + 1 }))
     }
 
@@ -486,7 +491,7 @@ const normalizeSKUsForSubmit = () => {
     }
   })
 
-  if (!normalized.some((item) => item.is_active)) {
+  if (!isDirect.value && !normalized.some((item) => item.is_active)) {
     throw new Error(t('admin.products.errors.skuNeedActive'))
   }
   return normalized
@@ -574,7 +579,54 @@ const populateForm = (product: AdminProduct) => {
     sort_order: Number(product.sort_order || 0),
     manual_form_schema: parseManualFormSchemaForEdit(product.manual_form_schema),
   })
+  if (isDirect.value) void loadDirectCatalog(false)
 }
+
+const isDirect = computed(() => form.fulfillment_type === 'kafuda_gpt_direct')
+
+type DirectOption = { sku_code: string; plan: string; country: string; label: string; available: boolean }
+
+const loadDirectCatalog = async (sync: boolean) => {
+  const request = ++catalogRequest
+  catalogBusy.value = true
+  try {
+    const response = sync ? await adminAPI.syncKafudaCatalog() : await adminAPI.getKafudaCatalog()
+    if (request !== catalogRequest || !props.modelValue || !isDirect.value) return
+    const catalog = response.data.data
+    const options: DirectOption[] = Array.isArray(catalog.options) ? catalog.options : []
+    const old = new Map(form.skus.filter((item) => item.sku_code.startsWith('KGPT_')).map((item) => [item.sku_code, item]))
+    const available: Record<string, boolean> = {}
+    const merged = options.map((option) => {
+      available[option.sku_code] = option.available
+      const existing = old.get(option.sku_code)
+      old.delete(option.sku_code)
+      return {
+        ...createSKUFormItem({ sku_code: option.sku_code, is_active: false }),
+        ...existing,
+        spec_values: { ...createEmptyLocaleText(), plan: option.plan, country: option.country },
+        is_active: Boolean(existing?.is_active && option.available),
+      }
+    })
+    for (const item of old.values()) merged.push({ ...item, is_active: false })
+    form.skus = merged
+    directAvailability.value = available
+    catalogStale.value = Boolean(catalog.stale)
+    catalogSyncedAt.value = catalog.synced_at ? new Date(catalog.synced_at).toLocaleString() : ''
+  } catch (error) {
+    if (!isNotifiedError(error)) notifyError(t('kafuda.failed'))
+  } finally {
+    if (request === catalogRequest) catalogBusy.value = false
+  }
+}
+
+watch(() => form.fulfillment_type, () => {
+  if (!isDirect.value) { catalogRequest++; catalogBusy.value = false; return }
+  form.purchase_type = 'member'
+  form.min_purchase_quantity = 1
+  form.max_purchase_quantity = 1
+  form.stock_display_mode = 'hidden'
+  void loadDirectCatalog(false)
+})
 
 const closeModal = () => {
   emit('update:modelValue', false)
@@ -806,7 +858,7 @@ watch(
 
           <div class="col-span-1">
             <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.purchaseType') }}</label>
-            <Select v-model="form.purchase_type">
+            <Select v-model="form.purchase_type" :disabled="isDirect">
               <SelectTrigger class="h-9 w-full">
                 <SelectValue :placeholder="t('admin.products.purchaseType.member')" />
               </SelectTrigger>
@@ -839,7 +891,7 @@ watch(
             <p class="mt-1 text-xs text-muted-foreground">{{ t('admin.products.form.maxPurchaseQuantityTip') }}</p>
           </div>
 
-          <div class="col-span-1">
+          <div v-if="!isDirect" class="col-span-1">
             <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.stockDisplayMode') }}</label>
             <Select v-model="form.stock_display_mode">
               <SelectTrigger class="h-9 w-full">
@@ -863,12 +915,13 @@ watch(
               <SelectContent>
                 <SelectItem value="manual">{{ t('admin.products.fulfillmentType.manual') }}</SelectItem>
                 <SelectItem value="auto">{{ t('admin.products.fulfillmentType.auto') }}</SelectItem>
+                <SelectItem value="kafuda_gpt_direct">{{ t('kafuda.type') }}</SelectItem>
               </SelectContent>
             </Select>
             <p v-if="editingIsMapped" class="mt-1 text-xs text-indigo-600">{{ t('admin.products.mappedFulfillmentLocked') }}</p>
           </div>
 
-          <div class="col-span-1">
+          <div v-if="!isDirect" class="col-span-1">
             <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.manualStockTotal') }}</label>
             <Input
               v-model.number="form.manual_stock_total"
@@ -979,11 +1032,17 @@ watch(
                 <p class="text-xs text-muted-foreground mt-1">{{ t('admin.products.form.skuTip') }}</p>
                 <p v-if="editingIsMapped" class="mt-1 text-xs text-indigo-600">{{ t('admin.products.mappedSkuLocked') }}</p>
               </div>
-              <Button v-if="!editingIsMapped" type="button" size="sm" variant="outline" @click="addSKU">
+              <Button v-if="isDirect" type="button" size="sm" variant="outline" :disabled="catalogBusy" @click="loadDirectCatalog(true)">{{ t('kafuda.sync') }}</Button>
+              <Button v-else-if="!editingIsMapped" type="button" size="sm" variant="outline" @click="addSKU">
                 {{ t('admin.products.form.skuAdd') }}
               </Button>
             </div>
 
+            <div v-if="isDirect" class="text-xs text-muted-foreground space-y-2">
+              <p>{{ t('kafuda.tip') }}</p>
+              <p>{{ t('kafuda.lastSync', { time: catalogSyncedAt || t('kafuda.neverSynced') }) }}</p>
+              <p v-if="catalogStale" class="text-amber-600">{{ t('kafuda.stale') }}</p>
+            </div>
             <div v-if="!form.skus.length" class="rounded-lg border border-dashed border-border p-4 text-xs text-muted-foreground">
               {{ t('admin.products.form.skuEmpty') }}
             </div>
@@ -991,19 +1050,23 @@ watch(
             <div v-for="(sku, index) in form.skus" :key="`sku-${index}-${sku.id || 0}`" class="rounded-lg border border-border bg-background p-4 space-y-3">
               <div class="flex items-center justify-between">
                 <div class="text-xs font-medium text-muted-foreground">{{ t('admin.products.form.skuItemTitle', { index: index + 1 }) }}</div>
-                <Button v-if="!editingIsMapped" type="button" size="sm" variant="destructive" @click="removeSKU(index)">
+                <Button v-if="!editingIsMapped && !isDirect" type="button" size="sm" variant="destructive" @click="removeSKU(index)">
                   {{ t('admin.products.form.skuRemove') }}
                 </Button>
               </div>
 
               <div class="grid grid-cols-1 md:grid-cols-6 gap-3">
-                <div class="md:col-span-1">
+                <div v-if="!isDirect" class="md:col-span-1">
                   <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuCode') }}</label>
                   <Input v-model="sku.sku_code" :placeholder="t('admin.products.form.skuCodePlaceholder')" :disabled="editingIsMapped" />
                 </div>
                 <div :class="form.fulfillment_type === 'manual' ? 'md:col-span-1' : 'md:col-span-2'">
                   <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuSpec', { lang: getCurrentLangName() }) }}</label>
-                  <Input v-model="sku.spec_values[currentLang]" :placeholder="t('admin.products.form.skuSpecPlaceholder')" :disabled="editingIsMapped" />
+                  <template v-if="isDirect">
+                    <p class="text-sm">{{ sku.spec_values.plan }} · {{ sku.spec_values.country }}</p>
+                    <p v-if="!directAvailability[sku.sku_code]" class="text-xs text-amber-600">{{ t('kafuda.unavailable') }}</p>
+                  </template>
+                  <Input v-else v-model="sku.spec_values[currentLang]" :placeholder="t('admin.products.form.skuSpecPlaceholder')" :disabled="editingIsMapped" />
                 </div>
                 <div class="md:col-span-1">
                   <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuPrice') }}</label>
@@ -1026,7 +1089,7 @@ watch(
                   </div>
                   <div class="flex items-end">
                     <div class="inline-flex items-center gap-2">
-                      <Switch v-model="sku.is_active" />
+                      <Switch v-model="sku.is_active" :disabled="isDirect && (!directAvailability[sku.sku_code] || sku.price_amount <= 0)" />
                       <Label class="text-sm text-muted-foreground">{{ t('admin.products.form.skuActive') }}</Label>
                     </div>
                   </div>

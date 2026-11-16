@@ -21,6 +21,7 @@ import (
 	externalidentitydomain "github.com/dujiao-next/internal/modules/identity/externalidentity/domain"
 	invitecodedomain "github.com/dujiao-next/internal/modules/identity/invitecode/domain"
 	userdomain "github.com/dujiao-next/internal/modules/identity/user/domain"
+	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	memberleveldomain "github.com/dujiao-next/internal/modules/memberlevel/domain"
 	notificationdomain "github.com/dujiao-next/internal/modules/notification/domain"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
@@ -88,6 +89,9 @@ func AutoMigrate() error {
 		&mappingdomain.Mapping{},
 		&mappingdomain.SKUMapping{},
 		&procurementdomain.Order{},
+		&kafudadomain.Catalog{},
+		&kafudadomain.Recharge{},
+		&kafudadomain.Attempt{},
 		&downstreamcallbackdomain.OrderRef{},
 		&reconciliationdomain.Job{},
 		&reconciliationdomain.Item{},

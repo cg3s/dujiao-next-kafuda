@@ -33,6 +33,22 @@ type Config struct {
 	Captcha      CaptchaConfig      `mapstructure:"captcha"`
 	Web          WebConfig          `mapstructure:"web"`
 	Reseller     ResellerConfig     `mapstructure:"reseller"`
+	KafudaGPT    KafudaGPTConfig    `mapstructure:"kafuda_gpt"`
+}
+
+// KafudaGPTConfig is deployment-only merchant configuration. Closing sales does
+// not disable fulfillment or reconciliation for orders that have already paid.
+type KafudaGPTConfig struct {
+	APIBaseURL              string   `mapstructure:"api_base_url"`
+	APIKey                  string   `mapstructure:"api_key" json:"-"`
+	ProductCode             string   `mapstructure:"product_code"`
+	MaxCostCents            int64    `mapstructure:"max_cost_cents"`
+	AllowedKinds            []string `mapstructure:"allowed_kinds"`
+	SalesEnabled            bool     `mapstructure:"sales_enabled"`
+	ReferenceLookupVerified bool     `mapstructure:"reference_lookup_verified"`
+	CatalogTTLSeconds       int      `mapstructure:"catalog_ttl_seconds"`
+	PollIntervalSeconds     int      `mapstructure:"poll_interval_seconds"`
+	ReviewAfterSeconds      int      `mapstructure:"review_after_seconds"`
 }
 
 // AppConfig 应用级配置
@@ -428,6 +444,16 @@ func Load() *Config {
 	viper.SetDefault("reseller.subdomain_base", "")
 	viper.SetDefault("reseller.self_apply_enabled", true)
 	viper.SetDefault("reseller.settlement_confirm_days", 7)
+	viper.SetDefault("kafuda_gpt.api_base_url", "https://kafuda.com")
+	viper.SetDefault("kafuda_gpt.api_key", "")
+	viper.SetDefault("kafuda_gpt.product_code", "")
+	viper.SetDefault("kafuda_gpt.max_cost_cents", 0)
+	viper.SetDefault("kafuda_gpt.allowed_kinds", []string{"new"})
+	viper.SetDefault("kafuda_gpt.sales_enabled", false)
+	viper.SetDefault("kafuda_gpt.reference_lookup_verified", false)
+	viper.SetDefault("kafuda_gpt.catalog_ttl_seconds", 3600)
+	viper.SetDefault("kafuda_gpt.poll_interval_seconds", 10)
+	viper.SetDefault("kafuda_gpt.review_after_seconds", 900)
 
 	// 环境变量支持
 	viper.AutomaticEnv()                                   // 自动读取环境变量
