@@ -24,6 +24,8 @@ func NewCommerceService(options CommerceOptions) *CommerceService {
 	return &CommerceService{options: options}
 }
 
+// SKUOptions exposes the last known supplier availability for configuration.
+// PurchaseTerms separately enforces freshness before issuing purchase terms.
 func (s *CommerceService) SKUOptions(ctx context.Context) ([]kafudacontract.SKUOption, error) {
 	catalog, err := s.options.Catalog.Cached(ctx)
 	if err != nil {
@@ -34,7 +36,7 @@ func (s *CommerceService) SKUOptions(ctx context.Context) ([]kafudacontract.SKUO
 	}
 	result := make([]kafudacontract.SKUOption, 0, len(catalog.Options))
 	for _, entry := range catalog.Options {
-		result = append(result, kafudacontract.SKUOption{SKUCode: kafudacontract.SKUCode(entry.Plan, entry.Country), Plan: entry.Plan, Country: entry.Country, Label: entry.Label, Available: catalog.Available(entry.Plan, entry.Country, time.Now())})
+		result = append(result, kafudacontract.SKUOption{SKUCode: kafudacontract.SKUCode(entry.Plan, entry.Country), Plan: entry.Plan, Country: entry.Country, Label: entry.Label, Available: catalog.Enabled && entry.Available})
 	}
 	return result, nil
 }

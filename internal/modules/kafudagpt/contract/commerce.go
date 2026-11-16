@@ -7,11 +7,12 @@ import (
 )
 
 type SKUOption struct {
-	SKUCode   string `json:"sku_code"`
-	Plan      string `json:"plan"`
-	Country   string `json:"country"`
-	Label     string `json:"label"`
-	Available bool   `json:"available"`
+	SKUCode string `json:"sku_code"`
+	Plan    string `json:"plan"`
+	Country string `json:"country"`
+	Label   string `json:"label"`
+	// Available reflects supplier listing state. Purchasing also requires a fresh catalog.
+	Available bool `json:"available"`
 }
 
 type PurchaseTerms struct {

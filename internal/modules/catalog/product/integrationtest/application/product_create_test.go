@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	productwrite "github.com/dujiao-next/internal/modules/catalog/product/application/write"
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
@@ -13,7 +14,10 @@ import (
 	categorydomain "github.com/dujiao-next/internal/modules/catalog/category/domain"
 
 	"github.com/dujiao-next/internal/constants"
+	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
+	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/shopspring/decimal"
 )
@@ -325,5 +329,100 @@ func TestDirectProductCostConfirmationSurvivesCatalogMerges(t *testing.T) {
 	product, err = svc.Read.GetAdminByID(fmt.Sprint(product.ID))
 	if err != nil || !product.SKUs[0].DirectCostConfigured || !product.SKUs[0].CostPriceAmount.Equal(decimal.NewFromInt(45)) || !product.SKUs[0].IsActive {
 		t.Fatalf("reactivation lost confirmed cost: %+v, %v", product, err)
+	}
+}
+
+func TestDirectCatalogExpiryPreservesAdministratorConfiguration(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("enabled_%t", enabled), func(t *testing.T) {
+			svc, db := newProductServiceForTest(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			if err := db.AutoMigrate(&kafudadomain.Catalog{}); err != nil {
+				t.Fatal(err)
+			}
+			ctx, now := context.Background(), time.Now().UTC()
+			store := kafudastore.New(db)
+			catalog := &kafudadomain.Catalog{
+				Profile: "default", Enabled: true, SyncedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(time.Hour),
+				Options: []kafudadomain.CatalogOption{{Plan: "plus", Country: "PH", Product: "gpt", Label: "Plus", Available: true}},
+				Cards:   []kafudadomain.CardProduct{{ProductCode: "test-card"}},
+			}
+			if err := store.SaveCatalog(ctx, catalog); err != nil {
+				t.Fatal(err)
+			}
+			policy := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+				Catalog:      kafudaapp.NewCatalogService(store, nil, "default", time.Hour),
+				SalesEnabled: true, ReferenceLookupVerified: true, ProductCode: "test-card",
+				MaxCostCents: 2000, AllowedKinds: []string{"new"}, WorkerReady: func(context.Context) bool { return true },
+			})
+			svc.Write.SetDirectCatalog(policy)
+			if _, err := policy.PurchaseTerms(ctx, "plus", "PH"); err != nil {
+				t.Fatalf("fresh catalog rejected: %v", err)
+			}
+			input := productwrite.CreateProductInput{
+				Slug: "expiry", TitleJSON: map[string]interface{}{"zh-CN": "Direct"},
+				FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+				SKUs: []productwrite.ProductSKUInput{{
+					SKUCode: kafudacontract.SKUCode("plus", "PH"), PriceAmount: decimal.NewFromInt(100),
+					CostPriceAmount: decimal.NewFromInt(45), CostPriceProvided: true, IsActive: &enabled, SortOrder: 23,
+				}},
+			}
+			product, err := svc.Write.Create(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			product, err = svc.Read.GetAdminByID(fmt.Sprint(product.ID))
+			if err != nil || len(product.SKUs) != 1 {
+				t.Fatalf("read created SKU: %v", err)
+			}
+			skuID := product.SKUs[0].ID
+			catalog.SyncedAt, catalog.ExpiresAt = now.Add(-time.Hour), now.Add(-time.Second)
+			if err := store.SaveCatalog(ctx, catalog); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := policy.PurchaseTerms(ctx, "plus", "PH"); !errors.Is(err, kafudaapp.ErrQuoteUnavailable) {
+				t.Fatalf("expired catalog allowed purchase terms: %v", err)
+			}
+			input.SKUs = nil
+			for _, refresh := range []bool{false, true} {
+				if refresh {
+					catalog.SyncedAt, catalog.ExpiresAt = now, now.Add(time.Hour)
+					if err := store.SaveCatalog(ctx, catalog); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
+					t.Fatal(err)
+				}
+				product, err = svc.Read.GetAdminByID(fmt.Sprint(product.ID))
+				if err != nil || len(product.SKUs) != 1 {
+					t.Fatalf("read saved SKU: %v", err)
+				}
+				sku := product.SKUs[0]
+				if sku.ID != skuID || sku.IsActive != enabled || !sku.DirectCostConfigured || !sku.CostPriceAmount.Equal(decimal.NewFromInt(45)) || !sku.PriceAmount.Equal(decimal.NewFromInt(100)) || sku.SortOrder != 23 {
+					t.Fatalf("expiry/refresh changed administrator configuration: %+v", sku)
+				}
+			}
+			catalog.Options[0].Available = false
+			catalog.SyncedAt = now.Add(time.Second)
+			if err := store.SaveCatalog(ctx, catalog); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := policy.PurchaseTerms(ctx, "plus", "PH"); !errors.Is(err, kafudaapp.ErrQuoteUnavailable) {
+				t.Fatalf("unavailable plan allowed purchase terms: %v", err)
+			}
+			if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
+				t.Fatal(err)
+			}
+			product, err = svc.Read.GetAdminByID(fmt.Sprint(product.ID))
+			if err != nil || product.SKUs[0].IsActive {
+				t.Fatalf("confirmed removal did not disable SKU on save: %+v, %v", product, err)
+			}
+		})
 	}
 }
