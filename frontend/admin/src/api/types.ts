@@ -27,6 +27,7 @@ export interface AdminCategory {
 
 // --- Product ---
 export interface AdminProductSKU {
+  direct_cost_configured?: boolean
   id: number
   product_id: number
   sku_code: string

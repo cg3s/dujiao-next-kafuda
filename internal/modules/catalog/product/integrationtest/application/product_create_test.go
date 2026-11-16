@@ -215,6 +215,9 @@ func TestDirectProductCreateKeepsUnconfiguredVariantsDisabled(t *testing.T) {
 			}
 			for _, sku := range product.SKUs {
 				wantActive := configureOne && sku.SKUCode == code
+				if sku.DirectCostConfigured != wantActive {
+					t.Errorf("variant %s cost confirmed = %t, want %t", sku.SKUCode, sku.DirectCostConfigured, wantActive)
+				}
 				if sku.IsActive != wantActive {
 					t.Errorf("variant %s active = %t, want %t", sku.SKUCode, sku.IsActive, wantActive)
 				}
@@ -249,5 +252,78 @@ func TestDirectProductCreateKeepsUnconfiguredVariantsDisabled(t *testing.T) {
 				t.Errorf("persisted product active = %t, want %t", persisted.IsActive, configureOne)
 			}
 		})
+	}
+}
+
+func TestDirectProductCostConfirmationSurvivesCatalogMerges(t *testing.T) {
+	svc, db := newProductServiceForTest(t)
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = pool.Close() })
+	code := kafudacontract.SKUCode("plus", "PH")
+	catalog := &directProductTestCatalog{options: []kafudacontract.SKUOption{{SKUCode: code, Plan: "plus", Country: "PH", Available: true}}}
+	svc.Write.SetDirectCatalog(catalog)
+	active := false
+	input := productwrite.CreateProductInput{
+		Slug: "direct-cost", TitleJSON: map[string]interface{}{"zh-CN": "Direct"},
+		FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+		SKUs:            []productwrite.ProductSKUInput{{SKUCode: code, PriceAmount: decimal.NewFromInt(100), IsActive: &active, SortOrder: 23}},
+	}
+	product, err := svc.Write.Create(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active = true
+	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); !errors.Is(err, productcontract.ErrProductPriceInvalid) {
+		t.Fatalf("unconfirmed default zero allowed activation: %v", err)
+	}
+	input.SKUs[0].CostPriceProvided = true
+	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
+		t.Fatalf("explicit zero cost rejected: %v", err)
+	}
+	product, err = svc.Read.GetAdminByID(fmt.Sprint(product.ID))
+	if err != nil || len(product.SKUs) != 1 {
+		t.Fatalf("read configured SKU: %v", err)
+	}
+	first := product.SKUs[0]
+	if !first.DirectCostConfigured || !first.CostPriceAmount.IsZero() || !first.IsActive {
+		t.Fatalf("explicit zero confirmation was lost: %+v", first)
+	}
+	input.SKUs[0].CostPriceAmount = decimal.NewFromInt(45)
+	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
+		t.Fatal(err)
+	}
+	// A catalog-only save preserves the persisted cost, confirmation, ID and sort.
+	input.SKUs = nil
+	for _, available := range []bool{true, false, true} {
+		catalog.options[0].Available = available
+		if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
+			t.Fatal(err)
+		}
+		product, err = svc.Read.GetAdminByID(fmt.Sprint(product.ID))
+		if err != nil || len(product.SKUs) != 1 {
+			t.Fatalf("read merged SKU: %v", err)
+		}
+		sku := product.SKUs[0]
+		if sku.ID != first.ID || !sku.DirectCostConfigured || !sku.CostPriceAmount.Equal(decimal.NewFromInt(45)) || !sku.PriceAmount.Equal(decimal.NewFromInt(100)) || sku.SortOrder != 23 {
+			t.Fatalf("catalog merge changed administrator configuration: %+v", sku)
+		}
+		if !available && sku.IsActive {
+			t.Fatal("unavailable option stayed active")
+		}
+	}
+	if product.SKUs[0].IsActive {
+		t.Fatal("reappeared option was automatically re-enabled")
+	}
+	input.SKUs = []productwrite.ProductSKUInput{{SKUCode: code, PriceAmount: decimal.NewFromInt(100), IsActive: &active}}
+	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
+		t.Fatalf("omitted cost failed to preserve confirmed cost: %v", err)
+	}
+	product, err = svc.Read.GetAdminByID(fmt.Sprint(product.ID))
+	if err != nil || !product.SKUs[0].DirectCostConfigured || !product.SKUs[0].CostPriceAmount.Equal(decimal.NewFromInt(45)) || !product.SKUs[0].IsActive {
+		t.Fatalf("reactivation lost confirmed cost: %+v, %v", product, err)
 	}
 }

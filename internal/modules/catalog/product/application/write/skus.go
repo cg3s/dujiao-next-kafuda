@@ -135,15 +135,16 @@ func pickSingleModeTargetSKUIndex(skus []productdomain.ProductSKU) int {
 }
 
 type normalizedProductSKU struct {
-	ID               uint
-	SKUCode          string
-	SpecValuesJSON   jsonmap.JSON
-	PriceAmount      money.Amount
-	CostPriceAmount  money.Amount
-	ManualStockTotal int
-	KeepManualStock  bool // 未提交库存：落库时保留现有实时值
-	IsActive         bool
-	SortOrder        int
+	ID                   uint
+	SKUCode              string
+	SpecValuesJSON       jsonmap.JSON
+	PriceAmount          money.Amount
+	CostPriceAmount      money.Amount
+	DirectCostConfigured bool
+	ManualStockTotal     int
+	KeepManualStock      bool // 未提交库存：落库时保留现有实时值
+	IsActive             bool
+	SortOrder            int
 }
 
 func (s *WriteService) normalizeProductSKUInputs(inputs []ProductSKUInput, fulfillmentType string, existingSKUMap map[uint]productdomain.ProductSKU) ([]normalizedProductSKU, decimal.Decimal, int, error) {
@@ -209,15 +210,16 @@ func (s *WriteService) normalizeProductSKUInputs(inputs []ProductSKUInput, fulfi
 		}
 
 		normalized = append(normalized, normalizedProductSKU{
-			ID:               input.ID,
-			SKUCode:          skuCode,
-			SpecValuesJSON:   specValues,
-			PriceAmount:      money.FromDecimal(priceAmount),
-			CostPriceAmount:  money.FromDecimal(costPriceAmount),
-			ManualStockTotal: manualTotal,
-			KeepManualStock:  keepManualStock,
-			IsActive:         isActive,
-			SortOrder:        input.SortOrder,
+			ID:                   input.ID,
+			SKUCode:              skuCode,
+			SpecValuesJSON:       specValues,
+			PriceAmount:          money.FromDecimal(priceAmount),
+			CostPriceAmount:      money.FromDecimal(costPriceAmount),
+			DirectCostConfigured: fulfillmentType == constants.FulfillmentTypeKafudaGPT && input.CostPriceProvided,
+			ManualStockTotal:     manualTotal,
+			KeepManualStock:      keepManualStock,
+			IsActive:             isActive,
+			SortOrder:            input.SortOrder,
 		})
 
 		if isActive {
@@ -298,6 +300,7 @@ func (s *WriteService) applyProductSKUsWithStockGuard(
 			existing.SpecValuesJSON = row.SpecValuesJSON
 			existing.PriceAmount = row.PriceAmount
 			existing.CostPriceAmount = row.CostPriceAmount
+			existing.DirectCostConfigured = row.DirectCostConfigured
 			if !row.KeepManualStock {
 				existing.ManualStockTotal = row.ManualStockTotal
 			}
@@ -316,6 +319,7 @@ func (s *WriteService) applyProductSKUsWithStockGuard(
 			existing.SpecValuesJSON = row.SpecValuesJSON
 			existing.PriceAmount = row.PriceAmount
 			existing.CostPriceAmount = row.CostPriceAmount
+			existing.DirectCostConfigured = row.DirectCostConfigured
 			if !row.KeepManualStock {
 				existing.ManualStockTotal = row.ManualStockTotal
 			}
@@ -333,16 +337,17 @@ func (s *WriteService) applyProductSKUsWithStockGuard(
 			return err
 		}
 		item := productdomain.ProductSKU{
-			ProductID:         productID,
-			SKUCode:           row.SKUCode,
-			SpecValuesJSON:    row.SpecValuesJSON,
-			PriceAmount:       row.PriceAmount,
-			CostPriceAmount:   row.CostPriceAmount,
-			ManualStockTotal:  row.ManualStockTotal,
-			ManualStockLocked: 0,
-			ManualStockSold:   0,
-			IsActive:          row.IsActive,
-			SortOrder:         row.SortOrder,
+			ProductID:            productID,
+			SKUCode:              row.SKUCode,
+			SpecValuesJSON:       row.SpecValuesJSON,
+			PriceAmount:          row.PriceAmount,
+			CostPriceAmount:      row.CostPriceAmount,
+			DirectCostConfigured: row.DirectCostConfigured,
+			ManualStockTotal:     row.ManualStockTotal,
+			ManualStockLocked:    0,
+			ManualStockSold:      0,
+			IsActive:             row.IsActive,
+			SortOrder:            row.SortOrder,
 		}
 		if err := skuRepo.Create(&item); err != nil {
 			return err

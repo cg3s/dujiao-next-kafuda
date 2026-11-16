@@ -1753,6 +1753,7 @@ const messages = {
           skuCodeRequired: '第 {index} 个 SKU 编码不能为空',
           skuCodeDuplicate: 'SKU 编码重复：{code}',
           skuPriceInvalid: '第 {index} 个 SKU 价格必须大于 0',
+          skuCostPriceInvalid: '请为第 {index} 个 SKU 填写有效成本价，可为 0',
           skuNeedActive: '至少需要启用一个 SKU',
         },
         batch: {
@@ -6365,6 +6366,7 @@ const messages = {
           skuCodeRequired: '第 {index} 個 SKU 編碼不能為空',
           skuCodeDuplicate: 'SKU 編碼重複：{code}',
           skuPriceInvalid: '第 {index} 個 SKU 價格必須大於 0',
+          skuCostPriceInvalid: '請為第 {index} 個 SKU 填寫有效成本價，可為 0',
           skuNeedActive: '至少需要啟用一個 SKU',
         },
         batch: {
@@ -10977,6 +10979,7 @@ const messages = {
           skuCodeRequired: 'SKU code is required for item #{index}',
           skuCodeDuplicate: 'Duplicate SKU code: {code}',
           skuPriceInvalid: 'SKU price must be greater than 0 for item #{index}',
+          skuCostPriceInvalid: 'Enter a valid cost price for SKU #{index}. Zero is allowed.',
           skuNeedActive: 'At least one SKU must be active',
         },
         batch: {

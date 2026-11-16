@@ -99,7 +99,7 @@ type SKUFormItem = {
   sku_code: string
   spec_values: Record<string, string>
   price_amount: number
-  cost_price_amount: number
+  cost_price_amount: number | ''
   manual_stock_total: number
   // 打开编辑框时的库存；保存时未改动则不提交，后端保留期间被下单预占后的实时库存
   original_manual_stock_total: number | null
@@ -136,10 +136,10 @@ const resolveEditableSKURows = (product: AdminProduct): SKUFormItem[] => {
   const rows = Array.isArray(product.skus) ? product.skus : []
   const isSingleSpecMode = rows.length === 1 && String(rows[0]?.sku_code || '').trim().toUpperCase() === 'DEFAULT'
   if (isSingleSpecMode) return []
-  return rows.map((item: AdminProductSKU) => createSKUFormItem(item))
+  return rows.map((item: AdminProductSKU) => createSKUFormItem(item, product.fulfillment_type === 'kafuda_gpt_direct'))
 }
 
-const createSKUFormItem = (raw?: Partial<AdminProductSKU>): SKUFormItem => ({
+const createSKUFormItem = (raw?: Partial<AdminProductSKU>, direct = false): SKUFormItem => ({
   id: Number(raw?.id || 0),
   sku_code: String(raw?.sku_code || '').trim(),
   spec_values: {
@@ -153,7 +153,7 @@ const createSKUFormItem = (raw?: Partial<AdminProductSKU>): SKUFormItem => ({
     }, {}),
   },
   price_amount: Number(raw?.price_amount || 0),
-  cost_price_amount: Number(raw?.cost_price_amount || 0),
+  cost_price_amount: direct && !raw?.direct_cost_configured && Number(raw?.cost_price_amount || 0) === 0 ? '' : Number(raw?.cost_price_amount || 0),
   manual_stock_total: toSafeStockTotal(raw?.manual_stock_total),
   original_manual_stock_total: raw?.id ? toSafeStockTotal(raw?.manual_stock_total) : null,
   is_active: raw?.is_active ?? true,
@@ -475,6 +475,11 @@ const normalizeSKUsForSubmit = () => {
     }
 
     const isActive = Boolean(item.is_active)
+    const costPriceAmount = isDirect.value && item.cost_price_amount === '' ? undefined : Number(item.cost_price_amount)
+    if ((isDirect.value && isActive && costPriceAmount === undefined) ||
+        (costPriceAmount !== undefined && (!Number.isFinite(costPriceAmount) || costPriceAmount < 0))) {
+      throw new Error(t('admin.products.errors.skuCostPriceInvalid', { index: index + 1 }))
+    }
     const manualStockTotal = form.fulfillment_type === 'manual' ? toSafeStockTotal(item.manual_stock_total) : 0
     const stockUnchanged = item.id > 0 && form.fulfillment_type === 'manual' && manualStockTotal === item.original_manual_stock_total
     const specValues = normalizeSpecValues(item.spec_values)
@@ -484,7 +489,7 @@ const normalizeSKUsForSubmit = () => {
       sku_code: skuCode,
       spec_values: specValues,
       price_amount: priceAmount,
-      cost_price_amount: Number(item.cost_price_amount) || 0,
+      cost_price_amount: costPriceAmount,
       manual_stock_total: stockUnchanged ? undefined : manualStockTotal,
       is_active: isActive,
       sort_order: Number(item.sort_order) || 0,
@@ -596,12 +601,12 @@ const loadDirectCatalog = async (sync: boolean) => {
     const options: DirectOption[] = Array.isArray(catalog.options) ? catalog.options : []
     const old = new Map(form.skus.filter((item) => item.sku_code.startsWith('KGPT_')).map((item) => [item.sku_code, item]))
     const available: Record<string, boolean> = {}
-    const merged = options.map((option) => {
+    const merged: SKUFormItem[] = options.map((option) => {
       available[option.sku_code] = option.available
       const existing = old.get(option.sku_code)
       old.delete(option.sku_code)
       return {
-        ...createSKUFormItem({ sku_code: option.sku_code, is_active: false }),
+        ...createSKUFormItem({ sku_code: option.sku_code, is_active: false }, true),
         ...existing,
         spec_values: { ...createEmptyLocaleText(), plan: option.plan, country: option.country },
         is_active: Boolean(existing?.is_active && option.available),

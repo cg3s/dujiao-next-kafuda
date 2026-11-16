@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,10 +81,12 @@ func TestPublicProductHTTPPromotionUsesDisplayPrice(t *testing.T) {
 		PriceAmount: money.FromDecimal(decimal.RequireFromString("59.90")),
 		SKUs: []productdomain.ProductSKU{
 			{
-				ID:          21,
-				IsActive:    true,
-				SortOrder:   100,
-				PriceAmount: money.FromDecimal(decimal.RequireFromString("89.90")),
+				ID:                   21,
+				IsActive:             true,
+				SortOrder:            100,
+				PriceAmount:          money.FromDecimal(decimal.RequireFromString("89.90")),
+				CostPriceAmount:      money.FromDecimal(decimal.RequireFromString("25.00")),
+				DirectCostConfigured: true,
 			},
 			{
 				ID:          22,
@@ -101,6 +104,11 @@ func TestPublicProductHTTPPromotionUsesDisplayPrice(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/products/display-price", nil)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
+	for _, field := range []string{"cost_price_amount", "direct_cost_configured"} {
+		if strings.Contains(recorder.Body.String(), field) {
+			t.Fatalf("public response exposed %s", field)
+		}
+	}
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d body=%s", recorder.Code, recorder.Body.String())
 	}

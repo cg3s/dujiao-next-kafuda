@@ -478,6 +478,42 @@ func TestAutoMigrateOwnsKafudaGPTSchema(t *testing.T) {
 	if !db.Migrator().HasIndex("kafuda_gpt_attempts", "idx_kafuda_gpt_active_order") {
 		t.Error("active-attempt uniqueness index missing")
 	}
+	if !db.Migrator().HasColumn(&productdomain.ProductSKU{}, "DirectCostConfigured") {
+		t.Error("direct cost confirmation column missing")
+	}
+}
+
+func TestAutoMigrateAddsDirectCostConfirmationWithoutChangingLegacyPrices(t *testing.T) {
+	db := setupSKUMigrationTestDB(t)
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+	if err := db.Exec(`CREATE TABLE product_skus (
+		id integer PRIMARY KEY,
+		product_id integer NOT NULL,
+		sku_code varchar(64) NOT NULL,
+		price_amount decimal(20,2) NOT NULL DEFAULT 0,
+		cost_price_amount decimal(20,2) NOT NULL DEFAULT 0
+	)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO product_skus (id, product_id, sku_code, price_amount, cost_price_amount) VALUES (?, ?, ?, ?, ?)", 7, 1, "legacy-direct", 100, 45).Error; err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := AutoMigrate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var sku productdomain.ProductSKU
+	if err := db.First(&sku, 7).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sku.DirectCostConfigured || !sku.CostPriceAmount.Equal(decimal.NewFromInt(45)) || !sku.PriceAmount.Equal(decimal.NewFromInt(100)) {
+		t.Fatalf("migration changed legacy price or invented cost confirmation: %+v", sku)
+	}
 }
 
 func TestBackfillPendingOrderRiskIPsHandlesLegacyNullsAndIPv6(t *testing.T) {

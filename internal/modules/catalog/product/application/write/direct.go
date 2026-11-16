@@ -71,14 +71,20 @@ func (s *WriteService) prepareDirectSKUs(inputs []ProductSKUInput, existing map[
 		item := ProductSKUInput{SKUCode: option.SKUCode, PriceAmount: decimal.Zero, CostPriceAmount: decimal.Zero, IsActive: &active}
 		if old, ok := oldByCode[option.SKUCode]; ok {
 			active = old.IsActive
-			item.ID, item.PriceAmount, item.CostPriceAmount, item.CostPriceProvided = old.ID, old.PriceAmount.Decimal, old.CostPriceAmount.Decimal, true
+			item.ID, item.PriceAmount, item.CostPriceAmount = old.ID, old.PriceAmount.Decimal, old.CostPriceAmount.Decimal
+			item.CostPriceProvided, item.SortOrder = old.DirectCostConfigured, old.SortOrder
 		}
 		if input, ok := provided[option.SKUCode]; ok {
 			if item.ID != 0 && input.ID != 0 && item.ID != input.ID {
 				return nil, productcontract.ErrProductSKUInvalid
 			}
-			item.PriceAmount, item.CostPriceAmount, item.CostPriceProvided, item.SortOrder = input.PriceAmount, input.CostPriceAmount, input.CostPriceProvided, input.SortOrder
-			active = input.IsActive != nil && *input.IsActive
+			item.PriceAmount, item.SortOrder = input.PriceAmount, input.SortOrder
+			if input.CostPriceProvided {
+				item.CostPriceAmount, item.CostPriceProvided = input.CostPriceAmount, true
+			}
+			if input.IsActive != nil {
+				active = *input.IsActive
+			}
 		}
 		if !option.Available {
 			active = false
@@ -95,7 +101,7 @@ func (s *WriteService) prepareDirectSKUs(inputs []ProductSKUInput, existing map[
 			continue
 		}
 		active := false
-		result = append(result, ProductSKUInput{ID: old.ID, SKUCode: code, SpecValuesJSON: old.SpecValuesJSON, PriceAmount: old.PriceAmount.Decimal, CostPriceAmount: old.CostPriceAmount.Decimal, CostPriceProvided: true, IsActive: &active, SortOrder: old.SortOrder})
+		result = append(result, ProductSKUInput{ID: old.ID, SKUCode: code, SpecValuesJSON: old.SpecValuesJSON, PriceAmount: old.PriceAmount.Decimal, CostPriceAmount: old.CostPriceAmount.Decimal, CostPriceProvided: old.DirectCostConfigured, IsActive: &active, SortOrder: old.SortOrder})
 		seen[code] = true
 	}
 	for code := range provided {
