@@ -7,12 +7,38 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 )
+
+func TestCatalogHTTPAndParserAcceptRepositorySupplierResponse(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "docs", "gpt_catalog_data.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/gpt/catalog" || r.Header.Get("Authorization") != "Bearer test-only-token" {
+			t.Error("incorrect catalog request")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(data)
+	})
+	payload, err := c.Catalog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	catalog, err := kafudaapp.ParseCatalog(payload, "default", now, now.Add(time.Hour))
+	if err != nil || len(catalog.Options) != 60 || len(catalog.Cards) != 11 || !catalog.Available("plus", "PH", now) {
+		t.Fatalf("supplier fixture was rejected: %+v, %v", catalog, err)
+	}
+}
 
 func testClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()

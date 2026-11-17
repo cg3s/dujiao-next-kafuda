@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
@@ -21,7 +22,11 @@ func NewCatalogService(store kafudacontract.Store, gateway kafudacontract.Gatewa
 }
 
 func (s *CatalogService) Cached(ctx context.Context) (*kafudadomain.Catalog, error) {
-	return s.store.GetCatalog(ctx, s.profile)
+	catalog, err := s.store.GetCatalog(ctx, s.profile)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", kafudacontract.ErrCatalogReadFailed, err)
+	}
+	return catalog, nil
 }
 
 func (s *CatalogService) Sync(ctx context.Context) (*kafudadomain.Catalog, error) {
@@ -40,7 +45,7 @@ func (s *CatalogService) Sync(ctx context.Context) (*kafudadomain.Catalog, error
 		return nil, err
 	}
 	if err := s.store.SaveCatalog(ctx, catalog); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", kafudacontract.ErrCatalogWriteFailed, err)
 	}
 	return s.Cached(ctx)
 }

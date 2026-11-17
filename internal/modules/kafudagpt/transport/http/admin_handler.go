@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
@@ -38,7 +39,7 @@ func (h *AdminHandler) catalog(c *gin.Context, sync bool) {
 		catalog, err = h.Catalog.Cached(c.Request.Context())
 	}
 	if err != nil {
-		ginutil.RespondError(c, response.CodeInternal, "error.kafuda_catalog_failed", nil)
+		respondCatalogFailure(c, err)
 		return
 	}
 	if catalog == nil {
@@ -47,10 +48,52 @@ func (h *AdminHandler) catalog(c *gin.Context, sync bool) {
 	}
 	options, err := h.Policy.SKUOptions(c.Request.Context())
 	if err != nil {
-		ginutil.RespondError(c, response.CodeInternal, "error.kafuda_catalog_failed", nil)
+		respondCatalogFailure(c, err)
 		return
 	}
 	response.Success(c, gin.H{"options": options, "cards": catalog.Cards, "enabled": catalog.Enabled, "synced_at": catalog.SyncedAt, "expires_at": catalog.ExpiresAt, "stale": !time.Now().Before(catalog.ExpiresAt), "configured": h.Configured})
+}
+
+func respondCatalogFailure(c *gin.Context, err error) {
+	key := "error.kafuda_catalog_failed"
+	status := 0
+	var upstream *kafudacontract.APIError
+	switch {
+	case errors.As(err, &upstream):
+		status = upstream.HTTPStatus
+		if status < 100 || status > 599 {
+			status = 0
+		}
+		switch {
+		case status == 401:
+			key = "error.kafuda_catalog_auth_failed"
+		case status == 403:
+			key = "error.kafuda_catalog_forbidden"
+		case status == 404:
+			key = "error.kafuda_catalog_endpoint_missing"
+		case status == 429:
+			key = "error.kafuda_catalog_rate_limited"
+		case status >= 300 && status < 400:
+			key = "error.kafuda_catalog_redirect"
+		case status >= 500:
+			key = "error.kafuda_catalog_upstream_unavailable"
+		case upstream.Code == "invalid_response":
+			key = "error.kafuda_catalog_invalid_response"
+		case status == 0:
+			key = "error.kafuda_catalog_network_failed"
+		}
+	case errors.Is(err, kafudadomain.ErrInvalidCatalog):
+		key = "error.kafuda_catalog_invalid_response"
+	case errors.Is(err, kafudacontract.ErrCatalogReadFailed):
+		key = "error.kafuda_catalog_cache_read_failed"
+	case errors.Is(err, kafudacontract.ErrCatalogWriteFailed):
+		key = "error.kafuda_catalog_cache_write_failed"
+	}
+	// Never log upstream bodies, error codes, URLs, or raw database errors.
+	// Even a syntactically safe upstream error code can contain a credential.
+	ginutil.RequestLog(c).Warnw("kafuda_catalog_failed", "reason", key, "upstream_http_status", status)
+	// An upstream 401 is not an expired administrator login.
+	ginutil.RespondError(c, response.CodeInternal, key, nil)
 }
 
 func RegisterAdminRoutes(group gin.IRoutes, handler *AdminHandler) {

@@ -4,6 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+)
+
+var (
+	ErrCatalogReadFailed  = errors.New("kafuda catalog cache read failed")
+	ErrCatalogWriteFailed = errors.New("kafuda catalog cache write failed")
 )
 
 type SKUOption struct {
