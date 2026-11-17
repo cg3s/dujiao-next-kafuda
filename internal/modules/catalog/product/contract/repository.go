@@ -29,6 +29,7 @@ type ListFilter struct {
 
 // Repository 定义商品领域需要的持久化能力；事务适配保留在 GORM Store。
 type Repository interface {
+	LockByIDs(ids []uint) error
 	List(filter ListFilter) ([]productdomain.Product, int64, error)
 	GetBySlug(slug string, onlyActive bool) (*productdomain.Product, error)
 	GetByID(id string) (*productdomain.Product, error)

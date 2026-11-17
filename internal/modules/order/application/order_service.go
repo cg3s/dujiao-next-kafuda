@@ -2,6 +2,7 @@ package application
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -546,6 +547,32 @@ func (s *OrderService) createOrder(input orderCreateParams) (*orderdomain.Order,
 	err = s.orderStore.WithinTransaction(func(tx ordercontract.Transaction) error {
 		orderStore := tx.Orders()
 		productSKURepo := tx.ProductSKUs()
+		productRepo := tx.Products()
+		productIDs := make([]uint, 0, len(result.Plans))
+		for _, plan := range result.Plans {
+			productIDs = append(productIDs, plan.Item.ProductID)
+		}
+		if err := productRepo.LockByIDs(productIDs); err != nil {
+			return err
+		}
+		for _, plan := range result.Plans {
+			product, err := productRepo.GetByID(strconv.FormatUint(uint64(plan.Item.ProductID), 10))
+			if err != nil {
+				return err
+			}
+			if product == nil || !product.IsActive || productdomain.NormalizeFulfillmentType(product.FulfillmentType) != plan.Item.FulfillmentType {
+				return ErrProductNotAvailable
+			}
+			if plan.Item.SKUID > 0 {
+				sku, err := productSKURepo.GetByID(plan.Item.SKUID)
+				if err != nil {
+					return err
+				}
+				if sku == nil || !sku.IsActive || sku.ProductID != plan.Item.ProductID {
+					return ErrProductNotAvailable
+				}
+			}
+		}
 		if s.riskControlSvc != nil && !input.SkipRiskControl {
 			if err := s.riskControlSvc.CheckPendingOrderAllowed(buildRiskCheckInput(input, false), input.RiskCheckResult, orderStore); err != nil {
 				return err
@@ -708,6 +735,9 @@ func (s *OrderService) createOrder(input orderCreateParams) (*orderdomain.Order,
 			if errors.Is(err, riskErr) {
 				return nil, err
 			}
+		}
+		if errors.Is(err, ErrProductNotAvailable) {
+			return nil, ErrProductNotAvailable
 		}
 		if errors.Is(err, ErrCardSecretInsufficient) {
 			return nil, ErrCardSecretInsufficient

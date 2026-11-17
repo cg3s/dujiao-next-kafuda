@@ -267,6 +267,17 @@ func (r *ProductStore) ListByIDs(ids []uint) ([]productdomain.Product, error) {
 	return products, nil
 }
 
+// LockByIDs must be called on a transaction-bound store. Stable ordering keeps
+// multi-product checkout locks consistent with product configuration writes.
+func (r *ProductStore) LockByIDs(ids []uint) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	var rows []productdomain.Product
+	return r.db.Select("id").Where("deleted_at IS NULL AND id IN ?", ids).
+		Order("id ASC").Clauses(clause.Locking{Strength: "UPDATE"}).Find(&rows).Error
+}
+
 // Create 创建商品
 func (r *ProductStore) Create(product *productdomain.Product) error {
 	return r.db.Create(product).Error

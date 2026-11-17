@@ -7,6 +7,7 @@ import (
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	"github.com/dujiao-next/internal/modules/catalog/product/manualform"
+	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/jsonslice"
 	"github.com/dujiao-next/internal/shared/money"
@@ -97,8 +98,9 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 	if fulfillmentType == "" {
 		return nil, productcontract.ErrFulfillmentInvalid
 	}
-	if fulfillmentType != originalFulfillmentType && (fulfillmentType == constants.FulfillmentTypeKafudaGPT || originalFulfillmentType == constants.FulfillmentTypeKafudaGPT) {
-		if err := s.validateDirectTypeChange(product); err != nil {
+	directTypeChange := fulfillmentType != originalFulfillmentType && (fulfillmentType == constants.FulfillmentTypeKafudaGPT || originalFulfillmentType == constants.FulfillmentTypeKafudaGPT)
+	if directTypeChange {
+		if err := validateDirectTypeChange(product, TransactionRepositories{Orders: s.orders, SKUs: s.skus, CardSecrets: s.cardSecrets}); err != nil {
 			return nil, err
 		}
 	}
@@ -169,10 +171,25 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 		singleSKUStock = &manualStockTotal
 	}
 
-	if err := s.transactions.WithinTransaction(func(repositories TransactionRepositories) error {
+	write := func(repositories TransactionRepositories) error {
 		productRepo := repositories.Products
 		skuRepo := repositories.SKUs
 		cardSecretRepo := repositories.CardSecrets
+		if err := productRepo.LockByIDs([]uint{product.ID}); err != nil {
+			return err
+		}
+		current, err := productRepo.GetByID(id)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.FulfillmentType != originalFulfillmentType {
+			return productcontract.ErrFulfillmentInvalid
+		}
+		if directTypeChange {
+			if err := validateDirectTypeChange(current, repositories); err != nil {
+				return err
+			}
+		}
 		if len(normalizedSKUs) > 0 {
 			if err := s.applyProductSKUsWithStockGuard(skuRepo, cardSecretRepo, product.ID, fulfillmentType, normalizedSKUs); err != nil {
 				return err
@@ -206,7 +223,17 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 			return err
 		}
 		return nil
-	}); err != nil {
+	}
+	if transactions, ok := s.orders.(OrderTransactions); ok {
+		err = transactions.WithinTransaction(func(tx ordercontract.Transaction) error {
+			return write(TransactionRepositories{Products: tx.Products(), SKUs: tx.ProductSKUs(), CardSecrets: tx.CardSecrets(), Orders: tx.Orders()})
+		})
+	} else if directTypeChange {
+		return nil, productcontract.ErrFulfillmentInvalid
+	} else {
+		err = s.transactions.WithinTransaction(write)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return s.products.GetByID(id)

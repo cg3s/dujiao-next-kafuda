@@ -8,11 +8,15 @@ import (
 	"testing"
 
 	cardsecretdomain "github.com/dujiao-next/internal/modules/cardsecret/domain"
+	cardsecretgormstore "github.com/dujiao-next/internal/modules/cardsecret/infrastructure/gormstore"
 	productwrite "github.com/dujiao-next/internal/modules/catalog/product/application/write"
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
+	productgormstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
+	ordergormstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
 
 	categorydomain "github.com/dujiao-next/internal/modules/catalog/category/domain"
 
@@ -21,6 +25,91 @@ import (
 	"github.com/dujiao-next/internal/shared/money"
 	"github.com/shopspring/decimal"
 )
+
+type productUpdateTransactionHook struct {
+	ordercontract.Store
+	before func()
+}
+
+func (s productUpdateTransactionHook) WithinTransaction(fn func(ordercontract.Transaction) error) error {
+	s.before()
+	return s.Store.WithinTransaction(fn)
+}
+
+func TestDirectTypeChangeRechecksDataAfterPreflight(t *testing.T) {
+	for _, change := range []string{"order", "card", "sku_stock", "product_stock", "mapped", "type", "stale_edit"} {
+		t.Run(change, func(t *testing.T) {
+			_, db := newProductServiceForTest(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			product := productdomain.Product{Slug: "preflight", TitleJSON: jsonmap.JSON{"zh-CN": "preflight"}, FulfillmentType: constants.FulfillmentTypeAuto, PriceAmount: money.FromDecimal(decimal.NewFromInt(10))}
+			if err := db.Create(&product).Error; err != nil {
+				t.Fatal(err)
+			}
+			sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: productdomain.DefaultSKUCode, PriceAmount: product.PriceAmount}
+			if err := db.Create(&sku).Error; err != nil {
+				t.Fatal(err)
+			}
+			var before productdomain.Product
+			var beforeSKUs []productdomain.ProductSKU
+			orders := productUpdateTransactionHook{Store: ordergormstore.New(db, "test-guest-credential-secret-with-32-bytes"), before: func() {
+				var err error
+				switch change {
+				case "order":
+					err = db.Create(&orderdomain.OrderItem{OrderID: 99, ProductID: product.ID, SKUID: sku.ID, TitleJSON: product.TitleJSON, FulfillmentType: product.FulfillmentType}).Error
+				case "card":
+					err = db.Create(&cardsecretdomain.Secret{ProductID: product.ID, SKUID: sku.ID, Secret: "late-card", Status: cardsecretdomain.StatusAvailable}).Error
+				case "sku_stock":
+					err = db.Model(&sku).Update("manual_stock_locked", 1).Error
+				case "product_stock":
+					err = db.Model(&product).Update("manual_stock_sold", 1).Error
+				case "mapped":
+					err = db.Model(&product).Update("is_mapped", true).Error
+				case "type", "stale_edit":
+					err = db.Model(&product).Update("fulfillment_type", constants.FulfillmentTypeManual).Error
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := db.First(&before, product.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Where("product_id = ?", product.ID).Find(&beforeSKUs).Error; err != nil {
+					t.Fatal(err)
+				}
+			}}
+			svc := productwrite.NewWriteService(productwrite.Options{Products: productgormstore.NewProductStore(db), SKUs: productgormstore.NewSKUStore(db), CardSecrets: cardsecretgormstore.New(db), Orders: orders})
+			svc.SetDirectCatalog(&directProductTestCatalog{options: []kafudacontract.SKUOption{{SKUCode: kafudacontract.SKUCode("plus", "PH"), Plan: "plus", Country: "PH", Available: true}}})
+			target := constants.FulfillmentTypeKafudaGPT
+			if change == "stale_edit" {
+				target = constants.FulfillmentTypeAuto
+			}
+			_, err = svc.Update(fmt.Sprint(product.ID), productwrite.CreateProductInput{Slug: product.Slug, TitleJSON: product.TitleJSON, FulfillmentType: target, PriceAmount: decimal.NewFromInt(10)})
+			want := productcontract.ErrFulfillmentInvalid
+			if change == "card" {
+				want = productcontract.ErrProductSKUHasCardSecretStock
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("expected transaction recheck rejection %v, got %v", want, err)
+			}
+			var after productdomain.Product
+			var afterSKUs []productdomain.ProductSKU
+			if err := db.First(&after, product.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Where("product_id = ?", product.ID).Find(&afterSKUs).Error; err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(beforeSKUs, afterSKUs) {
+				t.Fatal("rejected conversion changed product or SKUs")
+			}
+		})
+	}
+}
 
 func TestDirectTypeChangePreservesIncompatibleProductData(t *testing.T) {
 	for _, test := range []struct {

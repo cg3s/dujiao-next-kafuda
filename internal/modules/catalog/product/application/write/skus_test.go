@@ -314,6 +314,8 @@ func newSyncSingleSKURepo(t *testing.T) SKURepository {
 
 type formProductRepo struct{ product productdomain.Product }
 
+func (r *formProductRepo) LockByIDs([]uint) error { return nil }
+
 func (r *formProductRepo) GetByID(string) (*productdomain.Product, error) {
 	p := r.product
 	return &p, nil

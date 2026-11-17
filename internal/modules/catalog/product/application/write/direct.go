@@ -9,18 +9,18 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func (s *WriteService) validateDirectTypeChange(product *productdomain.Product) error {
-	if product.IsMapped || product.ManualStockTotal != 0 || product.ManualStockLocked != 0 || product.ManualStockSold != 0 || s.orders == nil || s.skus == nil || s.cardSecrets == nil {
+func validateDirectTypeChange(product *productdomain.Product, repositories TransactionRepositories) error {
+	if product.IsMapped || product.ManualStockTotal != 0 || product.ManualStockLocked != 0 || product.ManualStockSold != 0 || repositories.Orders == nil || repositories.SKUs == nil || repositories.CardSecrets == nil {
 		return productcontract.ErrFulfillmentInvalid
 	}
-	count, err := s.orders.CountOrderItemsByProduct(product.ID)
+	count, err := repositories.Orders.CountOrderItemsByProduct(product.ID)
 	if err != nil {
 		return err
 	}
 	if count != 0 {
 		return productcontract.ErrFulfillmentInvalid
 	}
-	skus, err := s.skus.ListByProduct(product.ID, false)
+	skus, err := repositories.SKUs.ListByProduct(product.ID, false)
 	if err != nil {
 		return err
 	}
@@ -31,7 +31,7 @@ func (s *WriteService) validateDirectTypeChange(product *productdomain.Product) 
 	}
 	// Card secrets remain associated with their original product even if a
 	// previous edit changed its fulfillment type. Inspect every source type.
-	total, available, used, err := s.cardSecrets.CountByProduct(product.ID, 0)
+	total, available, used, err := repositories.CardSecrets.CountByProduct(product.ID, 0)
 	if err != nil {
 		return err
 	}

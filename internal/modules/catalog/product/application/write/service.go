@@ -2,6 +2,7 @@ package productwrite
 
 import (
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
 
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
@@ -11,6 +12,7 @@ import (
 
 // ProductRepository 是商品创建和更新所需的最小持久化端口。
 type ProductRepository interface {
+	LockByIDs(ids []uint) error
 	GetByID(id string) (*productdomain.Product, error)
 	Create(item *productdomain.Product) error
 	Update(item *productdomain.Product) error
@@ -44,9 +46,16 @@ type CardSecretStockRepository interface {
 
 // TransactionRepositories 是一次商品写事务内绑定的仓储集合。
 type TransactionRepositories struct {
+	Orders      interface{ CountOrderItemsByProduct(uint) (int64, error) }
 	Products    ProductRepository
 	SKUs        SKURepository
 	CardSecrets CardSecretStockRepository
+}
+
+// OrderTransactions binds order-history and inventory checks to the same write
+// transaction as the product lock, including when SQLite has one connection.
+type OrderTransactions interface {
+	WithinTransaction(func(ordercontract.Transaction) error) error
 }
 
 // UnitOfWork 隐藏具体数据库和事务对象，不向 Application 暴露 GORM。
