@@ -3,9 +3,11 @@ package integrationtest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -504,5 +506,151 @@ func TestBatchImportUsesCategoryMarkupWithParentInheritance(t *testing.T) {
 	}
 	if mapping.UpstreamCategoryID != 10 {
 		t.Fatalf("expected mapping upstream category 10, got %d", mapping.UpstreamCategoryID)
+	}
+}
+
+type unmapTransactionHook struct {
+	mappingcontract.UnitOfWork
+	before func()
+}
+
+func (u unmapTransactionHook) WithinTransaction(fn func(mappingcontract.ImportRepositories) error) error {
+	u.before()
+	return u.UnitOfWork.WithinTransaction(fn)
+}
+
+func TestDeleteMappingUsesCurrentProductAndRollsBackFailures(t *testing.T) {
+	for _, scenario := range []string{"upstream", "manual", "direct_after_read", "mapping_deleted", "mapping_reassigned", "product_missing", "fail_sku_mapping", "fail_product", "fail_mapping"} {
+		t.Run(scenario, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:unmap_%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			if err := db.AutoMigrate(&productdomain.Product{}, &productdomain.ProductSKU{}, &mappingdomain.Mapping{}, &mappingdomain.SKUMapping{}); err != nil {
+				t.Fatal(err)
+			}
+			product := productdomain.Product{Slug: "unmap", TitleJSON: jsonmap.JSON{"zh-CN": "unmap"}, FulfillmentType: constants.FulfillmentTypeUpstream, IsMapped: true, IsActive: true}
+			if scenario == "manual" {
+				product.FulfillmentType = constants.FulfillmentTypeManual
+			}
+			if err := db.Create(&product).Error; err != nil {
+				t.Fatal(err)
+			}
+			sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: "sku", IsActive: true}
+			if err := db.Create(&sku).Error; err != nil {
+				t.Fatal(err)
+			}
+			mapping := mappingdomain.Mapping{LocalProductID: product.ID, ConnectionID: 1, UpstreamProductID: 1}
+			if err := db.Create(&mapping).Error; err != nil {
+				t.Fatal(err)
+			}
+			skuMapping := mappingdomain.SKUMapping{ProductMappingID: mapping.ID, LocalSKUID: sku.ID, UpstreamSKUID: 1}
+			if err := db.Create(&skuMapping).Error; err != nil {
+				t.Fatal(err)
+			}
+			products := productgormstore.NewProductStore(db)
+			mappings := mappinggormstore.NewMappingStore(db)
+			unit := &mappingImportUoW{products: products, skus: productgormstore.NewSKUStore(db), mappings: mappings, skuMappings: mappinggormstore.NewSKUMappingStore(db)}
+			injected := errors.New("injected unmap failure")
+			var beforeSKU productdomain.ProductSKU
+			var beforeProduct productdomain.Product
+			var beforeMapping mappingdomain.Mapping
+			var beforeSKUMapping mappingdomain.SKUMapping
+			uow := unmapTransactionHook{UnitOfWork: unit, before: func() {
+				switch scenario {
+				case "direct_after_read":
+					if err := db.Model(&product).Updates(map[string]interface{}{"fulfillment_type": constants.FulfillmentTypeKafudaGPT, "is_mapped": false}).Error; err != nil {
+						t.Fatal(err)
+					}
+				case "mapping_deleted":
+					if err := mappings.Delete(mapping.ID); err != nil {
+						t.Fatal(err)
+					}
+				case "mapping_reassigned":
+					if err := db.Model(&mapping).Update("local_product_id", product.ID+100).Error; err != nil {
+						t.Fatal(err)
+					}
+				case "product_missing":
+					if err := db.Model(&product).Update("deleted_at", time.Now()).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := db.Unscoped().First(&beforeProduct, product.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.First(&beforeMapping, mapping.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.First(&beforeSKUMapping, skuMapping.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.First(&beforeSKU, sku.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				failTable := map[string]string{"fail_sku_mapping": "sku_mappings", "fail_product": "products", "fail_mapping": "product_mappings"}[scenario]
+				if failTable != "" {
+					if err := db.Callback().Update().Before("gorm:update").Register("fail_unmap", func(tx *gorm.DB) {
+						if tx.Statement.Table == failTable {
+							tx.AddError(injected)
+						}
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}}
+			svc, err := mappingapp.NewService(mappingapp.Options{Mappings: mappings, Products: products, Media: adminNoopLocalMediaRecorder{}, Transactions: uow})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = svc.Delete(mapping.ID)
+			var afterProduct productdomain.Product
+			var afterMapping mappingdomain.Mapping
+			var afterSKUMapping mappingdomain.SKUMapping
+			var afterSKU productdomain.ProductSKU
+			for _, row := range []interface{}{&afterProduct, &afterMapping, &afterSKUMapping, &afterSKU} {
+				if err := db.Unscoped().First(row, 1).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "mapping_deleted" || scenario == "mapping_reassigned" || len(scenario) > 5 && scenario[:5] == "fail_" {
+				want := injected
+				if scenario == "mapping_deleted" || scenario == "mapping_reassigned" {
+					want = mappingcontract.ErrMappingNotFound
+				}
+				if !errors.Is(err, want) {
+					t.Fatalf("expected %v, got %v", want, err)
+				}
+				if !reflect.DeepEqual(beforeProduct, afterProduct) || !reflect.DeepEqual(beforeMapping, afterMapping) || !reflect.DeepEqual(beforeSKUMapping, afterSKUMapping) {
+					t.Fatal("failed unmap left partial changes")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if afterMapping.DeletedAt == nil || afterSKUMapping.DeletedAt == nil {
+					t.Fatal("mapping rows not deleted together")
+				}
+				if scenario == "upstream" {
+					if afterProduct.IsActive || afterProduct.IsMapped || afterProduct.FulfillmentType != constants.FulfillmentTypeManual {
+						t.Fatal("upstream product not safely detached")
+					}
+				} else if scenario == "manual" {
+					if !afterProduct.IsActive || afterProduct.IsMapped || afterProduct.FulfillmentType != constants.FulfillmentTypeManual {
+						t.Fatal("manual product state changed unexpectedly")
+					}
+				} else if !reflect.DeepEqual(beforeProduct, afterProduct) {
+					t.Fatal("detachment modified a converted or deleted product")
+				}
+			}
+			if !reflect.DeepEqual(beforeSKU, afterSKU) {
+				t.Fatal("detachment modified SKU stock or prices")
+			}
+		})
 	}
 }

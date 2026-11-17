@@ -69,8 +69,10 @@ type CategoryRepository interface {
 	Restore(category *categorydomain.Category) error
 }
 
-// ImportTxProductRepository 是导入事务内的本地商品写入端口。
+// ImportTxProductRepository 是映射写事务内的本地商品端口；解绑时先锁定并复核商品。
 type ImportTxProductRepository interface {
+	LockByIDs(ids []uint) error
+	GetByID(id string) (*productdomain.Product, error)
 	Create(item *productdomain.Product) error
 	QuickUpdate(id string, fields map[string]interface{}) error
 }
@@ -82,11 +84,14 @@ type ImportTxSKURepository interface {
 
 // ImportTxMappingRepository 是导入事务内的映射写入端口。
 type ImportTxMappingRepository interface {
+	GetByID(id uint) (*mappingdomain.Mapping, error)
+	Delete(id uint) error
 	Create(mapping *mappingdomain.Mapping) error
 }
 
 // ImportTxSKUMappingRepository 是导入事务内的 SKU 映射写入端口。
 type ImportTxSKUMappingRepository interface {
+	DeleteByProductMapping(productMappingID uint) error
 	Create(mapping *mappingdomain.SKUMapping) error
 }
 
@@ -98,7 +103,7 @@ type ImportRepositories struct {
 	SKUMappings ImportTxSKUMappingRepository
 }
 
-// UnitOfWork 是映射导入的事务边界。
+// UnitOfWork 是映射导入与解绑的事务边界。
 type UnitOfWork interface {
 	WithinTransaction(fn func(ImportRepositories) error) error
 }

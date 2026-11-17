@@ -100,25 +100,44 @@ func (s *Service) Delete(id uint) error {
 		return mappingcontract.ErrMappingNotFound
 	}
 
-	// 删除 SKU 映射
-	if err := s.skuMappings.DeleteByProductMapping(id); err != nil {
-		return err
-	}
-
-	// 还原本地商品状态：取消映射标记、交付类型改回 manual、自动下架
-	if mapping.LocalProductID > 0 {
-		localProduct, err := s.products.GetByID(strconv.FormatUint(uint64(mapping.LocalProductID), 10))
-		if err == nil && localProduct != nil {
-			localProduct.IsMapped = false
-			if localProduct.FulfillmentType == constants.FulfillmentTypeUpstream {
-				localProduct.FulfillmentType = constants.FulfillmentTypeManual
-				localProduct.IsActive = false // 下架，防止用户下单后无法交付
-			}
-			_ = s.products.Update(localProduct)
+	return s.transactions.WithinTransaction(func(repos mappingcontract.ImportRepositories) error {
+		if err := repos.Products.LockByIDs([]uint{mapping.LocalProductID}); err != nil {
+			return err
 		}
-	}
-
-	return s.mappings.Delete(id)
+		current, err := repos.Mappings.GetByID(id)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.LocalProductID != mapping.LocalProductID {
+			return mappingcontract.ErrMappingNotFound
+		}
+		if err := repos.SKUMappings.DeleteByProductMapping(id); err != nil {
+			return err
+		}
+		if current.LocalProductID > 0 {
+			productID := strconv.FormatUint(uint64(current.LocalProductID), 10)
+			localProduct, err := repos.Products.GetByID(productID)
+			if err != nil {
+				return err
+			}
+			if localProduct != nil {
+				fields := map[string]interface{}{}
+				if localProduct.IsMapped {
+					fields["is_mapped"] = false
+				}
+				if localProduct.FulfillmentType == constants.FulfillmentTypeUpstream {
+					fields["fulfillment_type"] = constants.FulfillmentTypeManual
+					fields["is_active"] = false
+				}
+				if len(fields) > 0 {
+					if err := repos.Products.QuickUpdate(productID, fields); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return repos.Mappings.Delete(id)
+	})
 }
 
 // GetSKUMappings 获取映射的 SKU 映射列表
