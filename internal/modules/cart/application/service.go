@@ -54,6 +54,15 @@ func (s *Service) ListByUser(userID uint) ([]ItemDetail, error) {
 			}
 			product = p
 		}
+		// Direct products are purchased individually through the storefront.
+		// Discard cart rows left by older requests or a fulfillment-type change
+		// before resolving SKUs or applying any inventory/pricing rules.
+		if product != nil && strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeKafudaGPT {
+			if err := s.cartRepo.DeleteByUserProductSKU(userID, item.ProductID, item.SKUID); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if product == nil || !product.IsActive {
 			_ = s.cartRepo.DeleteByUserProductSKU(userID, item.ProductID, item.SKUID)
 			continue
@@ -122,6 +131,9 @@ func (s *Service) UpsertItem(input UpsertItemInput) error {
 	}
 	if product == nil || !product.IsActive {
 		return contract.ErrProductUnavailable
+	}
+	if strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeKafudaGPT {
+		return contract.ErrFulfillmentInvalid
 	}
 	if err := productdomain.ValidatePurchaseQuantity(product, input.Quantity); err != nil {
 		return err

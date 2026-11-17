@@ -2,6 +2,9 @@ package gormstore
 
 import (
 	"fmt"
+	"github.com/dujiao-next/internal/constants"
+	cartapp "github.com/dujiao-next/internal/modules/cart/application"
+	productgormstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
 	"testing"
 	"time"
 
@@ -12,6 +15,64 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestCartServiceRemovesLegacyDirectRowsOnlyForCurrentUser(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		for _, skuID := range []uint{0, 19} {
+			t.Run(fmt.Sprintf("active_%t/sku_%d", active, skuID), func(t *testing.T) {
+				repo, db := setupCartRepositoryTest(t)
+				pool, err := db.DB()
+				if err != nil {
+					t.Fatal(err)
+				}
+				pool.SetMaxOpenConns(1)
+				t.Cleanup(func() { _ = pool.Close() })
+				product := productdomain.Product{Slug: "legacy-direct", TitleJSON: jsonmap.JSON{"zh-CN": "legacy-direct"}, FulfillmentType: constants.FulfillmentTypeKafudaGPT, IsActive: true}
+				if err := db.Create(&product).Error; err != nil {
+					t.Fatal(err)
+				}
+				if !active {
+					if err := db.Model(&product).Update("is_active", false).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Simulate rows created before the fulfillment type changed.
+				for _, uid := range []uint{3, 4} {
+					if err := db.Create(&domain.Item{UserID: uid, ProductID: product.ID, SKUID: skuID, Quantity: 1, FulfillmentType: constants.FulfillmentTypeManual}).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				svc := cartapp.NewService(repo, productgormstore.NewProductStore(db), nil, nil, nil)
+				for range 2 {
+					rows, err := svc.ListByUser(3)
+					if err != nil || len(rows) != 0 {
+						t.Fatalf("Direct legacy row returned: %+v, %v", rows, err)
+					}
+				}
+				for _, uid := range []uint{3, 4} {
+					var rows []domain.Item
+					if err := db.Where("user_id = ? AND deleted_at IS NULL", uid).Find(&rows).Error; err != nil {
+						t.Fatal(err)
+					}
+					want := 0
+					if uid == 4 {
+						want = 1
+					}
+					if len(rows) != want {
+						t.Fatalf("user %d cart rows = %d, want %d", uid, len(rows), want)
+					}
+				}
+				var removed domain.Item
+				if err := db.Where("user_id = ?", 3).First(&removed).Error; err != nil {
+					t.Fatal(err)
+				}
+				if removed.DeletedAt == nil {
+					t.Fatal("legacy row was not soft deleted")
+				}
+			})
+		}
+	}
+}
 
 func setupCartRepositoryTest(t *testing.T) (*Store, *gorm.DB) {
 	t.Helper()
