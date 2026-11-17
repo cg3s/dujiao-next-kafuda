@@ -26,10 +26,13 @@ type OrderHistoryRepository interface {
 }
 
 type ProductDeleteRepository interface {
+	LockByIDs(ids []uint) error
+	GetByID(id string) (*productdomain.Product, error)
 	Delete(id string) error
 }
 
 type CardSecretDeleteRepository interface {
+	CardSecretStockRepository
 	DeleteByProduct(productID uint) error
 }
 
@@ -56,6 +59,7 @@ type ProductMappingDeleteRepository interface {
 
 // DeleteRepositories 是一次商品级联删除事务中绑定的全部窄端口。
 type DeleteRepositories struct {
+	Orders            OrderHistoryRepository
 	Products          ProductDeleteRepository
 	CardSecrets       CardSecretDeleteRepository
 	CardSecretBatches CardSecretBatchDeleteRepository

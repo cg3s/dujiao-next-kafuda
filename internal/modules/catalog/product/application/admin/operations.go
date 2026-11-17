@@ -17,7 +17,7 @@ func (s *AdminService) Delete(id string) error {
 		return productcontract.ErrNotFound
 	}
 
-	// 事务前校验，避免 SQLite 在读后写场景中发生自锁。
+	// 预检仅用于尽早返回；事务内还要使用绑定仓储重新检查。
 	available, err := s.cardSecrets.CountAvailable(product.ID, 0)
 	if err != nil {
 		return err
@@ -42,6 +42,37 @@ func (s *AdminService) Delete(id string) error {
 	}
 
 	return s.transactions.WithinTransaction(func(repositories DeleteRepositories) error {
+		if err := repositories.Products.LockByIDs([]uint{product.ID}); err != nil {
+			return err
+		}
+		current, err := repositories.Products.GetByID(id)
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return productcontract.ErrNotFound
+		}
+		available, err := repositories.CardSecrets.CountAvailable(product.ID, 0)
+		if err != nil {
+			return err
+		}
+		reserved, err := repositories.CardSecrets.CountReserved(product.ID, 0)
+		if err != nil {
+			return err
+		}
+		if available > 0 || reserved > 0 {
+			return productcontract.ErrProductHasStock
+		}
+		if repositories.Orders == nil {
+			return productcontract.ErrProductHasOrderRecord
+		}
+		count, err := repositories.Orders.CountOrderItemsByProduct(product.ID)
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			return productcontract.ErrProductHasOrderRecord
+		}
 		if err := repositories.CardSecrets.DeleteByProduct(product.ID); err != nil {
 			return err
 		}

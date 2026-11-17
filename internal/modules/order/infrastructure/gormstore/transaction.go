@@ -120,3 +120,11 @@ func (s *Store) WithinTransaction(fn func(ordercontract.Transaction) error) erro
 		return fn(useTransaction(tx, s.guestCredentialSecret))
 	})
 }
+
+// BindTx preserves store configuration while binding all operations to tx.
+func (s *Store) BindTx(tx *gorm.DB) ordercontract.Store {
+	if tx == nil {
+		return s
+	}
+	return &Store{db: tx, guestCredentialSecret: s.guestCredentialSecret}
+}

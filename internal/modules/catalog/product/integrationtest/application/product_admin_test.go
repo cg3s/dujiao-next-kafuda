@@ -2,11 +2,14 @@ package integrationtest
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
 	"strconv"
 	"testing"
 
 	paymentgormstore "github.com/dujiao-next/internal/modules/payment/infrastructure/gormstore"
 
+	cardsecretdomain "github.com/dujiao-next/internal/modules/cardsecret/domain"
 	cardsecretgormstore "github.com/dujiao-next/internal/modules/cardsecret/infrastructure/gormstore"
 	memberleveldomain "github.com/dujiao-next/internal/modules/memberlevel/domain"
 
@@ -15,6 +18,7 @@ import (
 	catalogproductbootstrap "github.com/dujiao-next/internal/bootstrap/catalogproduct"
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
+	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	ordergormstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
 
 	categorydomain "github.com/dujiao-next/internal/modules/catalog/category/domain"
@@ -32,6 +36,119 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
+
+type productDeletePreflightOrders struct {
+	*ordergormstore.Store
+	afterCount func()
+}
+
+func (r productDeletePreflightOrders) CountOrderItemsByProduct(id uint) (int64, error) {
+	count, err := r.Store.CountOrderItemsByProduct(id)
+	if err == nil {
+		r.afterCount()
+	}
+	return count, err
+}
+
+func TestProductDeleteRechecksOrdersAndStockInTransaction(t *testing.T) {
+	for _, fulfillment := range []string{constants.FulfillmentTypeAuto, constants.FulfillmentTypeKafudaGPT} {
+		for _, change := range []string{"order", "available", "reserved", "deleted", "empty"} {
+			t.Run(fulfillment+"/"+change, func(t *testing.T) {
+				_, db := newProductServiceForTest(t)
+				pool, err := db.DB()
+				if err != nil {
+					t.Fatal(err)
+				}
+				pool.SetMaxOpenConns(1)
+				t.Cleanup(func() { _ = pool.Close() })
+				product := productdomain.Product{Slug: "delete-race", TitleJSON: jsonmap.JSON{"zh-CN": "delete-race"}, FulfillmentType: fulfillment}
+				if err := db.Create(&product).Error; err != nil {
+					t.Fatal(err)
+				}
+				sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: "ORIGINAL", IsActive: true}
+				if err := db.Create(&sku).Error; err != nil {
+					t.Fatal(err)
+				}
+				var beforeProduct productdomain.Product
+				var beforeSKUs []productdomain.ProductSKU
+				var beforeCards []cardsecretdomain.Secret
+				var beforeItems []orderdomain.OrderItem
+				called := false
+				orders := productDeletePreflightOrders{Store: ordergormstore.New(db, "test-guest-credential-secret-with-32-bytes"), afterCount: func() {
+					called = true
+					switch change {
+					case "order":
+						if err := db.Create(&orderdomain.OrderItem{OrderID: 99, ProductID: product.ID, SKUID: sku.ID, TitleJSON: product.TitleJSON, FulfillmentType: fulfillment}).Error; err != nil {
+							t.Fatal(err)
+						}
+					case "available", "reserved":
+						if err := db.Create(&cardsecretdomain.Secret{ProductID: product.ID, SKUID: sku.ID, Secret: "late-card", Status: change}).Error; err != nil {
+							t.Fatal(err)
+						}
+					case "deleted":
+						if err := db.Model(&product).Update("deleted_at", product.CreatedAt).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := db.First(&beforeProduct, product.ID).Error; err != nil {
+						t.Fatal(err)
+					}
+					if err := db.Order("id").Find(&beforeSKUs).Error; err != nil {
+						t.Fatal(err)
+					}
+					if err := db.Order("id").Find(&beforeCards).Error; err != nil {
+						t.Fatal(err)
+					}
+					if err := db.Order("id").Find(&beforeItems).Error; err != nil {
+						t.Fatal(err)
+					}
+				}}
+				svc := catalogproductbootstrap.New(catalogproductbootstrap.Dependencies{Products: productgormstore.NewProductStore(db), SKUs: productgormstore.NewSKUStore(db), CardSecrets: cardsecretgormstore.New(db), CardSecretBatches: cardsecretgormstore.NewBatch(db), MemberLevelPrices: memberlevelgormstore.NewPriceStore(db), UserPrices: memberlevelgormstore.NewUserPriceStore(db), Carts: cartgormstore.New(db), ProductMappings: mappinggormstore.NewMappingStore(db), Orders: orders})
+				err = svc.Admin.Delete(fmt.Sprint(product.ID))
+				if !called {
+					t.Fatal("preflight was not exercised")
+				}
+				if change == "empty" {
+					if err != nil {
+						t.Fatal(err)
+					}
+					assertProductRelationCount(t, db, &productdomain.Product{}, "deleted_at IS NULL AND id = ?", product.ID, 0)
+					assertProductRelationCount(t, db, &productdomain.ProductSKU{}, "deleted_at IS NULL AND product_id = ?", product.ID, 0)
+					return
+				}
+				want := productcontract.ErrProductHasStock
+				if change == "order" {
+					want = productcontract.ErrProductHasOrderRecord
+				}
+				if change == "deleted" {
+					want = productcontract.ErrNotFound
+				}
+				if !errors.Is(err, want) {
+					t.Fatalf("expected %v, got %v", want, err)
+				}
+				var afterProduct productdomain.Product
+				var afterSKUs []productdomain.ProductSKU
+				var afterCards []cardsecretdomain.Secret
+				var afterItems []orderdomain.OrderItem
+				if err := db.First(&afterProduct, product.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Order("id").Find(&afterSKUs).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Order("id").Find(&afterCards).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Order("id").Find(&afterItems).Error; err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(beforeProduct, afterProduct) || !reflect.DeepEqual(beforeSKUs, afterSKUs) || !reflect.DeepEqual(beforeCards, afterCards) || !reflect.DeepEqual(beforeItems, afterItems) {
+					t.Fatal("rejected delete changed product, SKUs, cards or orders")
+				}
+			})
+		}
+	}
+}
 
 func TestProductServiceQuickUpdateRejectsActivationWithoutCategory(t *testing.T) {
 	svc, db := newProductServiceForTest(t)

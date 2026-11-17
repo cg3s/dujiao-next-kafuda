@@ -15,6 +15,7 @@ import (
 	productapplication "github.com/dujiao-next/internal/modules/catalog/product/application"
 	productadmin "github.com/dujiao-next/internal/modules/catalog/product/application/admin"
 	productwrite "github.com/dujiao-next/internal/modules/catalog/product/application/write"
+	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 
 	"gorm.io/gorm"
 )
@@ -125,6 +126,7 @@ func (unit *productWriteUnitOfWork) WithinTransaction(fn func(repositories produ
 
 // productAdminUnitOfWork 将商品级联删除涉及的端口绑定到同一事务。
 type productAdminUnitOfWork struct {
+	orders            OrderReader
 	products          ProductStore
 	productSKUs       SKUStore
 	cardSecrets       CardSecretStore
@@ -144,8 +146,10 @@ func newProductAdminUnitOfWork(
 	userPrices memberLevelPriceCleaner,
 	carts *cartgormstore.Store,
 	productMappings MappingStore,
+	orders OrderReader,
 ) productadmin.UnitOfWork {
 	return &productAdminUnitOfWork{
+		orders:            orders,
 		products:          products,
 		productSKUs:       productSKUs,
 		cardSecrets:       cardSecrets,
@@ -165,7 +169,14 @@ func (unit *productAdminUnitOfWork) WithinTransaction(fn func(productadmin.Delet
 		return errors.New("product transaction repository is nil")
 	}
 	return unit.products.Transaction(func(tx *gorm.DB) error {
+		binder, ok := unit.orders.(interface {
+			BindTx(*gorm.DB) ordercontract.Store
+		})
+		if !ok {
+			return errors.New("product order transaction repository is nil")
+		}
 		return fn(productadmin.DeleteRepositories{
+			Orders:            binder.BindTx(tx),
 			Products:          unit.products.BindTx(tx),
 			CardSecrets:       unit.cardSecrets.BindTx(tx),
 			CardSecretBatches: unit.cardSecretBatches.BindTx(tx),
@@ -208,7 +219,7 @@ func New(dependencies Dependencies) Services {
 		Categories:   dependencies.Categories,
 		CardSecrets:  dependencies.CardSecrets,
 		Orders:       dependencies.Orders,
-		Transactions: newProductAdminUnitOfWork(dependencies.Products, dependencies.SKUs, dependencies.CardSecrets, dependencies.CardSecretBatches, dependencies.MemberLevelPrices, dependencies.UserPrices, dependencies.Carts, dependencies.ProductMappings),
+		Transactions: newProductAdminUnitOfWork(dependencies.Products, dependencies.SKUs, dependencies.CardSecrets, dependencies.CardSecretBatches, dependencies.MemberLevelPrices, dependencies.UserPrices, dependencies.Carts, dependencies.ProductMappings, dependencies.Orders),
 	})
 	write := productwrite.NewWriteService(productwrite.Options{
 		Orders:          dependencies.Orders,

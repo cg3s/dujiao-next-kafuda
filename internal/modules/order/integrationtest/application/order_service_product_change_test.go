@@ -40,7 +40,7 @@ func (orderProductChangeCatalog) SKUOptions(context.Context) ([]kafudacontract.S
 }
 
 func TestCreateOrderRejectsProductChangesAfterSnapshot(t *testing.T) {
-	for _, change := range []string{"direct_conversion", "product_disabled", "sku_disabled", "sku_deleted"} {
+	for _, change := range []string{"direct_conversion", "product_disabled", "product_deleted", "sku_disabled", "sku_deleted"} {
 		t.Run(change, func(t *testing.T) {
 			f := newCouponLimitRaceFixture(t, "product-change-"+change, 0, 0)
 			if err := f.db.AutoMigrate(&cardsecretdomain.Secret{}); err != nil {
@@ -65,6 +65,10 @@ func TestCreateOrderRejectsProductChangesAfterSnapshot(t *testing.T) {
 					}
 				case "product_disabled":
 					if err := f.db.Model(&f.product).Update("is_active", false).Error; err != nil {
+						t.Fatal(err)
+					}
+				case "product_deleted":
+					if err := products.Delete(fmt.Sprint(f.product.ID)); err != nil {
 						t.Fatal(err)
 					}
 				case "sku_disabled":

@@ -31,6 +31,7 @@ func TestAdminServiceDeleteStopsBeforeTransactionWhenStockExists(t *testing.T) {
 func TestAdminServiceDeleteUsesAllCascadePorts(t *testing.T) {
 	deleted := make(map[string]int)
 	repositories := DeleteRepositories{
+		Orders:            orderRepositoryStub{},
 		Products:          productDeleteStub{deleted: deleted},
 		CardSecrets:       productRelationDeleteStub{name: "card_secrets", deleted: deleted},
 		CardSecretBatches: productRelationDeleteStub{name: "card_secret_batches", deleted: deleted},
@@ -197,12 +198,18 @@ type productDeleteStub struct {
 	deleted map[string]int
 }
 
+func (repository productDeleteStub) LockByIDs([]uint) error { return nil }
+func (repository productDeleteStub) GetByID(string) (*productdomain.Product, error) {
+	return &productdomain.Product{ID: 9}, nil
+}
+
 func (repository productDeleteStub) Delete(string) error {
 	repository.deleted["product"]++
 	return nil
 }
 
 type productRelationDeleteStub struct {
+	stockRepositoryStub
 	name    string
 	deleted map[string]int
 }

@@ -84,6 +84,7 @@ func (unit *productAdminUoW) WithinTransaction(fn func(productadmin.DeleteReposi
 	}
 	return unit.products.Transaction(func(tx *gorm.DB) error {
 		return fn(productadmin.DeleteRepositories{
+			Orders:            &orderHistoryStore{db: tx},
 			Products:          unit.products.BindTx(tx),
 			CardSecrets:       unit.cardSecrets.BindTx(tx),
 			CardSecretBatches: unit.cardSecretBatches.BindTx(tx),
