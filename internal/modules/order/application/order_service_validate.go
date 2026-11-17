@@ -1,12 +1,14 @@
 package application
 
 import (
+	"context"
 	"fmt"
 	"net/mail"
 	"strconv"
 	"strings"
 	"time"
 
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 
 	"github.com/dujiao-next/internal/constants"
@@ -112,6 +114,15 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		if product == nil || !product.IsActive {
 			return nil, ErrProductNotAvailable
 		}
+		direct := strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeKafudaGPT
+		if direct && (!input.PreviewOnly || !input.StorefrontPreview || input.IsGuest || input.UserID == 0 ||
+			!input.Tenant.IsMain || input.Tenant.ResellerID != nil || input.Tenant.Unavailable ||
+			len(input.Items) != 1 || item.Quantity != 1) {
+			return nil, ErrProductPurchaseNotAllowed
+		}
+		if direct && item.SKUID == 0 {
+			return nil, ErrProductSKURequired
+		}
 		if err := productdomain.ValidatePurchaseQuantity(product, item.Quantity); err != nil {
 			return nil, err
 		}
@@ -125,6 +136,11 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		sku, err := resolveProductOrderSKU(s.productSKURepo, product, item.SKUID)
 		if err != nil {
 			return nil, err
+		}
+		if direct {
+			if err := s.validateDirectPreview(product, sku); err != nil {
+				return nil, err
+			}
 		}
 
 		productCurrency := currency
@@ -225,7 +241,7 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		if fulfillmentType == "" {
 			fulfillmentType = constants.FulfillmentTypeManual
 		}
-		if fulfillmentType != constants.FulfillmentTypeManual && fulfillmentType != constants.FulfillmentTypeAuto && fulfillmentType != constants.FulfillmentTypeUpstream {
+		if fulfillmentType != constants.FulfillmentTypeManual && fulfillmentType != constants.FulfillmentTypeAuto && fulfillmentType != constants.FulfillmentTypeUpstream && !direct {
 			return nil, ErrFulfillmentInvalid
 		}
 		if fulfillmentType == constants.FulfillmentTypeManual &&
@@ -302,6 +318,10 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 			InstructionsJSON:             product.InstructionsJSON,
 			CreatedAt:                    now,
 			UpdatedAt:                    now,
+		}
+		if direct {
+			// Only the plan/country belong in the buyer-facing SKU metadata.
+			orderItem.SKUSnapshotJSON["spec_values"] = jsonmap.JSON{"plan": sku.SpecValuesJSON["plan"], "country": sku.SpecValuesJSON["country"]}
 		}
 		orderItems = append(orderItems, orderItem)
 		plans = append(plans, childOrderPlan{
@@ -396,6 +416,25 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		MemberLevelID:           memberLevelIDSnapshot,
 		AppliedCoupon:           appliedCoupon,
 	}, nil
+}
+
+func (s *OrderService) validateDirectPreview(product *productdomain.Product, sku *productdomain.ProductSKU) error {
+	if product.IsMapped || s.directCatalog == nil {
+		return ErrProductNotAvailable
+	}
+	if !sku.DirectCostConfigured || !sku.PriceAmount.Decimal.Round(2).IsPositive() || sku.CostPriceAmount.IsNegative() {
+		return ErrProductPriceInvalid
+	}
+	plan, planOK := sku.SpecValuesJSON["plan"].(string)
+	country, countryOK := sku.SpecValuesJSON["country"].(string)
+	if !planOK || !countryOK || plan == "" || country == "" || sku.SKUCode != kafudacontract.SKUCode(plan, country) {
+		return ErrProductSKUInvalid
+	}
+	terms, err := s.directCatalog.PurchaseTerms(context.Background(), plan, country, sku.DirectCatalogRevision)
+	if err != nil || terms == nil || terms.Plan != plan || terms.Country != country {
+		return ErrProductNotAvailable
+	}
+	return nil
 }
 
 func normalizeGuestEmail(raw string) (string, error) {

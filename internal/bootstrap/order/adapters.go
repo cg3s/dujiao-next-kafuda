@@ -418,6 +418,7 @@ func (a orderPaymentCreatorAdapter) CreatePayment(input ordertransport.CreatePay
 
 func (a orderPreviewAdapter) PreviewOrder(input ordertransport.CreateOrderInput) (*ordertransport.OrderPreview, error) {
 	preview, err := a.orders.PreviewOrder(orderapp.CreateOrderInput{
+		StorefrontPreview:   true,
 		UserID:              input.UserID,
 		Tenant:              input.Tenant,
 		Items:               mapServiceOrderItems(input.Items),

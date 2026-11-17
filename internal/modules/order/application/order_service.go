@@ -12,6 +12,7 @@ import (
 	couponcontract "github.com/dujiao-next/internal/modules/coupon/contract"
 	coupondomain "github.com/dujiao-next/internal/modules/coupon/domain"
 	usercontract "github.com/dujiao-next/internal/modules/identity/user/contract"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	memberlevelapp "github.com/dujiao-next/internal/modules/memberlevel/application"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
@@ -35,6 +36,7 @@ import (
 
 // OrderService 订单服务
 type OrderService struct {
+	directCatalog           kafudacontract.CommercePolicy
 	orderStore              ordercontract.Store
 	userRepo                usercontract.Store
 	productRepo             productcontract.Repository
@@ -86,6 +88,7 @@ type upstreamStockEnsurer interface {
 
 // OrderServiceOptions 订单服务构造参数
 type OrderServiceOptions struct {
+	DirectCatalog           kafudacontract.CommercePolicy
 	OrderStore              ordercontract.Store
 	UserStore               usercontract.Store
 	ProductStore            productcontract.Repository
@@ -118,6 +121,7 @@ func (s *OrderService) SetProductMappingService(svc upstreamStockEnsurer) {
 // NewOrderService 创建订单服务
 func NewOrderService(opts OrderServiceOptions) *OrderService {
 	return &OrderService{
+		directCatalog:           opts.DirectCatalog,
 		orderStore:              opts.OrderStore,
 		userRepo:                opts.UserStore,
 		productRepo:             opts.ProductStore,
@@ -141,6 +145,8 @@ func NewOrderService(opts OrderServiceOptions) *OrderService {
 
 // CreateOrderInput 创建订单输入
 type CreateOrderInput struct {
+	// StorefrontPreview is set by the main-site preview adapter, never request JSON.
+	StorefrontPreview   bool `json:"-"`
 	UserID              uint
 	Tenant              resellercontract.TenantContext
 	Items               []CreateOrderItem
@@ -273,6 +279,8 @@ func (s *OrderService) CreateGuestOrder(input CreateGuestOrderInput) (*orderdoma
 }
 
 type orderCreateParams struct {
+	StorefrontPreview        bool
+	PreviewOnly              bool
 	UserID                   uint
 	GuestEmail               string
 	GuestPassword            string
@@ -345,6 +353,7 @@ func (s *OrderService) PreviewOrder(input CreateOrderInput) (*OrderPreview, erro
 		return nil, ErrInvalidOrderItem
 	}
 	params := orderCreateParams{
+		StorefrontPreview:   input.StorefrontPreview,
 		UserID:              input.UserID,
 		Tenant:              input.Tenant,
 		Items:               input.Items,
@@ -384,6 +393,7 @@ func (s *OrderService) PreviewGuestOrder(input CreateGuestOrderInput) (*OrderPre
 }
 
 func (s *OrderService) previewOrder(input orderCreateParams) (*OrderPreview, error) {
+	input.PreviewOnly = true
 	result, err := s.buildOrderResult(input)
 	if err != nil {
 		return nil, err

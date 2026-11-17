@@ -18,6 +18,7 @@ import (
 	fulfillmentqueue "github.com/dujiao-next/internal/modules/fulfillment/infrastructure/queueadapter"
 	giftcardapp "github.com/dujiao-next/internal/modules/giftcard/application"
 	giftcardsettingscurrency "github.com/dujiao-next/internal/modules/giftcard/infrastructure/settingscurrency"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	memberlevelapp "github.com/dujiao-next/internal/modules/memberlevel/application"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	orderrefund "github.com/dujiao-next/internal/modules/order/application/refund"
@@ -92,7 +93,12 @@ func (c *Container) initApplicationServices() {
 		RateLimiter: orderrisklimiter.New(),
 	})
 	orderQueue := orderqueue.New(c.QueueClient)
+	var directCatalog kafudacontract.CommercePolicy
+	if c.KafudaGPT != nil {
+		directCatalog = c.KafudaGPT.Commerce
+	}
 	c.OrderService = orderapp.NewOrderService(orderapp.OrderServiceOptions{
+		DirectCatalog:           directCatalog,
 		OrderStore:              c.OrderStore,
 		UserStore:               c.UserStore,
 		ProductStore:            c.ProductRepo,
