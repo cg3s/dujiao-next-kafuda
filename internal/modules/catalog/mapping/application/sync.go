@@ -115,146 +115,153 @@ func (s *Service) SyncProduct(mappingID uint) error {
 	}
 	markupPercent := ResolveCategoryMarkup(conn.PriceMarkupPercent, conn.CategoryMarkups, upProduct.CategoryID, categoryParents)
 
-	// ── 1. 同步本地商品字段（表单配置、上下架状态） ──
-	localProduct, err := s.products.GetByID(strconv.FormatUint(uint64(mapping.LocalProductID), 10))
-	if err != nil {
-		return fmt.Errorf("get local product: %w", err)
-	}
-	if localProduct != nil {
-		needsProductUpdate := false
-		// 同步人工交付表单配置
-		if upProduct.ManualFormSchema != nil {
-			localProduct.ManualFormSchemaJSON = upProduct.ManualFormSchema
-			needsProductUpdate = true
+	return s.withMappingWrite(mapping, func(s *Service, mapping *mappingdomain.Mapping) error {
+		mapping.UpstreamCategoryID = upProduct.CategoryID
+		skuMappings, err := s.skuMappings.ListByProductMapping(mapping.ID)
+		if err != nil {
+			return err
 		}
-		if needsProductUpdate {
-			_ = s.products.Update(localProduct)
+		// ── 1. 同步本地商品字段（表单配置、上下架状态） ──
+		localProduct, err := s.products.GetByID(strconv.FormatUint(uint64(mapping.LocalProductID), 10))
+		if err != nil {
+			return fmt.Errorf("get local product: %w", err)
 		}
-	}
+		if localProduct != nil {
+			needsProductUpdate := false
+			// 同步人工交付表单配置
+			if upProduct.ManualFormSchema != nil {
+				localProduct.ManualFormSchemaJSON = upProduct.ManualFormSchema
+				needsProductUpdate = true
+			}
+			if needsProductUpdate {
+				_ = s.products.Update(localProduct)
+			}
+		}
 
-	// ── 2. 同步 SKU：新增 / 更新 / 停用 ──
-	// skuMappings 已在上面判断是否需要算价时读取过。
+		// ── 2. 同步 SKU：新增 / 更新 / 停用 ──
+		// skuMappings 已在上面判断是否需要算价时读取过。
 
-	// 构建上游 SKU 查找表
-	upstreamSKUMap := make(map[uint]upstream.UpstreamSKU, len(upProduct.SKUs))
-	for _, us := range upProduct.SKUs {
-		upstreamSKUMap[us.ID] = us
-	}
+		// 构建上游 SKU 查找表
+		upstreamSKUMap := make(map[uint]upstream.UpstreamSKU, len(upProduct.SKUs))
+		for _, us := range upProduct.SKUs {
+			upstreamSKUMap[us.ID] = us
+		}
 
-	// 构建已有映射查找表（按上游 SKU ID）
-	existingByUpstreamID := make(map[uint]*mappingdomain.SKUMapping, len(skuMappings))
-	for i := range skuMappings {
-		existingByUpstreamID[skuMappings[i].UpstreamSKUID] = &skuMappings[i]
-	}
+		// 构建已有映射查找表（按上游 SKU ID）
+		existingByUpstreamID := make(map[uint]*mappingdomain.SKUMapping, len(skuMappings))
+		for i := range skuMappings {
+			existingByUpstreamID[skuMappings[i].UpstreamSKUID] = &skuMappings[i]
+		}
 
-	// 2a. 更新已有映射 + 同步本地 SKU
-	for i := range skuMappings {
-		upSKU, ok := upstreamSKUMap[skuMappings[i].UpstreamSKUID]
-		if !ok {
-			// 上游 SKU 已删除 → 停用本地 SKU 和映射
-			skuMappings[i].UpstreamIsActive = false
-			skuMappings[i].UpstreamStock = 0
+		// 2a. 更新已有映射 + 同步本地 SKU
+		for i := range skuMappings {
+			upSKU, ok := upstreamSKUMap[skuMappings[i].UpstreamSKUID]
+			if !ok {
+				// 上游 SKU 已删除 → 停用本地 SKU 和映射
+				skuMappings[i].UpstreamIsActive = false
+				skuMappings[i].UpstreamStock = 0
+				skuMappings[i].StockSyncedAt = &now
+				_ = s.skuMappings.Update(&skuMappings[i])
+
+				// 停用本地 SKU
+				localSKU, _ := s.skus.GetByID(skuMappings[i].LocalSKUID)
+				if localSKU != nil && localSKU.IsActive {
+					localSKU.IsActive = false
+					_ = s.skus.Update(localSKU)
+				}
+				continue
+			}
+
+			upPrice, _ := decimal.NewFromString(upSKU.PriceAmount)
+
+			// 更新 SKU 映射记录
+			skuMappings[i].UpstreamPrice = money.FromDecimal(upPrice.Round(2))
+			skuMappings[i].UpstreamIsActive = upSKU.IsActive
 			skuMappings[i].StockSyncedAt = &now
+			skuMappings[i].UpstreamStock = upSKU.StockQuantity
 			_ = s.skuMappings.Update(&skuMappings[i])
 
-			// 停用本地 SKU
+			// 同步本地 SKU 字段
 			localSKU, _ := s.skus.GetByID(skuMappings[i].LocalSKUID)
-			if localSKU != nil && localSKU.IsActive {
-				localSKU.IsActive = false
+			if localSKU != nil {
+				localSKU.SpecValuesJSON = upSKU.SpecValues
+				localSKU.IsActive = upSKU.IsActive
+				// 如果启用了自动同步价格，按加价比例更新本地售价和成本价。
+				// 分类树拿不到时跳过改价，避免按默认加价把售价改低。
+				if conn.AutoSyncPrice && markupReady {
+					newLocalPrice := CalculateLocalPrice(upPrice, conn.ExchangeRate, markupPercent, conn.PriceRoundingMode)
+					localSKU.PriceAmount = money.FromDecimal(newLocalPrice.Round(2))
+					localSKU.CostPriceAmount = money.FromDecimal(convertCurrency(upPrice, conn.ExchangeRate).Round(2))
+				}
 				_ = s.skus.Update(localSKU)
 			}
-			continue
 		}
 
-		upPrice, _ := decimal.NewFromString(upSKU.PriceAmount)
-
-		// 更新 SKU 映射记录
-		skuMappings[i].UpstreamPrice = money.FromDecimal(upPrice.Round(2))
-		skuMappings[i].UpstreamIsActive = upSKU.IsActive
-		skuMappings[i].StockSyncedAt = &now
-		skuMappings[i].UpstreamStock = upSKU.StockQuantity
-		_ = s.skuMappings.Update(&skuMappings[i])
-
-		// 同步本地 SKU 字段
-		localSKU, _ := s.skus.GetByID(skuMappings[i].LocalSKUID)
-		if localSKU != nil {
-			localSKU.SpecValuesJSON = upSKU.SpecValues
-			localSKU.IsActive = upSKU.IsActive
-			// 如果启用了自动同步价格，按加价比例更新本地售价和成本价。
-			// 分类树拿不到时跳过改价，避免按默认加价把售价改低。
-			if conn.AutoSyncPrice && markupReady {
-				newLocalPrice := CalculateLocalPrice(upPrice, conn.ExchangeRate, markupPercent, conn.PriceRoundingMode)
-				localSKU.PriceAmount = money.FromDecimal(newLocalPrice.Round(2))
-				localSKU.CostPriceAmount = money.FromDecimal(convertCurrency(upPrice, conn.ExchangeRate).Round(2))
+		// 2b. 上游新增的 SKU → 创建本地 SKU + 映射
+		// 分类树拿不到时不建：按错误的加价建出来就是一个已上架的错价 SKU，比晚一轮更糟。
+		for _, upSKU := range upProduct.SKUs {
+			if _, exists := existingByUpstreamID[upSKU.ID]; exists {
+				continue
 			}
-			_ = s.skus.Update(localSKU)
-		}
-	}
+			if !markupReady {
+				continue
+			}
 
-	// 2b. 上游新增的 SKU → 创建本地 SKU + 映射
-	// 分类树拿不到时不建：按错误的加价建出来就是一个已上架的错价 SKU，比晚一轮更糟。
-	for _, upSKU := range upProduct.SKUs {
-		if _, exists := existingByUpstreamID[upSKU.ID]; exists {
-			continue
-		}
-		if !markupReady {
-			continue
+			skuPrice, _ := decimal.NewFromString(upSKU.PriceAmount)
+			localPrice := CalculateLocalPrice(skuPrice, conn.ExchangeRate, markupPercent, conn.PriceRoundingMode)
+			newLocalSKU := productdomain.ProductSKU{
+				ProductID:       mapping.LocalProductID,
+				SKUCode:         upSKU.SKUCode,
+				SpecValuesJSON:  upSKU.SpecValues,
+				PriceAmount:     money.FromDecimal(localPrice.Round(2)),
+				CostPriceAmount: money.FromDecimal(convertCurrency(skuPrice, conn.ExchangeRate).Round(2)), // 成本价 = 上游价格 × 汇率（本地币种）
+				IsActive:        upSKU.IsActive,
+				SortOrder:       0,
+			}
+			if err := s.skus.Create(&newLocalSKU); err != nil {
+				continue
+			}
+
+			newMapping := &mappingdomain.SKUMapping{
+				ProductMappingID: mappingID,
+				LocalSKUID:       newLocalSKU.ID,
+				UpstreamSKUID:    upSKU.ID,
+				UpstreamPrice:    money.FromDecimal(skuPrice.Round(2)),
+				UpstreamIsActive: upSKU.IsActive,
+				UpstreamStock:    upSKU.StockQuantity,
+				StockSyncedAt:    &now,
+			}
+			_ = s.skuMappings.Create(newMapping)
 		}
 
-		skuPrice, _ := decimal.NewFromString(upSKU.PriceAmount)
-		localPrice := CalculateLocalPrice(skuPrice, conn.ExchangeRate, markupPercent, conn.PriceRoundingMode)
-		newLocalSKU := productdomain.ProductSKU{
-			ProductID:       mapping.LocalProductID,
-			SKUCode:         upSKU.SKUCode,
-			SpecValuesJSON:  upSKU.SpecValues,
-			PriceAmount:     money.FromDecimal(localPrice.Round(2)),
-			CostPriceAmount: money.FromDecimal(convertCurrency(skuPrice, conn.ExchangeRate).Round(2)), // 成本价 = 上游价格 × 汇率（本地币种）
-			IsActive:        upSKU.IsActive,
-			SortOrder:       0,
-		}
-		if err := s.skus.Create(&newLocalSKU); err != nil {
-			continue
+		// ── 2c. 如果启用了自动同步价格，更新 Product.PriceAmount 为最低 SKU 价格 ──
+		if conn.AutoSyncPrice && markupReady && localProduct != nil {
+			s.recalcProductPrice(localProduct)
 		}
 
-		newMapping := &mappingdomain.SKUMapping{
-			ProductMappingID: mappingID,
-			LocalSKUID:       newLocalSKU.ID,
-			UpstreamSKUID:    upSKU.ID,
-			UpstreamPrice:    money.FromDecimal(skuPrice.Round(2)),
-			UpstreamIsActive: upSKU.IsActive,
-			UpstreamStock:    upSKU.StockQuantity,
-			StockSyncedAt:    &now,
+		// 上游未返回批发价时不覆盖本地配置，避免运营手动配置被同步任务清空。
+		if markupReady && len(upProduct.WholesalePrices) > 0 && localProduct != nil {
+			if err := s.syncUpstreamWholesalePrices(mapping, localProduct.ID, conn, upProduct, markupPercent); err != nil {
+				logger.Warnw("sync_upstream_wholesale_prices_failed",
+					"mapping_id", mapping.ID,
+					"connection_id", mapping.ConnectionID,
+					"upstream_product_id", mapping.UpstreamProductID,
+					"local_product_id", mapping.LocalProductID,
+					"error", err,
+				)
+			}
 		}
-		_ = s.skuMappings.Create(newMapping)
-	}
 
-	// ── 2c. 如果启用了自动同步价格，更新 Product.PriceAmount 为最低 SKU 价格 ──
-	if conn.AutoSyncPrice && markupReady && localProduct != nil {
-		s.recalcProductPrice(localProduct)
-	}
-
-	// 上游未返回批发价时不覆盖本地配置，避免运营手动配置被同步任务清空。
-	if markupReady && len(upProduct.WholesalePrices) > 0 && localProduct != nil {
-		if err := s.syncUpstreamWholesalePrices(mapping, localProduct.ID, conn, upProduct, markupPercent); err != nil {
-			logger.Warnw("sync_upstream_wholesale_prices_failed",
-				"mapping_id", mapping.ID,
-				"connection_id", mapping.ConnectionID,
-				"upstream_product_id", mapping.UpstreamProductID,
-				"local_product_id", mapping.LocalProductID,
-				"error", err,
-			)
+		// ── 3. 更新同步时间 + 上游交付类型 + 状态恢复 ──
+		upFulfillment := upProduct.FulfillmentType
+		if upFulfillment != constants.FulfillmentTypeAuto {
+			upFulfillment = constants.FulfillmentTypeManual
 		}
-	}
-
-	// ── 3. 更新同步时间 + 上游交付类型 + 状态恢复 ──
-	upFulfillment := upProduct.FulfillmentType
-	if upFulfillment != constants.FulfillmentTypeAuto {
-		upFulfillment = constants.FulfillmentTypeManual
-	}
-	mapping.UpstreamFulfillmentType = upFulfillment
-	mapping.UpstreamStatus = mappingdomain.UpstreamStatusActive
-	mapping.LastSyncedAt = &now
-	return s.mappings.Update(mapping)
+		mapping.UpstreamFulfillmentType = upFulfillment
+		mapping.UpstreamStatus = mappingdomain.UpstreamStatusActive
+		mapping.LastSyncedAt = &now
+		return s.mappings.Update(mapping)
+	})
 }
 
 func (s *Service) syncUpstreamWholesalePrices(mapping *mappingdomain.Mapping, localProductID uint, conn *siteconnectiondomain.Connection, upProduct *upstream.UpstreamProduct, markupPercent decimal.Decimal) error {
@@ -300,45 +307,47 @@ func (s *Service) syncUpstreamWholesalePrices(mapping *mappingdomain.Mapping, lo
 //   - mapping.UpstreamStatus 写入对应状态
 //   - status==deleted 时同时停用映射（IsActive=false），避免后续白白调上游
 func (s *Service) markUpstreamUnavailable(mapping *mappingdomain.Mapping, status string, now time.Time) error {
-	// 本地商品下架
-	localProduct, err := s.products.GetByID(strconv.FormatUint(uint64(mapping.LocalProductID), 10))
-	if err == nil && localProduct != nil && localProduct.IsActive {
-		localProduct.IsActive = false
-		_ = s.products.Update(localProduct)
-	}
-
-	// SKU 映射 + 本地 SKU 下架
-	skuMappings, _ := s.skuMappings.ListByProductMapping(mapping.ID)
-	for i := range skuMappings {
-		skuMappings[i].UpstreamIsActive = false
-		skuMappings[i].UpstreamStock = 0
-		skuMappings[i].StockSyncedAt = &now
-		_ = s.skuMappings.Update(&skuMappings[i])
-
-		localSKU, _ := s.skus.GetByID(skuMappings[i].LocalSKUID)
-		if localSKU != nil && localSKU.IsActive {
-			localSKU.IsActive = false
-			_ = s.skus.Update(localSKU)
+	return s.withMappingWrite(mapping, func(s *Service, mapping *mappingdomain.Mapping) error {
+		// 本地商品下架
+		localProduct, err := s.products.GetByID(strconv.FormatUint(uint64(mapping.LocalProductID), 10))
+		if err == nil && localProduct != nil && localProduct.IsActive {
+			localProduct.IsActive = false
+			_ = s.products.Update(localProduct)
 		}
-	}
 
-	mapping.UpstreamStatus = status
-	mapping.LastSyncedAt = &now
-	if status == mappingdomain.UpstreamStatusDeleted {
-		mapping.IsActive = false
-	}
-	if err := s.mappings.Update(mapping); err != nil {
-		return err
-	}
+		// SKU 映射 + 本地 SKU 下架
+		skuMappings, _ := s.skuMappings.ListByProductMapping(mapping.ID)
+		for i := range skuMappings {
+			skuMappings[i].UpstreamIsActive = false
+			skuMappings[i].UpstreamStock = 0
+			skuMappings[i].StockSyncedAt = &now
+			_ = s.skuMappings.Update(&skuMappings[i])
 
-	logger.Infow("upstream_product_unavailable",
-		"mapping_id", mapping.ID,
-		"connection_id", mapping.ConnectionID,
-		"upstream_product_id", mapping.UpstreamProductID,
-		"local_product_id", mapping.LocalProductID,
-		"status", status,
-	)
-	return nil
+			localSKU, _ := s.skus.GetByID(skuMappings[i].LocalSKUID)
+			if localSKU != nil && localSKU.IsActive {
+				localSKU.IsActive = false
+				_ = s.skus.Update(localSKU)
+			}
+		}
+
+		mapping.UpstreamStatus = status
+		mapping.LastSyncedAt = &now
+		if status == mappingdomain.UpstreamStatusDeleted {
+			mapping.IsActive = false
+		}
+		if err := s.mappings.Update(mapping); err != nil {
+			return err
+		}
+
+		logger.Infow("upstream_product_unavailable",
+			"mapping_id", mapping.ID,
+			"connection_id", mapping.ConnectionID,
+			"upstream_product_id", mapping.UpstreamProductID,
+			"local_product_id", mapping.LocalProductID,
+			"status", status,
+		)
+		return nil
+	})
 }
 
 // SyncAllStock 同步所有活跃映射的库存（供定时任务调用）
@@ -672,153 +681,156 @@ func (s *Service) SyncConnectionStock(connectionID uint, connMappings []mappingd
 // applyPrice=false 表示这一轮不能安全改价（例如配置了分类加价但分类树拉取失败）：
 // SKU 的库存、上下架、规格照常同步，只有价格保持原样。
 func (s *Service) syncProductFromData(mapping *mappingdomain.Mapping, conn *siteconnectiondomain.Connection, upProduct *upstream.UpstreamProduct, now *time.Time, categoryParents map[uint]uint, applyPrice bool) {
-	// 记录上游分类并按分类解析加价（分类自身 → 父分类 → 连接默认）
-	mapping.UpstreamCategoryID = upProduct.CategoryID
-	markupPercent := ResolveCategoryMarkup(conn.PriceMarkupPercent, conn.CategoryMarkups, upProduct.CategoryID, categoryParents)
+	_ = s.withMappingWrite(mapping, func(s *Service, mapping *mappingdomain.Mapping) error {
+		// 记录上游分类并按分类解析加价（分类自身 → 父分类 → 连接默认）
+		mapping.UpstreamCategoryID = upProduct.CategoryID
+		markupPercent := ResolveCategoryMarkup(conn.PriceMarkupPercent, conn.CategoryMarkups, upProduct.CategoryID, categoryParents)
 
-	// ── 1. 同步本地商品字段 ──
-	localProduct, err := s.products.GetByID(strconv.FormatUint(uint64(mapping.LocalProductID), 10))
-	if err != nil || localProduct == nil {
-		return
-	}
-
-	if upProduct.ManualFormSchema != nil {
-		localProduct.ManualFormSchemaJSON = upProduct.ManualFormSchema
-		_ = s.products.Update(localProduct)
-	}
-
-	// ── 2. 同步 SKU ──
-	skuMappings, err := s.skuMappings.ListByProductMapping(mapping.ID)
-	if err != nil {
-		return
-	}
-
-	upstreamSKUMap := make(map[uint]upstream.UpstreamSKU, len(upProduct.SKUs))
-	for _, us := range upProduct.SKUs {
-		upstreamSKUMap[us.ID] = us
-	}
-
-	existingByUpstreamID := make(map[uint]*mappingdomain.SKUMapping, len(skuMappings))
-	for i := range skuMappings {
-		existingByUpstreamID[skuMappings[i].UpstreamSKUID] = &skuMappings[i]
-	}
-
-	// 更新已有映射
-	for i := range skuMappings {
-		upSKU, ok := upstreamSKUMap[skuMappings[i].UpstreamSKUID]
-		if !ok {
-			skuMappings[i].UpstreamIsActive = false
-			skuMappings[i].UpstreamStock = 0
-			skuMappings[i].StockSyncedAt = now
-			_ = s.skuMappings.Update(&skuMappings[i])
-			localSKU, _ := s.skus.GetByID(skuMappings[i].LocalSKUID)
-			if localSKU != nil && localSKU.IsActive {
-				localSKU.IsActive = false
-				_ = s.skus.Update(localSKU)
-			}
-			continue
+		// ── 1. 同步本地商品字段 ──
+		localProduct, err := s.products.GetByID(strconv.FormatUint(uint64(mapping.LocalProductID), 10))
+		if err != nil || localProduct == nil {
+			return nil
 		}
 
-		upPrice, priceErr := decimal.NewFromString(upSKU.PriceAmount)
-		if priceErr != nil {
-			logger.Warnw("sync_sku_price_parse_error",
-				"upstream_sku_id", upSKU.ID,
-				"price_amount", upSKU.PriceAmount,
-				"error", priceErr,
-			)
-			// 仅同步库存状态，跳过价格更新
-			skuMappings[i].UpstreamIsActive = upSKU.IsActive
-			skuMappings[i].StockSyncedAt = now
-			skuMappings[i].UpstreamStock = upSKU.StockQuantity
-			_ = s.skuMappings.Update(&skuMappings[i])
-			continue
+		if upProduct.ManualFormSchema != nil {
+			localProduct.ManualFormSchemaJSON = upProduct.ManualFormSchema
+			_ = s.products.Update(localProduct)
 		}
-		skuMappings[i].UpstreamPrice = money.FromDecimal(upPrice.Round(2))
-		skuMappings[i].UpstreamIsActive = upSKU.IsActive
-		skuMappings[i].StockSyncedAt = now
-		skuMappings[i].UpstreamStock = upSKU.StockQuantity
-		_ = s.skuMappings.Update(&skuMappings[i])
 
-		localSKU, _ := s.skus.GetByID(skuMappings[i].LocalSKUID)
-		if localSKU != nil {
-			localSKU.SpecValuesJSON = upSKU.SpecValues
-			localSKU.IsActive = upSKU.IsActive
-			if conn.AutoSyncPrice && applyPrice {
-				newLocalPrice := CalculateLocalPrice(upPrice, conn.ExchangeRate, markupPercent, conn.PriceRoundingMode)
-				localSKU.PriceAmount = money.FromDecimal(newLocalPrice.Round(2))
-				localSKU.CostPriceAmount = money.FromDecimal(convertCurrency(upPrice, conn.ExchangeRate).Round(2))
-			}
-			_ = s.skus.Update(localSKU)
+		// ── 2. 同步 SKU ──
+		skuMappings, err := s.skuMappings.ListByProductMapping(mapping.ID)
+		if err != nil {
+			return nil
 		}
-	}
 
-	// 上游新增 SKU。这一轮不能安全算价时先不建：上游价已变，按错误的加价建出来
-	// 就是一个错价的本地 SKU，比晚一轮更糟。下一轮同步再补。
-	// 注意这里不能整函数 return：后面还有映射状态（恢复 active、同步时间）要更新。
-	if applyPrice {
-		for _, upSKU := range upProduct.SKUs {
-			if _, exists := existingByUpstreamID[upSKU.ID]; exists {
+		upstreamSKUMap := make(map[uint]upstream.UpstreamSKU, len(upProduct.SKUs))
+		for _, us := range upProduct.SKUs {
+			upstreamSKUMap[us.ID] = us
+		}
+
+		existingByUpstreamID := make(map[uint]*mappingdomain.SKUMapping, len(skuMappings))
+		for i := range skuMappings {
+			existingByUpstreamID[skuMappings[i].UpstreamSKUID] = &skuMappings[i]
+		}
+
+		// 更新已有映射
+		for i := range skuMappings {
+			upSKU, ok := upstreamSKUMap[skuMappings[i].UpstreamSKUID]
+			if !ok {
+				skuMappings[i].UpstreamIsActive = false
+				skuMappings[i].UpstreamStock = 0
+				skuMappings[i].StockSyncedAt = now
+				_ = s.skuMappings.Update(&skuMappings[i])
+				localSKU, _ := s.skus.GetByID(skuMappings[i].LocalSKUID)
+				if localSKU != nil && localSKU.IsActive {
+					localSKU.IsActive = false
+					_ = s.skus.Update(localSKU)
+				}
 				continue
 			}
-			skuPrice, priceErr := decimal.NewFromString(upSKU.PriceAmount)
+
+			upPrice, priceErr := decimal.NewFromString(upSKU.PriceAmount)
 			if priceErr != nil {
-				logger.Warnw("sync_new_sku_price_parse_error",
+				logger.Warnw("sync_sku_price_parse_error",
 					"upstream_sku_id", upSKU.ID,
 					"price_amount", upSKU.PriceAmount,
 					"error", priceErr,
 				)
+				// 仅同步库存状态，跳过价格更新
+				skuMappings[i].UpstreamIsActive = upSKU.IsActive
+				skuMappings[i].StockSyncedAt = now
+				skuMappings[i].UpstreamStock = upSKU.StockQuantity
+				_ = s.skuMappings.Update(&skuMappings[i])
 				continue
 			}
-			localPrice := CalculateLocalPrice(skuPrice, conn.ExchangeRate, markupPercent, conn.PriceRoundingMode)
-			newLocalSKU := productdomain.ProductSKU{
-				ProductID:       mapping.LocalProductID,
-				SKUCode:         upSKU.SKUCode,
-				SpecValuesJSON:  upSKU.SpecValues,
-				PriceAmount:     money.FromDecimal(localPrice.Round(2)),
-				CostPriceAmount: money.FromDecimal(convertCurrency(skuPrice, conn.ExchangeRate).Round(2)),
-				IsActive:        upSKU.IsActive,
-				SortOrder:       0,
+			skuMappings[i].UpstreamPrice = money.FromDecimal(upPrice.Round(2))
+			skuMappings[i].UpstreamIsActive = upSKU.IsActive
+			skuMappings[i].StockSyncedAt = now
+			skuMappings[i].UpstreamStock = upSKU.StockQuantity
+			_ = s.skuMappings.Update(&skuMappings[i])
+
+			localSKU, _ := s.skus.GetByID(skuMappings[i].LocalSKUID)
+			if localSKU != nil {
+				localSKU.SpecValuesJSON = upSKU.SpecValues
+				localSKU.IsActive = upSKU.IsActive
+				if conn.AutoSyncPrice && applyPrice {
+					newLocalPrice := CalculateLocalPrice(upPrice, conn.ExchangeRate, markupPercent, conn.PriceRoundingMode)
+					localSKU.PriceAmount = money.FromDecimal(newLocalPrice.Round(2))
+					localSKU.CostPriceAmount = money.FromDecimal(convertCurrency(upPrice, conn.ExchangeRate).Round(2))
+				}
+				_ = s.skus.Update(localSKU)
 			}
-			if err := s.skus.Create(&newLocalSKU); err != nil {
-				continue
-			}
-			newSKUMapping := &mappingdomain.SKUMapping{
-				ProductMappingID: mapping.ID,
-				LocalSKUID:       newLocalSKU.ID,
-				UpstreamSKUID:    upSKU.ID,
-				UpstreamPrice:    money.FromDecimal(skuPrice.Round(2)),
-				UpstreamIsActive: upSKU.IsActive,
-				UpstreamStock:    upSKU.StockQuantity,
-				StockSyncedAt:    now,
-			}
-			_ = s.skuMappings.Create(newSKUMapping)
 		}
-	}
 
-	// 同步价格（这一轮若不能安全算价，保持原价不动）
-	if conn.AutoSyncPrice && applyPrice && localProduct != nil {
-		s.recalcProductPrice(localProduct)
-	}
-
-	if applyPrice && len(upProduct.WholesalePrices) > 0 {
-		if err := s.syncUpstreamWholesalePrices(mapping, localProduct.ID, conn, upProduct, markupPercent); err != nil {
-			logger.Warnw("sync_upstream_wholesale_prices_failed",
-				"mapping_id", mapping.ID,
-				"connection_id", mapping.ConnectionID,
-				"upstream_product_id", mapping.UpstreamProductID,
-				"local_product_id", mapping.LocalProductID,
-				"error", err,
-			)
+		// 上游新增 SKU。这一轮不能安全算价时先不建：上游价已变，按错误的加价建出来
+		// 就是一个错价的本地 SKU，比晚一轮更糟。下一轮同步再补。
+		// 注意这里不能整函数 return：后面还有映射状态（恢复 active、同步时间）要更新。
+		if applyPrice {
+			for _, upSKU := range upProduct.SKUs {
+				if _, exists := existingByUpstreamID[upSKU.ID]; exists {
+					continue
+				}
+				skuPrice, priceErr := decimal.NewFromString(upSKU.PriceAmount)
+				if priceErr != nil {
+					logger.Warnw("sync_new_sku_price_parse_error",
+						"upstream_sku_id", upSKU.ID,
+						"price_amount", upSKU.PriceAmount,
+						"error", priceErr,
+					)
+					continue
+				}
+				localPrice := CalculateLocalPrice(skuPrice, conn.ExchangeRate, markupPercent, conn.PriceRoundingMode)
+				newLocalSKU := productdomain.ProductSKU{
+					ProductID:       mapping.LocalProductID,
+					SKUCode:         upSKU.SKUCode,
+					SpecValuesJSON:  upSKU.SpecValues,
+					PriceAmount:     money.FromDecimal(localPrice.Round(2)),
+					CostPriceAmount: money.FromDecimal(convertCurrency(skuPrice, conn.ExchangeRate).Round(2)),
+					IsActive:        upSKU.IsActive,
+					SortOrder:       0,
+				}
+				if err := s.skus.Create(&newLocalSKU); err != nil {
+					continue
+				}
+				newSKUMapping := &mappingdomain.SKUMapping{
+					ProductMappingID: mapping.ID,
+					LocalSKUID:       newLocalSKU.ID,
+					UpstreamSKUID:    upSKU.ID,
+					UpstreamPrice:    money.FromDecimal(skuPrice.Round(2)),
+					UpstreamIsActive: upSKU.IsActive,
+					UpstreamStock:    upSKU.StockQuantity,
+					StockSyncedAt:    now,
+				}
+				_ = s.skuMappings.Create(newSKUMapping)
+			}
 		}
-	}
 
-	// ── 3. 更新映射记录（同时把状态从 inactive/deleted 恢复为 active）──
-	upFulfillment := upProduct.FulfillmentType
-	if upFulfillment != constants.FulfillmentTypeAuto {
-		upFulfillment = constants.FulfillmentTypeManual
-	}
-	mapping.UpstreamFulfillmentType = upFulfillment
-	mapping.UpstreamStatus = mappingdomain.UpstreamStatusActive
-	mapping.LastSyncedAt = now
-	_ = s.mappings.Update(mapping)
+		// 同步价格（这一轮若不能安全算价，保持原价不动）
+		if conn.AutoSyncPrice && applyPrice && localProduct != nil {
+			s.recalcProductPrice(localProduct)
+		}
+
+		if applyPrice && len(upProduct.WholesalePrices) > 0 {
+			if err := s.syncUpstreamWholesalePrices(mapping, localProduct.ID, conn, upProduct, markupPercent); err != nil {
+				logger.Warnw("sync_upstream_wholesale_prices_failed",
+					"mapping_id", mapping.ID,
+					"connection_id", mapping.ConnectionID,
+					"upstream_product_id", mapping.UpstreamProductID,
+					"local_product_id", mapping.LocalProductID,
+					"error", err,
+				)
+			}
+		}
+
+		// ── 3. 更新映射记录（同时把状态从 inactive/deleted 恢复为 active）──
+		upFulfillment := upProduct.FulfillmentType
+		if upFulfillment != constants.FulfillmentTypeAuto {
+			upFulfillment = constants.FulfillmentTypeManual
+		}
+		mapping.UpstreamFulfillmentType = upFulfillment
+		mapping.UpstreamStatus = mappingdomain.UpstreamStatusActive
+		mapping.LastSyncedAt = now
+		_ = s.mappings.Update(mapping)
+		return nil
+	})
 }

@@ -654,3 +654,187 @@ func TestDeleteMappingUsesCurrentProductAndRollsBackFailures(t *testing.T) {
 		})
 	}
 }
+
+type lateMappingAdapter struct {
+	upstream.Adapter
+	product upstream.UpstreamProduct
+	deleted bool
+	check   func()
+}
+
+func (a lateMappingAdapter) GetProduct(context.Context, uint) (*upstream.UpstreamProduct, error) {
+	a.check()
+	if a.deleted {
+		return nil, upstream.ErrUpstreamProductDeleted
+	}
+	return &a.product, nil
+}
+func (a lateMappingAdapter) ListProducts(context.Context, upstream.ListProductsOpts) (*upstream.ProductListResult, error) {
+	a.check()
+	if a.deleted {
+		return &upstream.ProductListResult{IncludesInactive: true}, nil
+	}
+	return &upstream.ProductListResult{Total: 1, Items: []upstream.UpstreamProduct{a.product}, IncludesInactive: true}, nil
+}
+func (a lateMappingAdapter) ListCategories(context.Context) (*upstream.CategoryListResult, error) {
+	a.check()
+	return &upstream.CategoryListResult{Supported: true}, nil
+}
+
+type mappingWriteSnapshot struct {
+	Product     productdomain.Product
+	Mapping     mappingdomain.Mapping
+	SKUs        []productdomain.ProductSKU
+	SKUMappings []mappingdomain.SKUMapping
+}
+
+func readMappingWriteSnapshot(t *testing.T, db *gorm.DB) mappingWriteSnapshot {
+	t.Helper()
+	var snapshot mappingWriteSnapshot
+	for _, row := range []interface{}{&snapshot.Product, &snapshot.Mapping} {
+		if err := db.First(row, 1).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Order("id").Find(&snapshot.SKUs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Order("id").Find(&snapshot.SKUMappings).Error; err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func TestLateMappingWritesCannotChangeDetachedProducts(t *testing.T) {
+	for _, mode := range []string{"single", "single_inactive", "single_deleted", "batch", "batch_inactive", "batch_deleted", "markup_local", "markup_remote"} {
+		for _, change := range []string{"current", "detached_direct", "direct_type", "unmapped", "mapping_rebound", "product_deleted"} {
+			t.Run(mode+"/"+change, func(t *testing.T) {
+				db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:late_mapping_%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				pool, err := db.DB()
+				if err != nil {
+					t.Fatal(err)
+				}
+				pool.SetMaxOpenConns(1)
+				t.Cleanup(func() { _ = pool.Close() })
+				if err := db.AutoMigrate(&productdomain.Product{}, &productdomain.ProductSKU{}, &mappingdomain.Mapping{}, &mappingdomain.SKUMapping{}, &siteconnectiondomain.Connection{}); err != nil {
+					t.Fatal(err)
+				}
+				product := productdomain.Product{Slug: "late", TitleJSON: jsonmap.JSON{"zh-CN": "late"}, FulfillmentType: constants.FulfillmentTypeUpstream, IsMapped: true, IsActive: true}
+				if err := db.Create(&product).Error; err != nil {
+					t.Fatal(err)
+				}
+				sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: "OLD", IsActive: true}
+				if err := db.Create(&sku).Error; err != nil {
+					t.Fatal(err)
+				}
+				conn := siteconnectiondomain.Connection{ID: 1, Name: "late", ExchangeRate: decimal.NewFromInt(1), PriceMarkupPercent: decimal.NewFromInt(50), AutoSyncPrice: true}
+				if err := db.Create(&conn).Error; err != nil {
+					t.Fatal(err)
+				}
+				mapping := mappingdomain.Mapping{LocalProductID: product.ID, ConnectionID: conn.ID, UpstreamProductID: 20}
+				if err := db.Create(&mapping).Error; err != nil {
+					t.Fatal(err)
+				}
+				sm := mappingdomain.SKUMapping{ProductMappingID: mapping.ID, LocalSKUID: sku.ID, UpstreamSKUID: 201}
+				if err := db.Create(&sm).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Model(&sm).Update("upstream_price", "20").Error; err != nil {
+					t.Fatal(err)
+				}
+				products := productgormstore.NewProductStore(db)
+				mappings := mappinggormstore.NewMappingStore(db)
+				skus := productgormstore.NewSKUStore(db)
+				unit := &mappingImportUoW{products: products, skus: skus, mappings: mappings, skuMappings: mappinggormstore.NewSKUMappingStore(db)}
+				calls := 0
+				adapter := lateMappingAdapter{deleted: strings.HasSuffix(mode, "deleted"), product: upstream.UpstreamProduct{ID: 20, IsActive: !strings.HasSuffix(mode, "inactive"), ManualFormSchema: jsonmap.JSON{"changed": true}, SKUs: []upstream.UpstreamSKU{{ID: 201, SKUCode: "OLD", PriceAmount: "20", IsActive: true}, {ID: 202, SKUCode: "NEW", PriceAmount: "30", IsActive: true}}}, check: func() {
+					// SQLite has one connection: this query would hang if I/O moved inside the transaction.
+					var n int64
+					if err := db.Model(&productdomain.Product{}).Count(&n).Error; err != nil {
+						t.Fatal(err)
+					}
+					calls++
+				}}
+				var before mappingWriteSnapshot
+				entered := false
+				hook := unmapTransactionHook{UnitOfWork: unit, before: func() {
+					entered = true
+					var err error
+					switch change {
+					case "detached_direct":
+						deleter, e := mappingapp.NewService(mappingapp.Options{Mappings: mappings, Products: products, Transactions: unit, Media: adminNoopLocalMediaRecorder{}})
+						if e != nil {
+							t.Fatal(e)
+						}
+						if e := deleter.Delete(mapping.ID); e != nil {
+							t.Fatal(e)
+						}
+						err = db.Model(&product).Updates(map[string]interface{}{"fulfillment_type": constants.FulfillmentTypeKafudaGPT, "is_mapped": false, "is_active": true}).Error
+					case "direct_type":
+						err = db.Model(&product).Update("fulfillment_type", constants.FulfillmentTypeKafudaGPT).Error
+					case "unmapped":
+						err = db.Model(&product).Update("is_mapped", false).Error
+					case "mapping_rebound":
+						err = db.Model(&mapping).Update("upstream_product_id", 99).Error
+					case "product_deleted":
+						err = db.Model(&product).Update("deleted_at", time.Now()).Error
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					before = readMappingWriteSnapshot(t, db)
+				}}
+				svc, err := mappingapp.NewService(mappingapp.Options{Mappings: mappings, SKUMappings: unit.skuMappings, Products: products, SKUs: skus, Media: adminNoopLocalMediaRecorder{}, Connections: &mappingConnectionProvider{db: db, adapter: adapter}, Transactions: hook})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var updated int
+				switch {
+				case strings.HasPrefix(mode, "single"):
+					err = svc.SyncProduct(mapping.ID)
+				case strings.HasPrefix(mode, "batch"):
+					err = svc.SyncConnectionStock(conn.ID, []mappingdomain.Mapping{mapping}, 100, 2)
+				case mode == "markup_local":
+					updated, err = svc.ReapplyMarkupLocal(conn.ID)
+				default:
+					updated, err = svc.ReapplyMarkup(conn.ID)
+				}
+				if !entered {
+					t.Fatal("local transaction was not reached")
+				}
+				if strings.HasPrefix(mode, "single") && change != "current" {
+					if !errors.Is(err, mappingcontract.ErrMappingNotFound) {
+						t.Fatalf("expected stale mapping rejection, got %v", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.HasPrefix(mode, "markup") && calls == 0 {
+					t.Fatal("upstream read not exercised")
+				}
+				after := readMappingWriteSnapshot(t, db)
+				if change != "current" {
+					if !reflect.DeepEqual(before, after) {
+						t.Fatal("late task changed detached product, SKU or mapping records")
+					}
+					if updated != 0 {
+						t.Fatal("late markup was counted as applied")
+					}
+				} else if strings.HasPrefix(mode, "markup") {
+					if updated != 1 || after.SKUs[0].PriceAmount.String() != "30.00" {
+						t.Fatal("current mapped product was not repriced")
+					}
+				} else if strings.HasSuffix(mode, "inactive") || strings.HasSuffix(mode, "deleted") {
+					if after.Product.IsActive || after.SKUs[0].IsActive {
+						t.Fatal("current unavailable product not disabled")
+					}
+				} else if len(after.SKUs) != 2 || after.SKUs[0].PriceAmount.String() != "30.00" || after.Mapping.LastSyncedAt == nil {
+					t.Fatal("current mapped product was not synchronized")
+				}
+			})
+		}
+	}
+}

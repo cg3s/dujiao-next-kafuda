@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"github.com/dujiao-next/internal/constants"
 	"testing"
 	"time"
 
@@ -147,6 +148,7 @@ func TestSyncProductKeepsPriceWhenCategoryTreeUnavailable(t *testing.T) {
 		skuMappings: &recordingSKUMappingRepo{},
 	}
 
+	svc.transactions = memoryMappingTransactions{svc}
 	if err := svc.SyncProduct(1); err != nil {
 		t.Fatalf("category tree failure must not abort the sync, got %v", err)
 	}
@@ -179,6 +181,7 @@ func TestSyncProductStillMarksInactiveWhenCategoryTreeUnavailable(t *testing.T) 
 		skuMappings: &recordingSKUMappingRepo{},
 	}
 
+	svc.transactions = memoryMappingTransactions{svc}
 	if err := svc.SyncProduct(1); err != nil {
 		t.Fatalf("inactive product must be handled even without a category tree, got %v", err)
 	}
@@ -216,6 +219,7 @@ func TestSyncProductNewSKUUsesParentCategoryMarkupWhenAutoSyncDisabled(t *testin
 		skuMappings: &recordingSKUMappingRepo{},
 	}
 
+	svc.transactions = memoryMappingTransactions{svc}
 	if err := svc.SyncProduct(1); err != nil {
 		t.Fatalf("sync failed: %v", err)
 	}
@@ -284,7 +288,7 @@ type staticProductRepo struct {
 }
 
 func (staticProductRepo) GetByID(_ string) (*productdomain.Product, error) {
-	return &productdomain.Product{ID: 10}, nil
+	return &productdomain.Product{ID: 10, IsMapped: true, FulfillmentType: constants.FulfillmentTypeUpstream}, nil
 }
 
 func (staticProductRepo) Update(_ *productdomain.Product) error {
@@ -319,4 +323,17 @@ func TestUpstreamCategoryParentsRejectsUnsupportedUpstream(t *testing.T) {
 	if _, ok := (&Service{}).upstreamCategoryParents(context.Background(), unsupportedCategoryAdapter{}, conn); ok {
 		t.Fatal("expected ok=false when upstream does not support categories")
 	}
+}
+
+// memoryMappingTransactions supplies the existing recording repositories to the
+// transaction callback. Integration tests exercise real locks and rollbacks.
+type memoryMappingTransactions struct{ service *Service }
+type memoryMappingProducts struct {
+	mappingcontract.ProductRepository
+}
+
+func (memoryMappingProducts) LockByIDs([]uint) error              { return nil }
+func (memoryMappingProducts) Create(*productdomain.Product) error { return errors.New("unused create") }
+func (u memoryMappingTransactions) WithinTransaction(fn func(mappingcontract.ImportRepositories) error) error {
+	return fn(mappingcontract.ImportRepositories{Products: memoryMappingProducts{u.service.products}, SKUs: u.service.skus, Mappings: u.service.mappings, SKUMappings: u.service.skuMappings})
 }

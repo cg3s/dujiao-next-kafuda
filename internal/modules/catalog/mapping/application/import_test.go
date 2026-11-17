@@ -91,6 +91,11 @@ func TestListAllUpstreamProductsStopsAtPageLimit(t *testing.T) {
 type updateRecordingMappings struct {
 	mappingcontract.MappingRepository
 	updated map[uint]uint
+	items   map[uint]*mappingdomain.Mapping
+}
+
+func (r *updateRecordingMappings) GetByID(id uint) (*mappingdomain.Mapping, error) {
+	return r.items[id], nil
 }
 
 func (r *updateRecordingMappings) UpdateUpstreamCategoryID(id uint, upstreamCategoryID uint) error {
@@ -99,8 +104,9 @@ func (r *updateRecordingMappings) UpdateUpstreamCategoryID(id uint, upstreamCate
 }
 
 func TestBackfillUpstreamCategoryIDsFillsOnlyMissing(t *testing.T) {
-	repo := &updateRecordingMappings{updated: map[uint]uint{}}
-	svc := &Service{mappings: repo}
+	repo := &updateRecordingMappings{updated: map[uint]uint{}, items: map[uint]*mappingdomain.Mapping{}}
+	svc := &Service{mappings: repo, products: staticProductRepo{}}
+	svc.transactions = memoryMappingTransactions{svc}
 	adapter := &pagedProductsAdapter{total: 5}
 	// 商品 ID → 分类 ID = id%3：1→1, 2→2, 3→0, 4→1
 	mappings := []mappingdomain.Mapping{
@@ -108,6 +114,10 @@ func TestBackfillUpstreamCategoryIDsFillsOnlyMissing(t *testing.T) {
 		{ID: 2, UpstreamProductID: 2, UpstreamCategoryID: 99}, // 已有分类，不能被覆盖
 		{ID: 3, UpstreamProductID: 3},                         // 上游未分类，保持 0
 		{ID: 4, UpstreamProductID: 4},
+	}
+	for i := range mappings {
+		mappings[i].LocalProductID = 10
+		repo.items[mappings[i].ID] = &mappings[i]
 	}
 
 	svc.backfillUpstreamCategoryIDs(context.Background(), adapter, 1, mappings)

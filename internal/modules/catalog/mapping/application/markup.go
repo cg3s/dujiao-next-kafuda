@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"time"
 
@@ -90,29 +91,37 @@ func (s *Service) reapplyMarkupPrices(conn *siteconnectiondomain.Connection, cat
 				categoryMarkupsNeedParents(conn.CategoryMarkups, mapping.UpstreamCategoryID)) {
 			continue
 		}
-		skuMappings, err := s.skuMappings.ListByProductMapping(mapping.ID)
-		if err != nil {
-			continue
-		}
-
-		markupPercent := ResolveCategoryMarkup(conn.PriceMarkupPercent, conn.CategoryMarkups, mapping.UpstreamCategoryID, categoryParents)
-		for _, sm := range skuMappings {
-			newLocalPrice := CalculateLocalPrice(sm.UpstreamPrice.Decimal, conn.ExchangeRate, markupPercent, conn.PriceRoundingMode)
-			localSKU, err := s.skus.GetByID(sm.LocalSKUID)
-			if err != nil || localSKU == nil {
-				continue
+		err := s.withMappingWrite(&mapping, func(s *Service, mapping *mappingdomain.Mapping) error {
+			skuMappings, err := s.skuMappings.ListByProductMapping(mapping.ID)
+			if err != nil {
+				return err
 			}
-			localSKU.PriceAmount = money.FromDecimal(newLocalPrice.Round(2))
-			localSKU.CostPriceAmount = money.FromDecimal(convertCurrency(sm.UpstreamPrice.Decimal, conn.ExchangeRate).Round(2)) // 成本价 = 上游价格 × 汇率（本地币种）
-			_ = s.skus.Update(localSKU)
+
+			markupPercent := ResolveCategoryMarkup(conn.PriceMarkupPercent, conn.CategoryMarkups, mapping.UpstreamCategoryID, categoryParents)
+			for _, sm := range skuMappings {
+				newLocalPrice := CalculateLocalPrice(sm.UpstreamPrice.Decimal, conn.ExchangeRate, markupPercent, conn.PriceRoundingMode)
+				localSKU, err := s.skus.GetByID(sm.LocalSKUID)
+				if err != nil || localSKU == nil {
+					continue
+				}
+				localSKU.PriceAmount = money.FromDecimal(newLocalPrice.Round(2))
+				localSKU.CostPriceAmount = money.FromDecimal(convertCurrency(sm.UpstreamPrice.Decimal, conn.ExchangeRate).Round(2)) // 成本价 = 上游价格 × 汇率（本地币种）
+				_ = s.skus.Update(localSKU)
+			}
+
+			// 更新 Product.PriceAmount
+			localProduct, err := s.products.GetByID(strconv.FormatUint(uint64(mapping.LocalProductID), 10))
+			if err == nil && localProduct != nil {
+				s.recalcProductPrice(localProduct)
+			}
+			return nil
+		})
+		if err == nil {
+			updated++
+		} else if !errors.Is(err, mappingcontract.ErrMappingNotFound) {
+			return updated, err
 		}
 
-		// 更新 Product.PriceAmount
-		localProduct, err := s.products.GetByID(strconv.FormatUint(uint64(mapping.LocalProductID), 10))
-		if err == nil && localProduct != nil {
-			s.recalcProductPrice(localProduct)
-			updated++
-		}
 	}
 
 	return updated, nil
@@ -153,7 +162,9 @@ func (s *Service) backfillUpstreamCategoryIDs(ctx context.Context, adapter upstr
 		mappings[i].UpstreamCategoryID = categoryID
 		// 只更新这一列：Update 走 db.Save 会整行写回，若这期间定时同步改了
 		// 下架状态或 last_synced_at，整行写回会把它们覆盖回旧值。
-		if err := s.mappings.UpdateUpstreamCategoryID(mappings[i].ID, categoryID); err != nil {
+		if err := s.withMappingWrite(&mappings[i], func(bound *Service, current *mappingdomain.Mapping) error {
+			return bound.mappings.UpdateUpstreamCategoryID(current.ID, categoryID)
+		}); err != nil {
 			logger.Warnw("backfill_upstream_category_id_update_failed",
 				"mapping_id", mappings[i].ID, "error", err)
 		}

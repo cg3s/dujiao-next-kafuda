@@ -71,31 +71,27 @@ type CategoryRepository interface {
 
 // ImportTxProductRepository 是映射写事务内的本地商品端口；解绑时先锁定并复核商品。
 type ImportTxProductRepository interface {
+	ProductRepository
 	LockByIDs(ids []uint) error
-	GetByID(id string) (*productdomain.Product, error)
 	Create(item *productdomain.Product) error
-	QuickUpdate(id string, fields map[string]interface{}) error
 }
 
-// ImportTxSKURepository 是导入事务内的本地 SKU 写入端口。
+// ImportTxSKURepository 是映射写事务内的本地 SKU 端口。
 type ImportTxSKURepository interface {
-	Create(item *productdomain.ProductSKU) error
+	SKURepository
 }
 
-// ImportTxMappingRepository 是导入事务内的映射写入端口。
+// ImportTxMappingRepository 是映射写事务内的映射端口。
 type ImportTxMappingRepository interface {
-	GetByID(id uint) (*mappingdomain.Mapping, error)
-	Delete(id uint) error
-	Create(mapping *mappingdomain.Mapping) error
+	MappingRepository
 }
 
-// ImportTxSKUMappingRepository 是导入事务内的 SKU 映射写入端口。
+// ImportTxSKUMappingRepository 是映射写事务内的 SKU 映射端口。
 type ImportTxSKUMappingRepository interface {
-	DeleteByProductMapping(productMappingID uint) error
-	Create(mapping *mappingdomain.SKUMapping) error
+	SKUMappingRepository
 }
 
-// ImportRepositories 是一次上游商品导入事务中绑定的全部窄端口。
+// ImportRepositories 是上游商品导入、同步、改价及解绑事务中绑定的端口。
 type ImportRepositories struct {
 	Products    ImportTxProductRepository
 	SKUs        ImportTxSKURepository
@@ -103,7 +99,7 @@ type ImportRepositories struct {
 	SKUMappings ImportTxSKUMappingRepository
 }
 
-// UnitOfWork 是映射导入与解绑的事务边界。
+// UnitOfWork 是映射导入、同步、改价与解绑的事务边界。
 type UnitOfWork interface {
 	WithinTransaction(fn func(ImportRepositories) error) error
 }

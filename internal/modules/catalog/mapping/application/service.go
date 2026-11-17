@@ -57,6 +57,36 @@ func NewService(options Options) (*Service, error) {
 	}, nil
 }
 
+// withMappingWrite runs local writes after upstream I/O has finished. The
+// shared product lock serializes them with detachment and fulfillment changes.
+func (s *Service) withMappingWrite(snapshot *mappingdomain.Mapping, apply func(*Service, *mappingdomain.Mapping) error) error {
+	if s.transactions == nil || snapshot == nil {
+		return mappingcontract.ErrMappingNotFound
+	}
+	return s.transactions.WithinTransaction(func(repos mappingcontract.ImportRepositories) error {
+		if err := repos.Products.LockByIDs([]uint{snapshot.LocalProductID}); err != nil {
+			return err
+		}
+		current, err := repos.Mappings.GetByID(snapshot.ID)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.LocalProductID != snapshot.LocalProductID || current.ConnectionID != snapshot.ConnectionID || current.UpstreamProductID != snapshot.UpstreamProductID {
+			return mappingcontract.ErrMappingNotFound
+		}
+		product, err := repos.Products.GetByID(strconv.FormatUint(uint64(current.LocalProductID), 10))
+		if err != nil {
+			return err
+		}
+		if product == nil || !product.IsMapped || product.FulfillmentType != constants.FulfillmentTypeUpstream {
+			return mappingcontract.ErrMappingNotFound
+		}
+		bound := *s
+		bound.products, bound.skus, bound.mappings, bound.skuMappings = repos.Products, repos.SKUs, repos.Mappings, repos.SKUMappings
+		return apply(&bound, current)
+	})
+}
+
 // SetCategoryCreator 注入分类创建端口（装配时调用）。
 func (s *Service) SetCategoryCreator(creator mappingcontract.CategoryCreator) {
 	s.categoryCreator = creator

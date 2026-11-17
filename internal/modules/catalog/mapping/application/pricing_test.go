@@ -1,6 +1,7 @@
 package application
 
 import (
+	"github.com/dujiao-next/internal/constants"
 	"strconv"
 	"testing"
 
@@ -242,6 +243,11 @@ func TestReapplyMarkupLocalSkipsMappingsWithoutCategoryTree(t *testing.T) {
 		connections: &markupReapplyConnections{conn: conn},
 	}
 
+	for _, product := range products.items {
+		product.IsMapped = true
+		product.FulfillmentType = constants.FulfillmentTypeUpstream
+	}
+	svc.transactions = memoryMappingTransactions{svc}
 	updated, err := svc.ReapplyMarkupLocal(7)
 	if err != nil {
 		t.Fatalf("reapply local failed: %v", err)
@@ -263,4 +269,13 @@ func TestReapplyMarkupLocalSkipsMappingsWithoutCategoryTree(t *testing.T) {
 	if got := skus.items[3].PriceAmount.String(); got != "10.00" {
 		t.Fatalf("unknown-category sku price = %s, want unchanged 10.00", got)
 	}
+}
+
+func (m *markupReapplyMappings) GetByID(id uint) (*mappingdomain.Mapping, error) {
+	for i := range m.byConnection {
+		if m.byConnection[i].ID == id {
+			return &m.byConnection[i], nil
+		}
+	}
+	return nil, nil
 }
