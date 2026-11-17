@@ -9,6 +9,7 @@ import (
 	"time"
 
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 
 	"github.com/dujiao-next/internal/constants"
@@ -115,7 +116,7 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 			return nil, ErrProductNotAvailable
 		}
 		direct := strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeKafudaGPT
-		if direct && (!input.PreviewOnly || !input.StorefrontPreview || input.IsGuest || input.UserID == 0 ||
+		if direct && (!input.StorefrontRequest || input.IsGuest || input.UserID == 0 ||
 			!input.Tenant.IsMain || input.Tenant.ResellerID != nil || input.Tenant.Unavailable ||
 			len(input.Items) != 1 || item.Quantity != 1) {
 			return nil, ErrProductPurchaseNotAllowed
@@ -137,8 +138,10 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		if err != nil {
 			return nil, err
 		}
+		var directTerms *kafudacontract.PurchaseTerms
 		if direct {
-			if err := s.validateDirectPreview(product, sku); err != nil {
+			directTerms, err = s.resolveDirectPurchaseTerms(product, sku)
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -325,6 +328,7 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		}
 		orderItems = append(orderItems, orderItem)
 		plans = append(plans, childOrderPlan{
+			DirectTerms:       directTerms,
 			Product:           product,
 			SKU:               sku,
 			Item:              orderItem,
@@ -418,23 +422,59 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 	}, nil
 }
 
-func (s *OrderService) validateDirectPreview(product *productdomain.Product, sku *productdomain.ProductSKU) error {
+func (s *OrderService) resolveDirectPurchaseTerms(product *productdomain.Product, sku *productdomain.ProductSKU) (*kafudacontract.PurchaseTerms, error) {
 	if product.IsMapped || s.directCatalog == nil {
-		return ErrProductNotAvailable
+		return nil, ErrProductNotAvailable
 	}
 	if !sku.DirectCostConfigured || !sku.PriceAmount.Decimal.Round(2).IsPositive() || sku.CostPriceAmount.IsNegative() {
-		return ErrProductPriceInvalid
+		return nil, ErrProductPriceInvalid
 	}
 	plan, planOK := sku.SpecValuesJSON["plan"].(string)
 	country, countryOK := sku.SpecValuesJSON["country"].(string)
 	if !planOK || !countryOK || plan == "" || country == "" || sku.SKUCode != kafudacontract.SKUCode(plan, country) {
-		return ErrProductSKUInvalid
+		return nil, ErrProductSKUInvalid
 	}
 	terms, err := s.directCatalog.PurchaseTerms(context.Background(), plan, country, sku.DirectCatalogRevision)
 	if err != nil || terms == nil || terms.Plan != plan || terms.Country != country {
+		return nil, ErrProductNotAvailable
+	}
+	return terms, nil
+}
+
+func validateDirectCheckout(tx ordercontract.Transaction, plan childOrderPlan, product *productdomain.Product, sku *productdomain.ProductSKU) error {
+	terms := plan.DirectTerms
+	if terms == nil || plan.SKU == nil || product.IsMapped || !sku.DirectCostConfigured ||
+		sku.DirectCatalogRevision != plan.SKU.DirectCatalogRevision || !sku.PriceAmount.Equal(plan.Item.OriginalUnitPrice.Decimal) ||
+		!sku.CostPriceAmount.Equal(plan.Item.CostPrice.Decimal) || productdomain.ValidatePurchaseQuantity(product, 1) != nil {
 		return ErrProductNotAvailable
 	}
-	return nil
+	currentPlan, _ := sku.SpecValuesJSON["plan"].(string)
+	currentCountry, _ := sku.SpecValuesJSON["country"].(string)
+	if currentPlan != terms.Plan || currentCountry != terms.Country || sku.SKUCode != kafudacontract.SKUCode(terms.Plan, terms.Country) {
+		return ErrProductNotAvailable
+	}
+	catalog, err := tx.KafudaGPT().GetCatalogForUpdate(terms.PaymentProfile)
+	if err != nil {
+		return err
+	}
+	if catalog == nil || !catalog.Available(terms.Plan, terms.Country, time.Now()) || catalog.Revision(terms.Plan, terms.Country) != sku.DirectCatalogRevision {
+		return ErrProductNotAvailable
+	}
+	cardAllowed := false
+	for _, card := range catalog.Cards {
+		if card.ProductCode == terms.ProductCode && !card.Restricted {
+			cardAllowed = true
+		}
+	}
+	if !cardAllowed {
+		return ErrProductNotAvailable
+	}
+	for _, option := range catalog.Options {
+		if option.Plan == terms.Plan && option.Country == terms.Country && option.Product == terms.Product {
+			return nil
+		}
+	}
+	return ErrProductNotAvailable
 }
 
 func normalizeGuestEmail(raw string) (string, error) {

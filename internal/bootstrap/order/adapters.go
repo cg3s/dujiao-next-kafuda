@@ -346,6 +346,7 @@ type orderCreateAdapter struct {
 
 func (a orderCreateAdapter) CreateOrder(input ordertransport.CreateOrderInput) (*orderdomain.Order, error) {
 	order, err := a.orders.CreateOrder(orderapp.CreateOrderInput{
+		StorefrontRequest:   true,
 		UserID:              input.UserID,
 		Tenant:              input.Tenant,
 		Items:               mapServiceOrderItems(input.Items),
@@ -418,7 +419,7 @@ func (a orderPaymentCreatorAdapter) CreatePayment(input ordertransport.CreatePay
 
 func (a orderPreviewAdapter) PreviewOrder(input ordertransport.CreateOrderInput) (*ordertransport.OrderPreview, error) {
 	preview, err := a.orders.PreviewOrder(orderapp.CreateOrderInput{
-		StorefrontPreview:   true,
+		StorefrontRequest:   true,
 		UserID:              input.UserID,
 		Tenant:              input.Tenant,
 		Items:               mapServiceOrderItems(input.Items),

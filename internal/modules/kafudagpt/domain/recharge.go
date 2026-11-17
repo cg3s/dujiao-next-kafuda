@@ -32,18 +32,20 @@ var (
 // Snapshot contains only immutable commercial identifiers and local prices.
 // PaymentProfile identifies deployment configuration, never its secret key.
 type Snapshot struct {
-	ProductID      uint         `json:"product_id"`
-	SKUID          uint         `json:"sku_id"`
-	Plan           string       `json:"plan"`
-	Product        string       `json:"product"`
-	Country        string       `json:"country"`
-	PayMode        string       `json:"pay_mode"`
-	ProductCode    string       `json:"product_code"`
-	PaymentProfile string       `json:"payment_profile"`
-	Currency       string       `json:"currency"`
-	CostPrice      money.Amount `json:"cost_price"`
-	SellPrice      money.Amount `json:"sell_price"`
-	MaxCostCents   int64        `json:"max_cost_cents"`
+	CatalogRevision uint64       `json:"catalog_revision"`
+	AllowedKinds    []string     `json:"allowed_kinds,omitempty"`
+	ProductID       uint         `json:"product_id"`
+	SKUID           uint         `json:"sku_id"`
+	Plan            string       `json:"plan"`
+	Product         string       `json:"product"`
+	Country         string       `json:"country"`
+	PayMode         string       `json:"pay_mode"`
+	ProductCode     string       `json:"product_code"`
+	PaymentProfile  string       `json:"payment_profile"`
+	Currency        string       `json:"currency"`
+	CostPrice       money.Amount `json:"cost_price"`
+	SellPrice       money.Amount `json:"sell_price"`
+	MaxCostCents    int64        `json:"max_cost_cents"`
 }
 
 func (s Snapshot) Validate() error {

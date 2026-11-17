@@ -16,8 +16,17 @@ type Store struct{ db *gorm.DB }
 
 var _ kafudacontract.Store = (*Store)(nil)
 var _ kafudacontract.Transaction = (*Store)(nil)
+var _ kafudacontract.CheckoutRepository = (*Store)(nil)
 
 func New(db *gorm.DB) *Store { return &Store{db: db} }
+
+func (s *Store) GetCatalogForUpdate(profile string) (*kafudadomain.Catalog, error) {
+	return first[kafudadomain.Catalog](s.db.Clauses(clause.Locking{Strength: "UPDATE"}).Where("profile = ?", profile))
+}
+
+func (s *Store) CreateCheckout(input kafudacontract.CheckoutInput) error {
+	return s.CreateRecharge(&kafudadomain.Recharge{OrderID: input.OrderID, Snapshot: kafudadomain.Snapshot(input.Snapshot), Stage: kafudadomain.StageWaiting, Version: 1, CreatedAt: input.CreatedAt, UpdatedAt: input.CreatedAt})
+}
 
 func (s *Store) WithinTransaction(ctx context.Context, fn func(kafudacontract.Transaction) error) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error { return fn(New(tx)) })

@@ -56,7 +56,7 @@ func (p *previewPolicySpy) PurchaseTerms(ctx context.Context, plan, country stri
 }
 
 func TestDirectOrderPreviewEnforcesStorefrontAndCatalogRules(t *testing.T) {
-	cases := []string{"valid", "zero_cost", "guest", "channel", "unknown_tenant", "reseller", "unavailable_tenant", "mixed", "duplicate", "quantity", "missing_sku", "wrong_sku_owner", "sku_disabled", "product_disabled", "unconfirmed_cost", "negative_cost", "zero_price", "mapped", "bad_code", "bad_spec", "expired", "unlisted", "old_revision", "sales_disabled", "worker_down", "lookup_unverified", "nil_policy", "policy_error", "nil_terms", "wrong_terms", "create_stays_closed"}
+	cases := []string{"valid", "zero_cost", "guest", "channel", "unknown_tenant", "reseller", "unavailable_tenant", "mixed", "duplicate", "quantity", "missing_sku", "wrong_sku_owner", "sku_disabled", "product_disabled", "unconfirmed_cost", "negative_cost", "zero_price", "mapped", "bad_code", "bad_spec", "expired", "unlisted", "old_revision", "sales_disabled", "worker_down", "lookup_unverified", "nil_policy", "policy_error", "nil_terms", "wrong_terms", "create_unknown_source"}
 	for _, scenario := range cases {
 		t.Run(scenario, func(t *testing.T) {
 			f := newCouponLimitRaceFixture(t, "direct-preview-"+scenario, 0, 0)
@@ -128,13 +128,13 @@ func TestDirectOrderPreviewEnforcesStorefrontAndCatalogRules(t *testing.T) {
 			svc := orderapp.NewOrderService(orderapp.OrderServiceOptions{DirectCatalog: policy, OrderStore: orderstore.New(f.db, "test-guest-credential-secret-with-32-bytes"), UserStore: userstore.New(f.db), ProductStore: productstore.NewProductStore(f.db), ProductSKUStore: productstore.NewSKUStore(f.db), CouponStore: f.couponRepo, CouponUsageStore: f.usageRepo, PromotionRepo: promotionstore.New(f.db), Queue: f.queue})
 			input := f.input(f.users[0].ID)
 			input.CouponCode = ""
-			input.StorefrontPreview = true
+			input.StorefrontRequest = true
 			input.Tenant = resellercontract.MainTenantContext("shop.example")
 			// Request fulfillment values must never replace the database type.
 			input.Items[0].FulfillmentType = constants.FulfillmentTypeManual
 			switch scenario {
 			case "channel":
-				input.StorefrontPreview = false
+				input.StorefrontRequest = false
 			case "unknown_tenant":
 				input.Tenant = resellercontract.TenantContext{}
 			case "reseller":
@@ -152,9 +152,12 @@ func TestDirectOrderPreviewEnforcesStorefrontAndCatalogRules(t *testing.T) {
 			}
 			var preview *orderapp.OrderPreview
 			var err error
+			if scenario == "create_unknown_source" {
+				input.StorefrontRequest = false
+			}
 			if scenario == "guest" {
 				preview, err = svc.PreviewGuestOrder(orderapp.CreateGuestOrderInput{Email: "guest@example.test", OrderPassword: "password123", Tenant: input.Tenant, Items: input.Items})
-			} else if scenario == "create_stays_closed" {
+			} else if scenario == "create_unknown_source" {
 				_, err = svc.CreateOrder(input)
 			} else {
 				preview, err = svc.PreviewOrder(input)
@@ -178,7 +181,7 @@ func TestDirectOrderPreviewEnforcesStorefrontAndCatalogRules(t *testing.T) {
 			if scenario != "valid" && scenario != "zero_cost" {
 				want := orderapp.ErrProductNotAvailable
 				switch scenario {
-				case "guest", "channel", "unknown_tenant", "reseller", "unavailable_tenant", "mixed", "duplicate", "quantity", "create_stays_closed":
+				case "guest", "channel", "unknown_tenant", "reseller", "unavailable_tenant", "mixed", "duplicate", "quantity", "create_unknown_source":
 					want = orderapp.ErrProductPurchaseNotAllowed
 				case "missing_sku":
 					want = orderapp.ErrProductSKURequired
@@ -221,11 +224,11 @@ func assertDirectPreviewHTTP(t *testing.T, svc *orderapp.OrderService, input ord
 	gin.SetMode(gin.TestMode)
 	handlers := orderwiring.New(&container.Container{OrderService: svc})
 	for _, locale := range []string{"zh-CN", "zh-TW", "en-US"} {
-		for _, mode := range []string{"main_preview", "reseller_preview", "create"} {
+		for _, mode := range []string{"main_preview", "reseller_preview", "unavailable_preview"} {
 			t.Run(locale+"/"+mode, func(t *testing.T) {
 				recorder := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(recorder)
-				body := fmt.Sprintf(`{"items":[{"product_id":%d,"sku_id":%d,"quantity":1,"fulfillment_type":"manual"}],"storefront_preview":true}`, input.Items[0].ProductID, input.Items[0].SKUID)
+				body := fmt.Sprintf(`{"items":[{"product_id":%d,"sku_id":%d,"quantity":1,"fulfillment_type":"manual"}],"storefront_request":true}`, input.Items[0].ProductID, input.Items[0].SKUID)
 				c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/orders/preview", strings.NewReader(body))
 				c.Request.Header.Set("Content-Type", "application/json")
 				c.Request.Header.Set("X-Lang", locale)
@@ -233,11 +236,10 @@ func assertDirectPreviewHTTP(t *testing.T, svc *orderapp.OrderService, input ord
 				if mode == "reseller_preview" {
 					c.Request = c.Request.WithContext(resellercontract.WithTenantContext(c.Request.Context(), resellercontract.ResellerTenantContext("reseller.example", 7, 1, "")))
 				}
-				if mode == "create" {
-					handlers.Create.CreateOrder(c)
-				} else {
-					handlers.Preview.PreviewOrder(c)
+				if mode == "unavailable_preview" {
+					c.Request = c.Request.WithContext(resellercontract.WithTenantContext(c.Request.Context(), resellercontract.UnavailableTenantContext("unknown.example", "unknown")))
 				}
+				handlers.Preview.PreviewOrder(c)
 				var result response.Response
 				if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
 					t.Fatal(err)

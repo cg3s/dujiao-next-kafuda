@@ -145,8 +145,8 @@ func NewOrderService(opts OrderServiceOptions) *OrderService {
 
 // CreateOrderInput 创建订单输入
 type CreateOrderInput struct {
-	// StorefrontPreview is set by the main-site preview adapter, never request JSON.
-	StorefrontPreview   bool `json:"-"`
+	// StorefrontRequest is set by main-site adapters, never request JSON.
+	StorefrontRequest   bool `json:"-"`
 	UserID              uint
 	Tenant              resellercontract.TenantContext
 	Items               []CreateOrderItem
@@ -183,6 +183,7 @@ type CreateOrderItem struct {
 
 // childOrderPlan 子订单计划数据
 type childOrderPlan struct {
+	DirectTerms       *kafudacontract.PurchaseTerms
 	Product           *productdomain.Product
 	SKU               *productdomain.ProductSKU
 	Item              orderdomain.OrderItem
@@ -238,6 +239,7 @@ func (s *OrderService) CreateOrder(input CreateOrderInput) (*orderdomain.Order, 
 		return nil, ErrInvalidOrderItem
 	}
 	return s.createOrder(orderCreateParams{
+		StorefrontRequest:   input.StorefrontRequest,
 		UserID:              input.UserID,
 		Tenant:              input.Tenant,
 		Items:               input.Items,
@@ -279,8 +281,7 @@ func (s *OrderService) CreateGuestOrder(input CreateGuestOrderInput) (*orderdoma
 }
 
 type orderCreateParams struct {
-	StorefrontPreview        bool
-	PreviewOnly              bool
+	StorefrontRequest        bool
 	UserID                   uint
 	GuestEmail               string
 	GuestPassword            string
@@ -353,7 +354,7 @@ func (s *OrderService) PreviewOrder(input CreateOrderInput) (*OrderPreview, erro
 		return nil, ErrInvalidOrderItem
 	}
 	params := orderCreateParams{
-		StorefrontPreview:   input.StorefrontPreview,
+		StorefrontRequest:   input.StorefrontRequest,
 		UserID:              input.UserID,
 		Tenant:              input.Tenant,
 		Items:               input.Items,
@@ -393,7 +394,6 @@ func (s *OrderService) PreviewGuestOrder(input CreateGuestOrderInput) (*OrderPre
 }
 
 func (s *OrderService) previewOrder(input orderCreateParams) (*OrderPreview, error) {
-	input.PreviewOnly = true
 	result, err := s.buildOrderResult(input)
 	if err != nil {
 		return nil, err
@@ -581,6 +581,11 @@ func (s *OrderService) createOrder(input orderCreateParams) (*orderdomain.Order,
 				if sku == nil || !sku.IsActive || sku.ProductID != plan.Item.ProductID {
 					return ErrProductNotAvailable
 				}
+				if plan.Item.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+					if err := validateDirectCheckout(tx, plan, product, sku); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		if s.riskControlSvc != nil && !input.SkipRiskControl {
@@ -644,6 +649,16 @@ func (s *OrderService) createOrder(input orderCreateParams) (*orderdomain.Order,
 				plan.Item = items[0]
 				if pricingCtx != nil {
 					pricingCtx.BindCreatedOrderItem(idx, childOrder.ID, items[0].ID)
+				}
+			}
+			if plan.Item.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+				terms := plan.DirectTerms
+				recharge := kafudacontract.CheckoutInput{OrderID: childOrder.ID, CreatedAt: now,
+					Snapshot: kafudacontract.CheckoutSnapshot{ProductID: plan.Item.ProductID, SKUID: plan.Item.SKUID, Plan: terms.Plan, Country: terms.Country, Product: terms.Product,
+						PayMode: terms.PayMode, ProductCode: terms.ProductCode, PaymentProfile: terms.PaymentProfile, MaxCostCents: terms.MaxCostCents, AllowedKinds: append([]string(nil), terms.AllowedKinds...),
+						CatalogRevision: plan.SKU.DirectCatalogRevision, Currency: plan.Currency, CostPrice: plan.Item.CostPrice, SellPrice: childOrder.TotalAmount}}
+				if err := tx.KafudaGPT().CreateCheckout(recharge); err != nil {
+					return err
 				}
 			}
 

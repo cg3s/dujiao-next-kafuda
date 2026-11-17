@@ -8,6 +8,7 @@ import (
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	couponcontract "github.com/dujiao-next/internal/modules/coupon/contract"
 	fulfillmentcontract "github.com/dujiao-next/internal/modules/fulfillment/contract"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
 	resellerdomain "github.com/dujiao-next/internal/modules/reseller/domain"
@@ -73,6 +74,7 @@ type ResellerOrderStore interface {
 // Transaction 是已打开事务的订单工作单元。
 // 每个方法只暴露相应领域端口，保证事务原子性同时隔离 GORM。
 type Transaction interface {
+	KafudaGPT() kafudacontract.CheckoutRepository
 	Orders() Store
 	Products() productcontract.Repository
 	ProductSKUs() productcontract.SKURepository

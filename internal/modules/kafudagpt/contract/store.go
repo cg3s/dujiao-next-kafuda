@@ -7,6 +7,20 @@ import (
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 )
 
+type CheckoutSnapshot kafudadomain.Snapshot
+
+type CheckoutInput struct {
+	OrderID   uint
+	Snapshot  CheckoutSnapshot
+	CreatedAt time.Time
+}
+
+// CheckoutRepository is bound to the order creation transaction.
+type CheckoutRepository interface {
+	GetCatalogForUpdate(string) (*kafudadomain.Catalog, error)
+	CreateCheckout(CheckoutInput) error
+}
+
 type Store interface {
 	WithinTransaction(context.Context, func(Transaction) error) error
 	GetRecharge(context.Context, uint) (*kafudadomain.Recharge, error)
