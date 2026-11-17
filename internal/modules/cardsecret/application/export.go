@@ -65,7 +65,7 @@ func (s *Service) ExportAvailableCardSecrets(input ExportAvailableCardSecretInpu
 	if s.transactions == nil {
 		return nil, ErrFetchFailed
 	}
-	err = s.transactions.Transaction(func(secretRepo cardsecretcontract.Repository, _ cardsecretcontract.BatchRepository) error {
+	err = s.transactions.Transaction(func(secretRepo cardsecretcontract.Repository, _ cardsecretcontract.BatchRepository, _ cardsecretcontract.ProductRepository, _ cardsecretcontract.ProductSKURepository) error {
 		items, err := secretRepo.ListAvailableByProductBatchForUpdate(input.ProductID, input.SKUID, input.BatchID, input.Limit)
 		if err != nil {
 			return ErrFetchFailed

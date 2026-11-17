@@ -7,6 +7,7 @@ import (
 
 	cardsecretcontract "github.com/dujiao-next/internal/modules/cardsecret/contract"
 	cardsecretdomain "github.com/dujiao-next/internal/modules/cardsecret/domain"
+	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -14,7 +15,22 @@ import (
 
 // Store 是卡密库存端口的 GORM 实现。
 type Store struct {
-	db *gorm.DB
+	db       *gorm.DB
+	products interface {
+		BindTx(*gorm.DB) productcontract.Repository
+	}
+	skus interface {
+		BindTx(*gorm.DB) productcontract.SKURepository
+	}
+}
+
+// WithProducts supplies transaction binders without importing product stores.
+func (r *Store) WithProducts(products interface {
+	BindTx(*gorm.DB) productcontract.Repository
+}, skus interface {
+	BindTx(*gorm.DB) productcontract.SKURepository
+}) *Store {
+	return &Store{db: r.db, products: products, skus: skus}
 }
 
 var (
@@ -35,9 +51,17 @@ func (r *Store) BindTx(tx *gorm.DB) cardsecretcontract.Repository {
 }
 
 // Transaction 为卡密与批次写入提供同一事务中的模块端口。
-func (r *Store) Transaction(fn func(cardsecretcontract.Repository, cardsecretcontract.BatchRepository) error) error {
+func (r *Store) Transaction(fn func(cardsecretcontract.Repository, cardsecretcontract.BatchRepository, cardsecretcontract.ProductRepository, cardsecretcontract.ProductSKURepository) error) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		return fn(New(tx), NewBatch(tx))
+		var products cardsecretcontract.ProductRepository
+		var skus cardsecretcontract.ProductSKURepository
+		if r.products != nil {
+			products = r.products.BindTx(tx)
+		}
+		if r.skus != nil {
+			skus = r.skus.BindTx(tx)
+		}
+		return fn(New(tx), NewBatch(tx), products, skus)
 	})
 }
 

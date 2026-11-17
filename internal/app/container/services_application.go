@@ -123,7 +123,7 @@ func (c *Container) initApplicationServices() {
 	c.CardSecretService = cardsecretapp.NewService(cardsecretapp.ServiceOptions{
 		Secrets:      c.CardSecretRepo,
 		Batches:      c.CardSecretBatchRepo,
-		Transactions: c.CardSecretRepo,
+		Transactions: c.CardSecretRepo.WithProducts(c.ProductRepo, c.ProductSKURepo),
 		Products:     c.ProductRepo,
 		ProductSKUs:  c.ProductSKURepo,
 	})

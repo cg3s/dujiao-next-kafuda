@@ -42,12 +42,13 @@ type BatchRepository interface {
 	DeleteByProduct(productID uint) error
 }
 
-// UnitOfWork 在同一事务中暴露库存与批次端口。
+// UnitOfWork 在同一事务中暴露库存、批次及商品端口，供录入时锁定商品并复核 SKU。
 type UnitOfWork interface {
-	Transaction(fn func(secrets Repository, batches BatchRepository) error) error
+	Transaction(fn func(secrets Repository, batches BatchRepository, products ProductRepository, skus ProductSKURepository) error) error
 }
 
 type ProductRepository interface {
+	LockByIDs(ids []uint) error
 	GetByID(id string) (*productdomain.Product, error)
 }
 

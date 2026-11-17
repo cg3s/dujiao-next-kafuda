@@ -44,6 +44,9 @@ func (s *Service) CreateCardSecretBatch(input CreateCardSecretBatchInput) (*card
 	if product == nil {
 		return nil, 0, ErrProductNotFound
 	}
+	if product.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+		return nil, 0, ErrInvalid
+	}
 	sku, err := s.resolveCardSecretSKU(product.ID, input.SKUID)
 	if err != nil {
 		return nil, 0, err
@@ -84,7 +87,32 @@ func (s *Service) CreateCardSecretBatch(input CreateCardSecretBatchInput) (*card
 	if s.transactions == nil {
 		return nil, 0, ErrBatchCreateFailed
 	}
-	err = s.transactions.Transaction(func(secretRepo cardsecretcontract.Repository, batchRepo cardsecretcontract.BatchRepository) error {
+	err = s.transactions.Transaction(func(secretRepo cardsecretcontract.Repository, batchRepo cardsecretcontract.BatchRepository, products cardsecretcontract.ProductRepository, skus cardsecretcontract.ProductSKURepository) error {
+		if products == nil || skus == nil {
+			return ErrCreateFailed
+		}
+		if err := products.LockByIDs([]uint{input.ProductID}); err != nil {
+			return ErrProductFetchFailed
+		}
+		current, err := products.GetByID(strconv.FormatUint(uint64(input.ProductID), 10))
+		if err != nil {
+			return ErrProductFetchFailed
+		}
+		if current == nil {
+			return ErrProductNotFound
+		}
+		if current.FulfillmentType != product.FulfillmentType || current.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+			return ErrInvalid
+		}
+		bound := *s
+		bound.productRepo, bound.productSKURepo = products, skus
+		currentSKU, err := bound.resolveCardSecretSKU(input.ProductID, input.SKUID)
+		if err != nil {
+			return err
+		}
+		if currentSKU.ID != sku.ID {
+			return ErrProductSKUInvalid
+		}
 		if err := batchRepo.Create(batch); err != nil {
 			return ErrBatchCreateFailed
 		}
@@ -106,6 +134,11 @@ func (s *Service) CreateCardSecretBatch(input CreateCardSecretBatchInput) (*card
 		return nil
 	})
 	if err != nil {
+		for _, businessErr := range []error{ErrInvalid, ErrProductFetchFailed, ErrProductNotFound, ErrProductSKURequired, ErrProductSKUInvalid} {
+			if errors.Is(err, businessErr) {
+				return nil, 0, businessErr
+			}
+		}
 		if errors.Is(err, ErrBatchCreateFailed) {
 			return nil, 0, ErrBatchCreateFailed
 		}

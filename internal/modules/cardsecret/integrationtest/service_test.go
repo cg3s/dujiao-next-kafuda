@@ -2,6 +2,7 @@ package integrationtest
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http/httptest"
@@ -9,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productgormstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
 
@@ -27,6 +27,103 @@ import (
 	"gorm.io/gorm"
 )
 
+type cardSecretImportHook struct {
+	cardsecretcontract.UnitOfWork
+	before func()
+}
+
+func (u cardSecretImportHook) Transaction(fn func(cardsecretcontract.Repository, cardsecretcontract.BatchRepository, cardsecretcontract.ProductRepository, cardsecretcontract.ProductSKURepository) error) error {
+	u.before()
+	return u.UnitOfWork.Transaction(fn)
+}
+
+func TestCardSecretImportRechecksProductAndSKUInTransaction(t *testing.T) {
+	for _, csv := range []bool{false, true} {
+		for _, change := range []string{"direct", "converted", "product_deleted", "sku_deleted", "sku_disabled", "sku_reassigned", "selection_changed"} {
+			t.Run(fmt.Sprintf("csv_%t/%s", csv, change), func(t *testing.T) {
+				db := setupCardSecretServiceTestDB(t)
+				pool, err := db.DB()
+				if err != nil {
+					t.Fatal(err)
+				}
+				pool.SetMaxOpenConns(1)
+				t.Cleanup(func() { _ = pool.Close() })
+				product := productdomain.Product{Slug: "import-race", TitleJSON: jsonmap.JSON{"zh-CN": "import-race"}, FulfillmentType: constants.FulfillmentTypeAuto}
+				if change == "direct" {
+					product.FulfillmentType = constants.FulfillmentTypeKafudaGPT
+				}
+				if err := db.Create(&product).Error; err != nil {
+					t.Fatal(err)
+				}
+				sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: productdomain.DefaultSKUCode, PriceAmount: money.FromDecimal(decimal.NewFromInt(10)), IsActive: true}
+				if err := db.Create(&sku).Error; err != nil {
+					t.Fatal(err)
+				}
+				products, skus := productgormstore.NewProductStore(db), productgormstore.NewSKUStore(db)
+				secrets := cardsecretgormstore.New(db)
+				called := false
+				uow := cardSecretImportHook{UnitOfWork: secrets.WithProducts(products, skus), before: func() {
+					called = true
+					var err error
+					switch change {
+					case "converted":
+						err = db.Model(&product).Update("fulfillment_type", constants.FulfillmentTypeKafudaGPT).Error
+					case "product_deleted":
+						err = db.Delete(&product).Error
+					case "sku_deleted":
+						err = skus.Delete(sku.ID)
+					case "sku_disabled":
+						err = db.Model(&sku).Update("is_active", false).Error
+					case "sku_reassigned":
+						err = db.Model(&sku).Update("product_id", product.ID+100).Error
+					case "selection_changed":
+						err = db.Create(&productdomain.ProductSKU{ProductID: product.ID, SKUCode: "OTHER", IsActive: true}).Error
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+				}}
+				svc := cardsecretapp.NewService(cardsecretapp.ServiceOptions{Secrets: secrets, Batches: cardsecretgormstore.NewBatch(db), Transactions: uow, Products: products, ProductSKUs: skus})
+				skuID := sku.ID
+				if change == "selection_changed" {
+					skuID = 0
+				}
+				var batch *cardsecretdomain.Batch
+				var count int
+				if csv {
+					batch, count, err = svc.ImportCardSecretCSV(ImportCardSecretCSVInput{ProductID: product.ID, SKUID: skuID, File: newCardSecretCSVFileHeader(t, "secret\nlate-secret\n")})
+				} else {
+					batch, count, err = svc.CreateCardSecretBatch(CreateCardSecretBatchInput{ProductID: product.ID, SKUID: skuID, Secrets: []string{"late-secret"}})
+				}
+				want := cardsecretapp.ErrInvalid
+				switch change {
+				case "product_deleted":
+					want = cardsecretapp.ErrProductNotFound
+				case "sku_deleted", "sku_disabled", "sku_reassigned":
+					want = cardsecretapp.ErrProductSKUInvalid
+				case "selection_changed":
+					want = cardsecretapp.ErrProductSKURequired
+				}
+				if !errors.Is(err, want) || batch != nil || count != 0 {
+					t.Fatalf("expected %v with no batch, got %+v %d %v", want, batch, count, err)
+				}
+				if change != "direct" && !called {
+					t.Fatal("request did not reach the transaction boundary")
+				}
+				for _, model := range []interface{}{&cardsecretdomain.Batch{}, &cardsecretdomain.Secret{}} {
+					var rows int64
+					if err := db.Model(model).Count(&rows).Error; err != nil {
+						t.Fatal(err)
+					}
+					if rows != 0 {
+						t.Fatalf("rejected import created %T rows", model)
+					}
+				}
+			})
+		}
+	}
+}
+
 type CreateCardSecretBatchInput = cardsecretapp.CreateCardSecretBatchInput
 type ImportCardSecretCSVInput = cardsecretapp.ImportCardSecretCSVInput
 type ListCardSecretInput = cardsecretapp.ListCardSecretInput
@@ -43,13 +140,13 @@ var (
 func NewCardSecretService(
 	secrets *cardsecretgormstore.Store,
 	batches *cardsecretgormstore.BatchStore,
-	products productcontract.Repository,
-	productSKUs productcontract.SKURepository,
+	products *productgormstore.ProductStore,
+	productSKUs *productgormstore.SKUStore,
 ) *cardsecretapp.Service {
 	return cardsecretapp.NewService(cardsecretapp.ServiceOptions{
 		Secrets:      secrets,
 		Batches:      batches,
-		Transactions: secrets,
+		Transactions: secrets.WithProducts(products, productSKUs),
 		Products:     products,
 		ProductSKUs:  productSKUs,
 	})
