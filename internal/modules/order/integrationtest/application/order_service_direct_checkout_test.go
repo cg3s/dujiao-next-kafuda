@@ -286,6 +286,73 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 	}
 }
 
+func TestControlledDirectManualCompletionRequiresTerminalAttempt(t *testing.T) {
+	f := newDirectCheckoutFixture(t)
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+		t.Fatal(err)
+	}
+	order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, now := context.Background(), time.Now().UTC()
+	childID := order.Children[0].ID
+	ids := []uint{order.ID, childID}
+	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", ids).
+		Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	records := kafudaapp.New(f.store)
+	reserved, err := records.Reserve(ctx, childID, now, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := reserved.Attempt.ID
+	if err := records.MarkSubmitting(ctx, id, "quote", now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := records.MarkUnknown(ctx, id, now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	const adminID = 9
+	complete := func(attemptID uint, confirmed bool) error {
+		return kafudaworkflow.CompleteManual(f.options.OrderStore, childID, attemptID, adminID, confirmed, now)
+	}
+	if err := complete(id, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("unknown attempt allowed manual completion: %v", err)
+	}
+	result := kafudacontract.OrderResult{ID: 101, Reference: reserved.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "failed"}
+	if _, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, now, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := complete(id, false); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("missing confirmation allowed manual completion: %v", err)
+	}
+	if err := complete(id+1, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("wrong attempt allowed manual completion: %v", err)
+	}
+	if err := complete(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := complete(id, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("manual completion replay accepted: %v", err)
+	}
+	var delivery fulfillmentdomain.Fulfillment
+	if err := f.db.Where("order_id = ?", childID).First(&delivery).Error; err != nil || delivery.DeliveredBy == nil || *delivery.DeliveredBy != adminID || delivery.Payload != "" {
+		t.Fatalf("invalid manual delivery audit: %+v, %v", delivery, err)
+	}
+	for _, orderID := range ids {
+		var stored orderdomain.Order
+		if err := f.db.First(&stored, orderID).Error; err != nil || stored.Status != constants.OrderStatusCompleted {
+			t.Fatalf("manual completion did not update order %d: %+v, %v", orderID, stored, err)
+		}
+	}
+	record, err := f.store.GetRecharge(ctx, childID)
+	if err != nil || record == nil || record.Stage != kafudadomain.StageCompleted || record.CompletedAt == nil {
+		t.Fatalf("manual completion did not update recharge: %+v, %v", record, err)
+	}
+}
+
 func TestDirectShopCompletionUpdatesParentAndChildAtomically(t *testing.T) {
 	f := newDirectCheckoutFixture(t)
 	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
