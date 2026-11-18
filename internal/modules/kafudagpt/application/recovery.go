@@ -19,6 +19,7 @@ func (s *Service) PollKnownOrder(ctx context.Context, gateway kafudacontract.Gat
 	if gateway == nil || now.IsZero() || !retryAt.After(now) {
 		return nil, kafudadomain.ErrInvalidTransition
 	}
+	started := time.Now()
 	attempt, err := s.store.GetAttempt(ctx, attemptID)
 	if err != nil {
 		return nil, err
@@ -46,6 +47,15 @@ func (s *Service) PollKnownOrder(ctx context.Context, gateway kafudacontract.Gat
 		if next != kafudadomain.AttemptChecking && attempt.Status.CanTransition(next) &&
 			(result.ChargedUSDCents == nil || *result.ChargedUSDCents >= 0) {
 			return result, nil
+		}
+	}
+	// The supplier reset can extend local backoff. Anchor the duration at the
+	// response so a slow lookup does not consume part of the reset window.
+	var apiErr *kafudacontract.APIError
+	if errors.As(err, &apiErr) && apiErr != nil && apiErr.HTTPStatus == 429 && apiErr.RetryAfter > 0 {
+		resetAt := now.Add(time.Since(started)).Add(apiErr.RetryAfter)
+		if resetAt.After(retryAt) {
+			retryAt = resetAt
 		}
 	}
 	// Never return raw gateway errors, which may contain upstream payloads.
