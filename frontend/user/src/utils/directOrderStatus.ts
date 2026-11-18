@@ -3,6 +3,7 @@ import { KAFUDA_GPT_DIRECT } from './directPurchase.ts'
 const DIRECT_ORDER_STAGES = ['waiting_session', 'checking', 'submitting', 'processing', 'manual_review', 'completed', 'refunded'] as const
 
 export type DirectOrderStage = typeof DIRECT_ORDER_STAGES[number]
+type TerminalDirectOrderStage = Extract<DirectOrderStage, 'completed' | 'refunded'>
 
 export interface DirectOrderStatus {
   stage: DirectOrderStage
@@ -42,6 +43,7 @@ export function startDirectOrderPolling(
   fetchStatus: () => Promise<unknown>,
   onUpdate: (status: DirectOrderStatus | null) => void,
   page: Pick<Document, 'visibilityState' | 'addEventListener' | 'removeEventListener'>,
+  syncTerminalOrder?: (stage: TerminalDirectOrderStage) => Promise<boolean>,
 ): () => void {
   let stopped = false
   let inFlight = false
@@ -55,6 +57,19 @@ export function startDirectOrderPolling(
   const refresh = async () => {
     if (stopped || inFlight || page.visibilityState === 'hidden') return
     inFlight = true
+    if ((lastStage === 'completed' || lastStage === 'refunded') && syncTerminalOrder) {
+      try {
+        if (await syncTerminalOrder(lastStage)) stop()
+      } catch {
+        // Keep the confirmed terminal stage while the order detail catches up.
+      } finally {
+        inFlight = false
+      }
+      if (!stopped && page.visibilityState === 'visible') {
+        timer = setTimeout(refresh, ACTIVE_POLL_INTERVAL)
+      }
+      return
+    }
     let status: DirectOrderStatus | null = null
     try {
       status = parseDirectOrderStatus(await fetchStatus())
@@ -67,7 +82,11 @@ export function startDirectOrderPolling(
     if (status) lastStage = status.stage
     onUpdate(status)
     if (lastStage === 'completed' || lastStage === 'refunded') {
-      stop()
+      if (!syncTerminalOrder) {
+        stop()
+        return
+      }
+      void refresh()
     } else if (!stopped && page.visibilityState === 'visible') {
       const interval = lastStage === 'manual_review' ? MANUAL_REVIEW_POLL_INTERVAL : ACTIVE_POLL_INTERVAL
       timer = setTimeout(refresh, interval)

@@ -252,7 +252,7 @@
     "sku": "Plan {plan} · Region {country}",
     "available": "Available",
     "unavailable": "Currently unavailable",
-    "notice": "Choose one plan and region per order. After payment, submit your ChatGPT Session from the order page. Region restrictions, existing subscriptions, and eligibility for half-price plans or credits are checked for your account.",
+    "notice": "Choose one plan and region per order. After payment, track recharge progress from the order details. Region restrictions, existing subscriptions, and eligibility for half-price plans or credits are checked for your account.",
     "loginRequired": "Sign in to continue to direct recharge checkout.",
     "checkoutRestricted": "Use Buy Now on the main storefront to purchase one direct recharge option."
   },

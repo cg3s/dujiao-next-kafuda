@@ -73,14 +73,14 @@ export function useOrderDetail() {
       (status) => {
         if (number !== directOrderNo.value) return
         directStatusUnavailable.value = status === null
-        if (status) {
-          directStatus.value = status
-          if ((status.stage === 'completed' || status.stage === 'refunded') && order.value?.status !== status.stage) {
-            void loadOrder(false)
-          }
-        }
+        if (status) directStatus.value = status
       },
       document,
+      async (stage) => {
+        if (number !== directOrderNo.value || order.value?.status === stage) return true
+        await loadOrder(false)
+        return number !== directOrderNo.value || order.value?.status === stage
+      },
     ))
   })
 

@@ -133,3 +133,59 @@ test('a confirmed refund stops polls and visibility refreshes', async (t) => {
   assert.deepEqual(stages, ['manual_review', 'refunded'])
   assert.equal(calls, 2)
 })
+
+test('terminal progress retries order details without querying progress again', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const page = testPage()
+  const stages: string[] = []
+  let statusRequests = 0
+  let detailRequests = 0
+  const updated_at = '2026-11-18T08:00:00Z'
+  startDirectOrderPolling(async () => {
+    statusRequests++
+    return { stage: 'completed', updated_at }
+  }, (status) => {
+    if (status) stages.push(status.stage)
+  }, page, async (stage) => {
+    assert.equal(stage, 'completed')
+    detailRequests++
+    if (detailRequests === 1) throw new Error('offline')
+    return detailRequests === 3
+  })
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(detailRequests, 1)
+  t.mock.timers.tick(10_000)
+  await Promise.resolve()
+  assert.equal(detailRequests, 2)
+  t.mock.timers.tick(10_000)
+  await Promise.resolve()
+  assert.equal(detailRequests, 3)
+  t.mock.timers.tick(60_000)
+  page.dispatchEvent(new Event('visibilitychange'))
+  assert.equal(detailRequests, 3)
+  assert.equal(statusRequests, 1)
+  assert.deepEqual(stages, ['completed'])
+})
+
+test('leaving after terminal progress cancels pending order detail retries', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const page = testPage()
+  let detailRequests = 0
+  const detail = Promise.withResolvers<boolean>()
+  const stop = startDirectOrderPolling(async () => ({
+    stage: 'refunded',
+    updated_at: '2026-11-18T08:00:00Z',
+  }), () => {}, page, () => {
+    detailRequests++
+    return detail.promise
+  })
+  await Promise.resolve()
+  assert.equal(detailRequests, 1)
+  stop()
+  detail.resolve(false)
+  await Promise.resolve()
+  page.dispatchEvent(new Event('visibilitychange'))
+  t.mock.timers.tick(60_000)
+  assert.equal(detailRequests, 1)
+})
