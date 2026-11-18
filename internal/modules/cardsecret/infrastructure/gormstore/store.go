@@ -258,15 +258,18 @@ func (r *Store) GetByID(id uint) (*cardsecretdomain.Secret, error) {
 	return &secret, nil
 }
 
-// Update 更新卡密
+// Update updates only the supplied secret and status values.
 func (r *Store) Update(secret *cardsecretdomain.Secret) error {
+	fields := map[string]interface{}{"updated_at": secret.UpdatedAt}
+	if secret.Secret != "" {
+		fields["secret"] = secret.Secret
+	}
+	if secret.Status != "" {
+		fields["status"] = secret.Status
+	}
 	result := r.db.Model(&cardsecretdomain.Secret{}).
 		Where("id = ? AND deleted_at IS NULL", secret.ID).
-		Updates(map[string]interface{}{
-			"secret":     secret.Secret,
-			"status":     secret.Status,
-			"updated_at": secret.UpdatedAt,
-		})
+		Updates(fields)
 	if result.Error == nil && result.RowsAffected == 0 {
 		return gorm.ErrRecordNotFound
 	}

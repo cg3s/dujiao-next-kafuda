@@ -1,9 +1,12 @@
 package application
 
 import (
+	"errors"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/dujiao-next/internal/constants"
 	cardsecretcontract "github.com/dujiao-next/internal/modules/cardsecret/contract"
 	cardsecretdomain "github.com/dujiao-next/internal/modules/cardsecret/domain"
 )
@@ -82,7 +85,75 @@ func (s *Service) BatchUpdateCardSecretStatus(ids []uint, batchID uint, filter L
 	if err != nil {
 		return 0, err
 	}
-	rows, err := s.secretRepo.BatchUpdateStatus(normalizedIDs, normalizedStatus, time.Now())
+	if normalizedStatus == cardsecretdomain.StatusUsed {
+		rows, err := s.secretRepo.BatchUpdateStatus(normalizedIDs, normalizedStatus, time.Now())
+		if err != nil {
+			return 0, ErrUpdateFailed
+		}
+		return rows, nil
+	}
+
+	targets, err := s.secretRepo.ListByIDs(normalizedIDs)
+	if err != nil {
+		return 0, ErrFetchFailed
+	}
+	if len(targets) == 0 {
+		return 0, nil
+	}
+	if s.transactions == nil {
+		return 0, ErrUpdateFailed
+	}
+	productIDs := make([]uint, 0)
+	originalProducts := make(map[uint]uint, len(targets))
+	stockSKUIDs := make(map[uint]map[uint]bool)
+	for _, target := range targets {
+		originalProducts[target.ID] = target.ProductID
+		if _, seen := stockSKUIDs[target.ProductID]; !seen {
+			productIDs = append(productIDs, target.ProductID)
+			stockSKUIDs[target.ProductID] = nil
+		}
+	}
+
+	var rows int64
+	err = s.transactions.Transaction(func(secrets cardsecretcontract.Repository, _ cardsecretcontract.BatchRepository, products cardsecretcontract.ProductRepository, skus cardsecretcontract.ProductSKURepository) error {
+		if products == nil || skus == nil {
+			return ErrUpdateFailed
+		}
+		if err := products.LockByIDs(productIDs); err != nil {
+			return ErrUpdateFailed
+		}
+		for _, productID := range productIDs {
+			product, err := products.GetByID(strconv.FormatUint(uint64(productID), 10))
+			if err != nil {
+				return err
+			}
+			if product == nil || strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeKafudaGPT {
+				continue
+			}
+			items, err := skus.ListByProduct(productID, false)
+			if err != nil {
+				return err
+			}
+			valid := make(map[uint]bool, len(items)+1)
+			valid[0] = true // Legacy cards may have no SKU association.
+			for _, sku := range items {
+				valid[sku.ID] = true
+			}
+			stockSKUIDs[productID] = valid
+		}
+		current, err := secrets.ListByIDs(normalizedIDs)
+		if err != nil {
+			return err
+		}
+		eligible := make([]uint, 0, len(current))
+		for _, item := range current {
+			if productID, found := originalProducts[item.ID]; found && productID == item.ProductID && stockSKUIDs[productID][item.SKUID] {
+				eligible = append(eligible, item.ID)
+			}
+		}
+		rows, err = secrets.BatchUpdateStatus(eligible, normalizedStatus, time.Now())
+		return err
+	})
 	if err != nil {
 		return 0, ErrUpdateFailed
 	}
@@ -115,20 +186,71 @@ func (s *Service) UpdateCardSecret(id uint, secret, status string) (*cardsecretd
 		return nil, ErrNotFound
 	}
 	trimmedSecret := strings.TrimSpace(secret)
-	if trimmedSecret != "" {
-		item.Secret = trimmedSecret
-	}
 	trimmedStatus := strings.TrimSpace(status)
-	if trimmedStatus != "" {
-		switch trimmedStatus {
-		case cardsecretdomain.StatusAvailable, cardsecretdomain.StatusReserved, cardsecretdomain.StatusUsed:
-			item.Status = trimmedStatus
-		default:
-			return nil, ErrInvalid
-		}
+	switch trimmedStatus {
+	case "", cardsecretdomain.StatusAvailable, cardsecretdomain.StatusReserved, cardsecretdomain.StatusUsed:
+	default:
+		return nil, ErrInvalid
 	}
-	item.UpdatedAt = time.Now()
-	if err := s.secretRepo.Update(item); err != nil {
+	if s.transactions == nil {
+		return nil, ErrUpdateFailed
+	}
+	err = s.transactions.Transaction(func(secrets cardsecretcontract.Repository, _ cardsecretcontract.BatchRepository, products cardsecretcontract.ProductRepository, skus cardsecretcontract.ProductSKURepository) error {
+		restoresStock := trimmedStatus == cardsecretdomain.StatusAvailable || trimmedStatus == cardsecretdomain.StatusReserved
+		if restoresStock {
+			if products == nil || skus == nil {
+				return ErrUpdateFailed
+			}
+			if err := products.LockByIDs([]uint{item.ProductID}); err != nil {
+				return ErrUpdateFailed
+			}
+		}
+		current, err := secrets.GetByID(id)
+		if err != nil {
+			return ErrFetchFailed
+		}
+		if current == nil {
+			return ErrNotFound
+		}
+		if restoresStock {
+			if current.ProductID != item.ProductID {
+				return ErrInvalid
+			}
+			product, err := products.GetByID(strconv.FormatUint(uint64(current.ProductID), 10))
+			if err != nil {
+				return ErrUpdateFailed
+			}
+			if product == nil || strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeKafudaGPT {
+				return ErrInvalid
+			}
+			if current.SKUID != 0 {
+				sku, err := skus.GetByID(current.SKUID)
+				if err != nil {
+					return ErrUpdateFailed
+				}
+				if sku == nil || sku.ProductID != current.ProductID {
+					return ErrInvalid
+				}
+			}
+		}
+		if err := secrets.Update(&cardsecretdomain.Secret{
+			ID: id, Secret: trimmedSecret, Status: trimmedStatus, UpdatedAt: time.Now(),
+		}); err != nil {
+			return ErrUpdateFailed
+		}
+		item, err = secrets.GetByID(id)
+		if err != nil {
+			return ErrFetchFailed
+		}
+		if item == nil {
+			return ErrNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrFetchFailed) {
+			return nil, err
+		}
 		return nil, ErrUpdateFailed
 	}
 	return item, nil

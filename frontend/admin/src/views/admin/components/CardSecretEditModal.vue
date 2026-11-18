@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { AdminCardSecret } from '@/api/types'
@@ -23,22 +23,29 @@ const { t } = useI18n()
 
 const editSubmitting = ref(false)
 const editError = ref('')
-const editForm = reactive({
-  id: 0,
-  secret: '',
-  status: 'available',
+const original = ref({ secret: '', status: 'available' })
+const editForm = reactive({ id: 0, ...original.value })
+const changedFields = computed<Partial<AdminCardSecret>>(() => {
+  const fields: Partial<AdminCardSecret> = {}
+  const secret = editForm.secret.trim()
+  if (secret && secret !== original.value.secret.trim()) fields.secret = secret
+  if (editForm.status !== original.value.status) fields.status = editForm.status
+  return fields
 })
+const hasChanges = computed(() => Object.keys(changedFields.value).length > 0)
 
 watch(
-  () => props.cardSecret,
-  (secret) => {
-    if (secret) {
-      editForm.id = secret.id
-      editForm.secret = secret.secret || ''
-      editForm.status = secret.status || 'available'
-      editError.value = ''
+  [() => props.modelValue, () => props.cardSecret],
+  ([open, card]) => {
+    if (!open || !card) {
+      editForm.id = 0
+      return
     }
+    original.value = { secret: card.secret || '', status: card.status || 'available' }
+    Object.assign(editForm, { id: card.id, ...original.value })
+    editError.value = ''
   },
+  { immediate: true },
 )
 
 const closeModal = () => {
@@ -51,14 +58,11 @@ const handleOpenChange = (value: boolean) => {
 }
 
 const submitEdit = async () => {
-  if (!editForm.id) return
+  if (!editForm.id || !hasChanges.value || editSubmitting.value) return
   editSubmitting.value = true
   editError.value = ''
   try {
-    await adminAPI.updateCardSecret(editForm.id, {
-      secret: editForm.secret,
-      status: editForm.status,
-    })
+    await adminAPI.updateCardSecret(editForm.id, changedFields.value)
     closeModal()
     emit('success')
   } catch (error: any) {
@@ -103,7 +107,7 @@ const submitEdit = async () => {
         </div>
         <div class="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
           <Button class="w-full sm:w-auto" type="button" variant="outline" @click="closeModal">{{ t('admin.common.cancel') }}</Button>
-          <Button class="w-full sm:w-auto" type="submit" :disabled="editSubmitting">
+          <Button class="w-full sm:w-auto" type="submit" :disabled="editSubmitting || !hasChanges">
             {{ editSubmitting ? t('admin.common.loading') : t('admin.common.save') }}
           </Button>
         </div>
