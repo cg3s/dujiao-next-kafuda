@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/dujiao-next/internal/app/container"
@@ -33,6 +34,17 @@ type kafudaPollTestGateway struct {
 	result kafudacontract.OrderResult
 	ids    []uint64
 	err    error
+}
+
+type kafudaDeadlineTestGateway struct {
+	kafudacontract.Gateway
+	ids []uint64
+}
+
+func (g *kafudaDeadlineTestGateway) GetOrder(ctx context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+	g.ids = append(g.ids, id)
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 type kafudaStatusEmailQueue struct {
@@ -222,6 +234,62 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 }
 
 func TestKafudaPollStopsCurrentBatchWhenUpstreamRateLimits(t *testing.T) {
+	gateway := &kafudaPollTestGateway{err: &kafudacontract.APIError{HTTPStatus: 429, RetryAfter: 5 * time.Minute}}
+	c, store, due := newKafudaPollBatch(t, gateway)
+	ctx := t.Context()
+	if err := c.pollKnownKafudaOrders(ctx); !errors.Is(err, kafudaapp.ErrKnownOrderRateLimited) {
+		t.Fatalf("missing rate-limit classification: %v", err)
+	}
+	if len(gateway.ids) != 1 {
+		t.Fatalf("supplier requests after rate limit: %v", gateway.ids)
+	}
+	remaining, err := store.DueKnownOrderPolls(ctx, time.Now().UTC(), 10)
+	if err != nil || len(remaining) != 1 || remaining[0].UpstreamOrderID == nil || *remaining[0].UpstreamOrderID == gateway.ids[0] || !remaining[0].NextPollAt.Equal(due) {
+		t.Fatalf("rate limit changed an unqueried attempt: %+v, %v", remaining, err)
+	}
+}
+
+func TestKafudaRecoveryTaskPersistsBackoffAfterLookupDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		gateway := &kafudaDeadlineTestGateway{}
+		c, store, _ := newKafudaPollBatch(t, gateway)
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		started := time.Now().UTC()
+		before, err := store.DueKnownOrderPolls(ctx, started, 10)
+		if err != nil || len(before) != 2 {
+			t.Fatalf("expected two due attempts, got %+v, %v", before, err)
+		}
+
+		mux := asynq.NewServeMux()
+		c.Register(mux)
+		err = mux.ProcessTask(ctx, queue.NewKafudaRecoverChecksTask())
+		if !errors.Is(err, kafudaapp.ErrKnownOrderLookupFailed) || !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			t.Fatalf("expected lookup timeout while the task remains active, got %v (task status %v)", err, ctx.Err())
+		}
+		failedAt := started.Add(55 * time.Second)
+		if !time.Now().Equal(failedAt) || len(gateway.ids) != 1 || gateway.ids[0] != *before[0].UpstreamOrderID {
+			t.Fatalf("expected the first lookup to exhaust the batch deadline, got %v at %v", gateway.ids, time.Now())
+		}
+		stored, err := store.GetAttempt(ctx, before[0].ID)
+		wantRetry := failedAt.Add(2 * time.Minute)
+		if err != nil || stored == nil || stored.NextPollAt == nil || !stored.NextPollAt.Equal(wantRetry) || !stored.UpdatedAt.Equal(failedAt) {
+			t.Fatalf("retry was not persisted from the time of failure: %+v, %v", stored, err)
+		}
+		if stored.Status != kafudadomain.AttemptProcessing || stored.ActiveOrderID == nil || *stored.ActiveOrderID != before[0].OrderID ||
+			stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != gateway.ids[0] || stored.Reference != before[0].Reference {
+			t.Fatalf("lookup failure changed the active attempt's identity: %+v", stored)
+		}
+		remaining, err := store.DueKnownOrderPolls(ctx, failedAt, 10)
+		if err != nil || len(remaining) != 1 || remaining[0].ID != before[1].ID || !remaining[0].NextPollAt.Equal(*before[1].NextPollAt) ||
+			!remaining[0].UpdatedAt.Equal(before[1].UpdatedAt) {
+			t.Fatalf("lookup deadline changed the unqueried attempt: %+v, %v", remaining, err)
+		}
+	})
+}
+
+func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway) (*Consumer, *gormstore.Store, time.Time) {
+	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -263,16 +331,9 @@ func TestKafudaPollStopsCurrentBatchWhenUpstreamRateLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	gateway := &kafudaPollTestGateway{err: &kafudacontract.APIError{HTTPStatus: 429, RetryAfter: 5 * time.Minute}}
-	c := New(&container.Container{KafudaGPT: &kafudawiring.Module{Store: store, Records: records, Gateway: gateway}})
-	if err := c.pollKnownKafudaOrders(ctx); !errors.Is(err, kafudaapp.ErrKnownOrderRateLimited) {
-		t.Fatalf("missing rate-limit classification: %v", err)
-	}
-	if len(gateway.ids) != 1 {
-		t.Fatalf("supplier requests after rate limit: %v", gateway.ids)
-	}
-	remaining, err := store.DueKnownOrderPolls(ctx, time.Now().UTC(), 10)
-	if err != nil || len(remaining) != 1 || remaining[0].UpstreamOrderID == nil || *remaining[0].UpstreamOrderID == gateway.ids[0] || !remaining[0].NextPollAt.Equal(due) {
-		t.Fatalf("rate limit changed an unqueried attempt: %+v, %v", remaining, err)
-	}
+	c := New(&container.Container{
+		KafudaGPT:  &kafudawiring.Module{Store: store, Records: records, Gateway: gateway},
+		OrderStore: orderstore.New(db, "test-guest-credential-secret-with-32-bytes"),
+	})
+	return c, store, due
 }

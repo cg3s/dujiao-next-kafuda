@@ -56,10 +56,10 @@ func (c *Consumer) handleKafudaRecoverChecks(ctx context.Context, _ *asynq.Task)
 }
 
 func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 55*time.Second)
+	lookupCtx, cancel := context.WithTimeout(ctx, 55*time.Second)
 	defer cancel()
 	module := c.KafudaGPT
-	attempts, err := module.Store.DueKnownOrderPolls(ctx, time.Now().UTC(), 10)
+	attempts, err := module.Store.DueKnownOrderPolls(lookupCtx, time.Now().UTC(), 10)
 	if err != nil {
 		return err
 	}
@@ -73,12 +73,12 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 		}
 	}
 	for _, attempt := range attempts {
-		if err := ctx.Err(); err != nil {
+		if err := lookupCtx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
 		observedAt := time.Now().UTC()
 		retryDelay := kafudaRetryDelay(attempt, interval)
-		result, err := module.Records.PollKnownOrder(ctx, module.Gateway, attempt.ID, observedAt, observedAt.Add(retryDelay), reviewAfter)
+		result, err := module.Records.PollKnownOrder(ctx, lookupCtx, module.Gateway, attempt.ID, observedAt, observedAt.Add(retryDelay), reviewAfter)
 		if err != nil {
 			if !errors.Is(err, kafudadomain.ErrConflict) && !errors.Is(err, kafudadomain.ErrNotFound) {
 				failures = append(failures, err)

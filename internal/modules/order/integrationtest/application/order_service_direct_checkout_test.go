@@ -551,7 +551,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 					t.Fatalf("poll was not scheduled: %+v, %v", attempt, err)
 				}
 				at := *attempt.NextPollAt
-				result, err := records.PollKnownOrder(ctx, gateway, attempt.ID, at, at.Add(time.Minute), 0)
+				result, err := records.PollKnownOrder(ctx, ctx, gateway, attempt.ID, at, at.Add(time.Minute), 0)
 				if err != nil {
 					t.Fatal(err)
 				}

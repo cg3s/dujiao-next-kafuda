@@ -186,21 +186,30 @@ type failingRecoveryWriteStore struct {
 
 type knownOrderLookupGateway struct {
 	kafudacontract.Gateway
-	result *kafudacontract.OrderResult
-	err    error
-	id     uint64
+	result       *kafudacontract.OrderResult
+	err          error
+	id           uint64
+	cancelLookup context.CancelFunc
+	lookupErr    error
 }
 
-func (g *knownOrderLookupGateway) GetOrder(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+func (g *knownOrderLookupGateway) GetOrder(ctx context.Context, id uint64) (*kafudacontract.OrderResult, error) {
 	g.id = id
+	if g.cancelLookup != nil {
+		g.cancelLookup()
+		g.lookupErr = ctx.Err()
+		return nil, g.lookupErr
+	}
 	return g.result, g.err
 }
 
 func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
-	for _, scenario := range []string{"completed", "timeout", "wrong_reference", "deadline", "rate_limited", "rate_limit_below_backoff"} {
+	for _, scenario := range []string{"completed", "timeout", "wrong_reference", "deadline", "lookup_canceled", "rate_limited", "rate_limit_below_backoff"} {
 		t.Run(scenario, func(t *testing.T) {
 			_, store, service := database(t)
 			ctx, now := context.Background(), time.Now().UTC()
+			lookupCtx, cancelLookup := context.WithCancel(ctx)
+			defer cancelLookup()
 			prepare(t, service, 10, now)
 			attempt := reserve(t, service, 10, now).Attempt
 			due, retry := now.Add(time.Minute), now.Add(2*time.Minute)
@@ -216,6 +225,8 @@ func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
 			switch scenario {
 			case "timeout", "deadline":
 				gateway.err = context.DeadlineExceeded
+			case "lookup_canceled":
+				gateway.cancelLookup = cancelLookup
 			case "wrong_reference":
 				result.Reference = "wrong"
 			case "rate_limited":
@@ -224,45 +235,55 @@ func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
 				gateway.err = &kafudacontract.APIError{HTTPStatus: 429, RetryAfter: time.Second}
 			}
 			reviewAfter := time.Hour
-			if scenario == "deadline" {
+			wantReview := scenario == "deadline" || scenario == "lookup_canceled"
+			if wantReview {
 				reviewAfter = time.Minute
 			}
-			got, pollErr := service.PollKnownOrder(ctx, gateway, attempt.ID, due, retry, reviewAfter)
+			got, pollErr := service.PollKnownOrder(ctx, lookupCtx, gateway, attempt.ID, due, retry, reviewAfter)
 			if gateway.id != 101 {
 				t.Fatalf("queried wrong upstream ID: %d", gateway.id)
 			}
-			wantNext := due
+			if scenario == "lookup_canceled" && !errors.Is(gateway.lookupErr, context.Canceled) {
+				t.Fatalf("gateway did not observe the canceled lookup context: %v", gateway.lookupErr)
+			}
 			if scenario == "completed" {
 				if pollErr != nil || got == nil || got.Status != "completed" {
 					t.Fatalf("valid result was lost: %+v, %v", got, pollErr)
 				}
 			} else {
-				if got != nil || !errors.Is(pollErr, kafudaapp.ErrKnownOrderLookupFailed) || errors.Is(pollErr, context.DeadlineExceeded) {
+				if got != nil || !errors.Is(pollErr, kafudaapp.ErrKnownOrderLookupFailed) || errors.Is(pollErr, context.DeadlineExceeded) || errors.Is(pollErr, context.Canceled) {
 					t.Fatalf("lookup failure was not classified: %+v, %v", got, pollErr)
 				}
-				wantNext = retry
 			}
 			wantStatus := kafudadomain.AttemptProcessing
-			if scenario == "deadline" {
+			if wantReview {
 				wantStatus = kafudadomain.AttemptReview
 			}
 			stored, err := store.GetAttempt(ctx, attempt.ID)
-			if err != nil || stored == nil || stored.Status != wantStatus || stored.ActiveOrderID == nil || stored.NextPollAt == nil {
+			if err != nil || stored == nil || stored.Status != wantStatus || stored.ActiveOrderID == nil || *stored.ActiveOrderID != attempt.OrderID ||
+				stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != 101 || stored.Reference != attempt.Reference || stored.NextPollAt == nil {
 				t.Fatalf("lookup changed the attempt unexpectedly: %+v, %v", stored, err)
 			}
-			if scenario == "rate_limited" {
-				reset := due.Add(3 * time.Minute)
-				if stored.NextPollAt.Before(reset) || stored.NextPollAt.After(reset.Add(30*time.Second)) {
-					t.Fatalf("next poll %v did not honor rate-limit reset %v", stored.NextPollAt, reset)
+			if scenario == "completed" {
+				if !stored.NextPollAt.Equal(due) || !stored.UpdatedAt.Equal(now) {
+					t.Fatalf("successful lookup unexpectedly wrote a schedule: %+v", stored)
 				}
-				var apiErr *kafudacontract.APIError
-				if errors.As(pollErr, &apiErr) {
-					t.Fatalf("rate-limit failure exposed gateway error: %v", pollErr)
+			} else {
+				delay := retry.Sub(due)
+				if scenario == "rate_limited" {
+					delay = 3 * time.Minute
+					var apiErr *kafudacontract.APIError
+					if errors.As(pollErr, &apiErr) {
+						t.Fatalf("rate-limit failure exposed gateway error: %v", pollErr)
+					}
 				}
-			} else if !stored.NextPollAt.Equal(wantNext) {
-				t.Fatalf("next poll = %v, want %v", stored.NextPollAt, wantNext)
+				minimumDue := due.Add(delay)
+				if actualDelay := stored.NextPollAt.Sub(stored.UpdatedAt); actualDelay != delay ||
+					stored.NextPollAt.Before(minimumDue) || stored.NextPollAt.After(minimumDue.Add(30*time.Second)) {
+					t.Fatalf("next poll = %v, delay = %v, want due no earlier than %v with delay %v", stored.NextPollAt, actualDelay, minimumDue, delay)
+				}
 			}
-			if scenario == "deadline" {
+			if wantReview {
 				record, err := store.GetRecharge(ctx, 10)
 				if err != nil || record == nil || record.Stage != kafudadomain.StageManualReview || record.ReasonCode != "lookup_deadline_exceeded" {
 					t.Fatalf("deadline did not enter review: %+v, %v", record, err)
