@@ -426,12 +426,11 @@ func (s *OrderService) resolveDirectPurchaseTerms(product *productdomain.Product
 	if product.IsMapped || s.directCatalog == nil {
 		return nil, ErrProductNotAvailable
 	}
-	if !sku.DirectCostConfigured || !sku.PriceAmount.Decimal.Round(2).IsPositive() || sku.CostPriceAmount.IsNegative() {
+	if !sku.DirectPriceValid() {
 		return nil, ErrProductPriceInvalid
 	}
-	plan, planOK := sku.SpecValuesJSON["plan"].(string)
-	country, countryOK := sku.SpecValuesJSON["country"].(string)
-	if !planOK || !countryOK || plan == "" || country == "" || sku.SKUCode != kafudacontract.SKUCode(plan, country) {
+	plan, country, valid := sku.DirectSelection()
+	if !valid {
 		return nil, ErrProductSKUInvalid
 	}
 	terms, err := s.directCatalog.PurchaseTerms(context.Background(), plan, country, sku.DirectCatalogRevision)
@@ -448,9 +447,8 @@ func validateDirectCheckout(tx ordercontract.Transaction, plan childOrderPlan, p
 		!sku.CostPriceAmount.Equal(plan.Item.CostPrice.Decimal) || productdomain.ValidatePurchaseQuantity(product, 1) != nil {
 		return ErrProductNotAvailable
 	}
-	currentPlan, _ := sku.SpecValuesJSON["plan"].(string)
-	currentCountry, _ := sku.SpecValuesJSON["country"].(string)
-	if currentPlan != terms.Plan || currentCountry != terms.Country || sku.SKUCode != kafudacontract.SKUCode(terms.Plan, terms.Country) {
+	currentPlan, currentCountry, valid := sku.DirectSelection()
+	if !valid || currentPlan != terms.Plan || currentCountry != terms.Country {
 		return ErrProductNotAvailable
 	}
 	catalog, err := tx.KafudaGPT().GetCatalogForUpdate(terms.PaymentProfile)

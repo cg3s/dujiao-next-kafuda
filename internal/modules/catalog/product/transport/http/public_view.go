@@ -15,12 +15,14 @@ import (
 	categorypresenter "github.com/dujiao-next/internal/modules/catalog/category/transport/presenter"
 	promotioncontract "github.com/dujiao-next/internal/modules/promotion/contract"
 	reseller "github.com/dujiao-next/internal/modules/reseller/contract"
+	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
 )
 
 // publicSKUView 内部 SKU 计算结构，用于装饰逻辑
 type publicSKUView struct {
 	productdomain.ProductSKU
+	DirectAvailable      bool
 	PromotionPriceAmount *money.Amount
 	MemberPriceAmount    *money.Amount
 }
@@ -121,6 +123,12 @@ func (v *publicProductView) productStockQuantity() int64 {
 
 func (v *publicProductView) skuStockState(sv publicSKUView) (string, int64) {
 	fulfillmentType := strings.TrimSpace(v.Product.FulfillmentType)
+	if fulfillmentType == constants.FulfillmentTypeKafudaGPT {
+		if sv.DirectAvailable {
+			return constants.ProductStockStatusInStock, 0
+		}
+		return constants.ProductStockStatusOutOfStock, 0
+	}
 	if fulfillmentType == "" {
 		fulfillmentType = constants.FulfillmentTypeManual
 	}
@@ -136,16 +144,21 @@ func isResellerDisplayHiddenError(err error) bool {
 		errors.Is(err, reseller.ErrPricingModeInvalid)
 }
 
-func (h *PublicHandler) decoratePublicProduct(product *productdomain.Product, promotions ProductPromotionDecorator, userMemberLevelID ...uint) (productpresenter.Product, error) {
+func (h *PublicHandler) decoratePublicProduct(product *productdomain.Product, promotions ProductPromotionDecorator, directRevisions map[string]uint64, userMemberLevelID ...uint) (productpresenter.Product, error) {
 	if product == nil {
 		return productpresenter.Product{}, nil
 	}
 
 	item := publicProductView{Product: *product}
-	displayPrice := resolvePublicDisplayPrice(product)
 	displaySKUID := resolvePublicDisplaySKUID(product)
-	item.Product.PriceAmount = displayPrice
-	h.decorateProductStock(product, &item)
+	item.Product.PriceAmount = resolvePublicDisplayPrice(product)
+	direct := product.FulfillmentType == constants.FulfillmentTypeKafudaGPT
+	var directAvailable map[uint]bool
+	if direct {
+		directAvailable, displaySKUID = item.applyDirectAvailability(directRevisions)
+	} else {
+		h.decorateProductStock(product, &item)
+	}
 
 	// 获取所有活动规则用于前端展示
 	if promotions != nil {
@@ -192,9 +205,21 @@ func (h *PublicHandler) decoratePublicProduct(product *productdomain.Product, pr
 
 	for _, sku := range item.Product.SKUs {
 		sv := publicSKUView{ProductSKU: sku}
+		if direct {
+			sv.DirectAvailable = directAvailable[sku.ID]
+			sv.SpecValuesJSON = nil
+			if plan, country, valid := sku.DirectSelection(); valid {
+				sv.SpecValuesJSON = jsonmap.JSON{"plan": plan, "country": country}
+			}
+			sv.ManualStockTotal = 0
+			sv.ManualStockSold = 0
+			sv.AutoStockAvailable = 0
+			sv.UpstreamStock = 0
+		}
+		priceable := sku.IsActive && (!direct || sv.DirectAvailable)
 
 		// 计算当前用户的会员价
-		if memberLevelID > 0 && h.memberLevels != nil && sku.IsActive {
+		if memberLevelID > 0 && h.memberLevels != nil && priceable {
 			memberPrice, _ := h.memberLevels.ResolveMemberPrice(memberLevelID, product.ID, sku.ID, sku.PriceAmount.Decimal)
 			if memberPrice.LessThan(sku.PriceAmount.Decimal) {
 				mp := money.FromDecimal(memberPrice)
@@ -202,7 +227,7 @@ func (h *PublicHandler) decoratePublicProduct(product *productdomain.Product, pr
 			}
 		}
 
-		if promotions != nil && sku.IsActive {
+		if promotions != nil && priceable {
 			priceCarrier := *product
 			priceCarrier.PriceAmount = sku.PriceAmount
 			promotion, discountedPrice, err := promotions.ApplyPromotion(&priceCarrier, 1)
@@ -235,15 +260,44 @@ func (h *PublicHandler) decoratePublicProduct(product *productdomain.Product, pr
 	return item.toProductResp(), nil
 }
 
+func (v *publicProductView) applyDirectAvailability(revisions map[string]uint64) (map[uint]bool, uint) {
+	v.Product.StockDisplayMode = constants.ProductStockDisplayHidden
+	v.Product.ManualFormSchemaJSON = nil
+	v.StockStatus = constants.ProductStockStatusOutOfStock
+	v.IsSoldOut = true
+	if len(revisions) == 0 || v.Product.IsMapped || productdomain.ValidatePurchaseQuantity(&v.Product, 1) != nil {
+		return nil, 0
+	}
+	available := make(map[uint]bool, len(v.Product.SKUs))
+	var displaySKUID uint
+	for _, sku := range v.Product.SKUs {
+		revision, listed := revisions[sku.SKUCode]
+		if !listed || revision != sku.DirectCatalogRevision || !sku.IsActive || sku.DeletedAt != nil || !sku.DirectPriceValid() {
+			continue
+		}
+		if _, _, valid := sku.DirectSelection(); valid {
+			available[sku.ID] = true
+			if v.IsSoldOut {
+				v.StockStatus = constants.ProductStockStatusInStock
+				v.IsSoldOut = false
+				v.Product.PriceAmount = sku.PriceAmount
+				displaySKUID = sku.ID
+			}
+		}
+	}
+	return available, displaySKUID
+}
+
 func (h *PublicHandler) decoratePublicProductForTenant(
 	product *productdomain.Product,
 	promotions ProductPromotionDecorator,
 	tenant reseller.TenantContext,
 	resellerBatch *reseller.DisplayPricingBatch,
+	directRevisions map[string]uint64,
 	userMemberLevelID ...uint,
 ) (productpresenter.Product, error) {
 	if !isResellerTenant(tenant) {
-		return h.decoratePublicProduct(product, promotions, userMemberLevelID...)
+		return h.decoratePublicProduct(product, promotions, directRevisions, userMemberLevelID...)
 	}
 	if product == nil {
 		return productpresenter.Product{}, nil

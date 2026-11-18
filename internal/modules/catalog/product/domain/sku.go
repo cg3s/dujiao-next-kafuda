@@ -3,6 +3,7 @@ package productdomain
 import (
 	"time"
 
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
 )
@@ -42,4 +43,14 @@ type ProductSKU struct {
 // TableName 指定表名
 func (ProductSKU) TableName() string {
 	return "product_skus"
+}
+
+func (sku ProductSKU) DirectPriceValid() bool {
+	return sku.DirectCostConfigured && sku.PriceAmount.Decimal.Round(2).IsPositive() && !sku.CostPriceAmount.IsNegative()
+}
+
+func (sku ProductSKU) DirectSelection() (plan, country string, valid bool) {
+	plan, _ = sku.SpecValuesJSON["plan"].(string)
+	country, _ = sku.SpecValuesJSON["country"].(string)
+	return plan, country, plan != "" && country != "" && sku.SKUCode == kafudacontract.SKUCode(plan, country)
 }

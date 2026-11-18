@@ -46,7 +46,7 @@ func TestDecoratePublicProductDisplayPricePrefersFirstActiveSKU(t *testing.T) {
 		},
 	}
 
-	item, err := h.decoratePublicProduct(product, nil)
+	item, err := h.decoratePublicProduct(product, nil, nil)
 	if err != nil {
 		t.Fatalf("decoratePublicProduct failed: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestDecoratePublicProductForTenantUsesResellerPricesAndHidesMainDiscounts(t
 	}}}
 	tenant := reseller.ResellerTenantContext("shop.example.test", 10, 99, "shop.example.test")
 
-	item, err := h.decoratePublicProductForTenant(product, nil, tenant, &reseller.DisplayPricingBatch{})
+	item, err := h.decoratePublicProductForTenant(product, nil, tenant, &reseller.DisplayPricingBatch{}, nil)
 	if err != nil {
 		t.Fatalf("decoratePublicProductForTenant failed: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestDecoratePublicProductForTenantHiddenProduct(t *testing.T) {
 		},
 	}
 
-	_, err := h.decoratePublicProductForTenant(product, nil, tenant, &reseller.DisplayPricingBatch{})
+	_, err := h.decoratePublicProductForTenant(product, nil, tenant, &reseller.DisplayPricingBatch{}, nil)
 	if !errors.Is(err, productcontract.ErrResellerProductNotListed) {
 		t.Fatalf("expected ErrResellerProductNotListed, got %v", err)
 	}
@@ -149,7 +149,7 @@ func TestDecoratePublicProductForTenantAllHiddenSKUsReturnsNotListed(t *testing.
 		},
 	}
 
-	_, err := h.decoratePublicProductForTenant(product, nil, tenant, &reseller.DisplayPricingBatch{})
+	_, err := h.decoratePublicProductForTenant(product, nil, tenant, &reseller.DisplayPricingBatch{}, nil)
 	if !errors.Is(err, productcontract.ErrResellerProductNotListed) {
 		t.Fatalf("expected ErrResellerProductNotListed, got %v", err)
 	}
@@ -177,7 +177,7 @@ func TestDecoratePublicProductForTenantInvalidDisplayPricingIsHidden(t *testing.
 					{ID: 11, ProductID: 1, IsActive: true, PriceAmount: money.FromDecimal(decimal.NewFromInt(100))},
 				},
 			}
-			_, err := h.decoratePublicProductForTenant(product, nil, tenant, &reseller.DisplayPricingBatch{})
+			_, err := h.decoratePublicProductForTenant(product, nil, tenant, &reseller.DisplayPricingBatch{}, nil)
 			if !errors.Is(err, productcontract.ErrResellerProductNotListed) {
 				t.Fatalf("expected ErrResellerProductNotListed, got %v", err)
 			}

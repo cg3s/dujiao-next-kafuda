@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/dujiao-next/internal/constants"
 	promotiondomain "github.com/dujiao-next/internal/modules/promotion/domain"
 
 	memberleveldomain "github.com/dujiao-next/internal/modules/memberlevel/domain"
@@ -62,6 +63,10 @@ type RelatedPostReader interface {
 	ListPostsForProduct(ctx context.Context, productID uint, limit int) ([]contentcontract.RelatedPost, error)
 }
 
+type DirectAvailability interface {
+	PurchasableSKURevisions(context.Context) (map[string]uint64, error)
+}
+
 // PublicHandler 处理公开商品目录 HTTP 请求。
 type PublicHandler struct {
 	products     PublicProductQueries
@@ -71,6 +76,7 @@ type PublicHandler struct {
 	mappings     LocalProductMappingReader
 	skuMappings  SKUMappingLookup
 	relatedPosts RelatedPostReader
+	direct       DirectAvailability
 }
 
 // NewPublicHandler 创建公开商品目录 Handler。
@@ -82,6 +88,7 @@ func NewPublicHandler(
 	mappings LocalProductMappingReader,
 	skuMappings SKUMappingLookup,
 	relatedPosts RelatedPostReader,
+	direct DirectAvailability,
 ) *PublicHandler {
 	if products == nil || relatedPosts == nil {
 		panic("catalog public handler: required dependency is nil")
@@ -94,6 +101,7 @@ func NewPublicHandler(
 		mappings:     mappings,
 		skuMappings:  skuMappings,
 		relatedPosts: relatedPosts,
+		direct:       direct,
 	}
 }
 
@@ -136,9 +144,10 @@ func (h *PublicHandler) GetProducts(c *gin.Context) {
 		}
 	}
 
+	directRevisions := h.directSKURevisions(c.Request.Context(), tenant, products)
 	decorated := make([]productpresenter.Product, 0, len(products))
 	for i := range products {
-		item, derr := h.decoratePublicProductForTenant(&products[i], h.promotions, tenant, resellerBatch)
+		item, derr := h.decoratePublicProductForTenant(&products[i], h.promotions, tenant, resellerBatch, directRevisions)
 		if derr != nil {
 			if errors.Is(derr, productcontract.ErrResellerProductNotListed) {
 				continue
@@ -188,7 +197,8 @@ func (h *PublicHandler) GetProductBySlug(c *gin.Context) {
 		}
 	}
 
-	decorated, derr := h.decoratePublicProductForTenant(product, h.promotions, tenant, resellerBatch)
+	directRevisions := h.directSKURevisions(c.Request.Context(), tenant, temp)
+	decorated, derr := h.decoratePublicProductForTenant(product, h.promotions, tenant, resellerBatch, directRevisions)
 	if derr != nil {
 		if errors.Is(derr, productcontract.ErrResellerProductNotListed) {
 			ginutil.RespondError(c, response.CodeNotFound, "error.product_not_found", nil)
@@ -203,6 +213,22 @@ func (h *PublicHandler) GetProductBySlug(c *gin.Context) {
 	}
 
 	response.Success(c, decorated)
+}
+
+func (h *PublicHandler) directSKURevisions(ctx context.Context, tenant reseller.TenantContext, products []productdomain.Product) map[string]uint64 {
+	if h.direct == nil || !tenant.IsMain || tenant.ResellerID != nil || tenant.Unavailable {
+		return nil
+	}
+	for _, product := range products {
+		if product.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+			revisions, err := h.direct.PurchasableSKURevisions(ctx)
+			if err == nil {
+				return revisions
+			}
+			return nil
+		}
+	}
+	return nil
 }
 
 func (h *PublicHandler) loadRelatedPostCards(ctx context.Context, productID uint) ([]productpresenter.RelatedPost, error) {

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dujiao-next/internal/constants"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 
 	categorydomain "github.com/dujiao-next/internal/modules/catalog/category/domain"
@@ -96,14 +97,15 @@ func (s *Service) ListPublicForTenant(tenant reseller.TenantContext, resellerRep
 		return nil, 0, err
 	}
 	filter := productcontract.ListFilter{
-		Page:              page,
-		PageSize:          pageSize,
-		CategoryID:        categoryID,
-		CategoryIDs:       categoryIDs,
-		Search:            search,
-		OnlyActive:        true,
-		WithCategory:      true,
-		ExcludeProductIDs: hiddenIDs,
+		Page:                   page,
+		PageSize:               pageSize,
+		CategoryID:             categoryID,
+		CategoryIDs:            categoryIDs,
+		Search:                 search,
+		OnlyActive:             true,
+		WithCategory:           true,
+		ExcludeProductIDs:      hiddenIDs,
+		ExcludeFulfillmentType: constants.FulfillmentTypeKafudaGPT,
 	}
 	return s.products.List(filter)
 }
@@ -154,7 +156,7 @@ func (s *Service) GetPublicBySlugForTenant(tenant reseller.TenantContext, resell
 	if !tenant.IsReseller() {
 		return item, nil
 	}
-	if tenant.ResellerID == nil || resellerRepo == nil {
+	if item.FulfillmentType == constants.FulfillmentTypeKafudaGPT || tenant.ResellerID == nil || resellerRepo == nil {
 		return nil, productcontract.ErrNotFound
 	}
 	hiddenIDs, err := resellerRepo.ListHiddenProductIDs(*tenant.ResellerID)

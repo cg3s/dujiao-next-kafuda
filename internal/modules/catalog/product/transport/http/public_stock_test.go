@@ -71,7 +71,7 @@ func TestPublicProductResponseStatusModeMasksExactStock(t *testing.T) {
 		},
 	}
 
-	resp, err := h.decoratePublicProduct(product, nil)
+	resp, err := h.decoratePublicProduct(product, nil, nil)
 	if err != nil {
 		t.Fatalf("decoratePublicProduct failed: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestPublicProductResponseRangeModeReturnsBucketOnly(t *testing.T) {
 		},
 	}
 
-	resp, err := h.decoratePublicProduct(product, nil)
+	resp, err := h.decoratePublicProduct(product, nil, nil)
 	if err != nil {
 		t.Fatalf("decoratePublicProduct failed: %v", err)
 	}

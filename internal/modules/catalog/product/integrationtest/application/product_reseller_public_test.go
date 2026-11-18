@@ -165,6 +165,10 @@ func TestProductServiceListPublicForTenantExcludesResellerHiddenProductsBeforePa
 	productHidden, _ := seedResellerPublicProduct(t, db, category.ID, "product-hidden", 1)
 	allSKUHidden, allHiddenSKUs := seedResellerPublicProduct(t, db, category.ID, "all-sku-hidden", 2)
 	partialSKUHidden, partialHiddenSKUs := seedResellerPublicProduct(t, db, category.ID, "partial-sku-hidden", 2)
+	direct, _ := seedResellerPublicProduct(t, db, category.ID, "direct", 1)
+	if err := db.Model(&direct).Updates(map[string]interface{}{"fulfillment_type": constants.FulfillmentTypeKafudaGPT, "sort_order": 100}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	createResellerPublicSetting(t, db, resellerdomain.ProductSetting{ResellerID: profile.ID, ProductID: productHidden.ID, SKUID: 0, IsListed: false, PricingMode: resellerdomain.PricingModeInherit})
 	for _, sku := range allHiddenSKUs {
@@ -184,8 +188,16 @@ func TestProductServiceListPublicForTenantExcludesResellerHiddenProductsBeforePa
 	for _, product := range rows {
 		got[product.ID] = true
 	}
-	if !got[visible.ID] || !got[partialSKUHidden.ID] || got[productHidden.ID] || got[allSKUHidden.ID] {
+	if !got[visible.ID] || !got[partialSKUHidden.ID] || got[productHidden.ID] || got[allSKUHidden.ID] || got[direct.ID] {
 		t.Fatalf("unexpected products after reseller filtering: %+v", got)
+	}
+	if _, err := svc.Read.GetPublicBySlugForTenant(tenant, resellerRepo, direct.Slug); err != productcontract.ErrNotFound {
+		t.Fatalf("expected direct product hidden from reseller detail, got %v", err)
+	}
+	main := reseller.MainTenantContext("main.example.test")
+	rows, total, err = svc.Read.ListPublicForTenant(main, resellerRepo, "", "", 1, 1)
+	if err != nil || total != 5 || len(rows) != 1 || rows[0].ID != direct.ID {
+		t.Fatalf("expected direct product first on main storefront: rows=%v total=%d err=%v", rows, total, err)
 	}
 }
 

@@ -47,30 +47,56 @@ func CatalogSKUOptions(catalog *kafudadomain.Catalog) []kafudacontract.SKUOption
 }
 
 func (s *CommerceService) PurchaseTerms(ctx context.Context, plan, country string, reviewedRevision uint64) (*kafudacontract.PurchaseTerms, error) {
-	opt := s.options
-	if !opt.SalesEnabled || !opt.ReferenceLookupVerified || opt.ProductCode == "" || opt.MaxCostCents <= 0 || len(opt.AllowedKinds) == 0 || opt.WorkerReady == nil || !opt.WorkerReady(ctx) {
-		return nil, ErrQuoteUnavailable
-	}
-	catalog, err := opt.Catalog.Cached(ctx)
+	catalog, err := s.purchaseCatalog(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if catalog == nil || !catalog.Available(plan, country, time.Now()) || catalog.Revision(plan, country) != reviewedRevision {
 		return nil, ErrQuoteUnavailable
 	}
-	cardAllowed := false
-	for _, card := range catalog.Cards {
-		if card.ProductCode == opt.ProductCode && !card.Restricted {
-			cardAllowed = true
-		}
-	}
-	if !cardAllowed {
+	if !s.cardAllowed(catalog) {
 		return nil, ErrQuotePolicy
 	}
+	opt := s.options
 	for _, entry := range catalog.Options {
 		if entry.Plan == plan && entry.Country == country {
 			return &kafudacontract.PurchaseTerms{Plan: plan, Country: country, Product: entry.Product, PayMode: "auto_card", ProductCode: opt.ProductCode, PaymentProfile: catalog.Profile, MaxCostCents: opt.MaxCostCents, AllowedKinds: append([]string(nil), opt.AllowedKinds...)}, nil
 		}
 	}
 	return nil, ErrQuoteUnavailable
+}
+
+// PurchasableSKURevisions returns the currently sellable supplier options from one local snapshot.
+func (s *CommerceService) PurchasableSKURevisions(ctx context.Context) (map[string]uint64, error) {
+	catalog, err := s.purchaseCatalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if catalog == nil || !catalog.Enabled || !time.Now().Before(catalog.ExpiresAt) || !s.cardAllowed(catalog) {
+		return nil, nil
+	}
+	revisions := make(map[string]uint64, len(catalog.Options))
+	for _, option := range catalog.Options {
+		if option.Available {
+			revisions[kafudacontract.SKUCode(option.Plan, option.Country)] = catalog.Revision(option.Plan, option.Country)
+		}
+	}
+	return revisions, nil
+}
+
+func (s *CommerceService) purchaseCatalog(ctx context.Context) (*kafudadomain.Catalog, error) {
+	opt := s.options
+	if opt.Catalog == nil || !opt.SalesEnabled || !opt.ReferenceLookupVerified || opt.ProductCode == "" || opt.MaxCostCents <= 0 || len(opt.AllowedKinds) == 0 || opt.WorkerReady == nil || !opt.WorkerReady(ctx) {
+		return nil, ErrQuoteUnavailable
+	}
+	return opt.Catalog.Cached(ctx)
+}
+
+func (s *CommerceService) cardAllowed(catalog *kafudadomain.Catalog) bool {
+	for _, card := range catalog.Cards {
+		if card.ProductCode == s.options.ProductCode && !card.Restricted {
+			return true
+		}
+	}
+	return false
 }

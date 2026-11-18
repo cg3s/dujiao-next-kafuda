@@ -100,6 +100,10 @@ func SetupRouter(cfg *config.Config, c *container.Container) *gin.Engine {
 		c.ContentPostCategoryService,
 		c.ContentBannerService,
 	)
+	var directAvailability producthttp.DirectAvailability
+	if c.KafudaGPT != nil && c.KafudaGPT.Commerce != nil {
+		directAvailability = c.KafudaGPT.Commerce
+	}
 	publicCatalogHandler := catalogproductbootstrap.NewPublicHTTP(catalogproductbootstrap.PublicHTTPDependencies{
 		Products:     c.ProductReadService,
 		Hidden:       c.ResellerStore,
@@ -109,6 +113,7 @@ func SetupRouter(cfg *config.Config, c *container.Container) *gin.Engine {
 		Mappings:     c.ProductMappingRepo,
 		SKUMappings:  c.SKUMappingRepo,
 		RelatedPosts: c.ContentPostService,
+		Direct:       directAvailability,
 	})
 	publicCategoryHandler := categoryhttp.NewPublicHandler(c.CategoryService)
 	adminContentHandler := contenttransport.NewAdminHandler(

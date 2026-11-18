@@ -19,6 +19,7 @@ type PublicHTTPDependencies struct {
 	Mappings     producthttp.LocalProductMappingReader
 	SKUMappings  producthttp.SKUMappingLookup
 	RelatedPosts producthttp.RelatedPostReader
+	Direct       producthttp.DirectAvailability
 }
 
 // publicProductAdapter 将 Product 查询服务和租户隐藏策略组合成公开查询端口。
@@ -60,5 +61,6 @@ func NewPublicHTTP(dependencies PublicHTTPDependencies) *producthttp.PublicHandl
 		dependencies.Mappings,
 		dependencies.SKUMappings,
 		dependencies.RelatedPosts,
+		dependencies.Direct,
 	)
 }

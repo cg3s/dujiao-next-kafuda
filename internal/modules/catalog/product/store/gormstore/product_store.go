@@ -76,6 +76,9 @@ func (r *ProductStore) List(filter productcontract.ListFilter) ([]productdomain.
 	if fulfillmentType := strings.TrimSpace(filter.FulfillmentType); fulfillmentType != "" {
 		query = query.Where("fulfillment_type = ?", fulfillmentType)
 	}
+	if filter.ExcludeFulfillmentType != "" {
+		query = query.Where("products.fulfillment_type <> ?", filter.ExcludeFulfillmentType)
+	}
 	if search := strings.TrimSpace(filter.Search); search != "" {
 		like := "%" + search + "%"
 		condition, argCount := gormutil.BuildLocalizedLikeCondition(r.db, []string{"slug"}, []string{"title_json", "description_json"})
