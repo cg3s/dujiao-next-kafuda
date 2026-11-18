@@ -68,10 +68,6 @@ func (s *WriteService) syncSingleProductSKU(
 	target := skus[targetIndex]
 	target.PriceAmount = money.FromDecimal(priceAmount)
 	target.CostPriceAmount = money.FromDecimal(costPriceAmount)
-	// nil 表示本次未修改库存：保留 SKU 上被下单预占后的实时值
-	if manualStockTotal != nil {
-		target.ManualStockTotal = *manualStockTotal
-	}
 	target.IsActive = true
 	target.SpecValuesJSON = jsonmap.JSON{}
 	if strings.ToUpper(strings.TrimSpace(target.SKUCode)) != strings.ToUpper(productdomain.DefaultSKUCode) {
@@ -81,7 +77,7 @@ func (s *WriteService) syncSingleProductSKU(
 		}
 		target.SKUCode = productdomain.DefaultSKUCode
 	}
-	if err := skuRepo.Update(&target); err != nil {
+	if err := skuRepo.UpdateForProductEdit(&target, manualStockTotal); err != nil {
 		return err
 	}
 
@@ -297,6 +293,10 @@ func (s *WriteService) applyProductSKUsWithStockGuard(
 
 	kept := make(map[uint]struct{}, len(rows))
 	for _, row := range rows {
+		var manualStockTotal *int
+		if !row.KeepManualStock {
+			manualStockTotal = &row.ManualStockTotal
+		}
 		if row.ID > 0 {
 			existing, ok := existingByID[row.ID]
 			if !ok {
@@ -308,12 +308,9 @@ func (s *WriteService) applyProductSKUsWithStockGuard(
 			existing.CostPriceAmount = row.CostPriceAmount
 			existing.DirectCostConfigured = row.DirectCostConfigured
 			existing.DirectCatalogRevision = row.DirectCatalogRevision
-			if !row.KeepManualStock {
-				existing.ManualStockTotal = row.ManualStockTotal
-			}
 			existing.IsActive = row.IsActive
 			existing.SortOrder = row.SortOrder
-			if err := skuRepo.Update(&existing); err != nil {
+			if err := skuRepo.UpdateForProductEdit(&existing, manualStockTotal); err != nil {
 				return err
 			}
 			kept[existing.ID] = struct{}{}
@@ -328,12 +325,9 @@ func (s *WriteService) applyProductSKUsWithStockGuard(
 			existing.CostPriceAmount = row.CostPriceAmount
 			existing.DirectCostConfigured = row.DirectCostConfigured
 			existing.DirectCatalogRevision = row.DirectCatalogRevision
-			if !row.KeepManualStock {
-				existing.ManualStockTotal = row.ManualStockTotal
-			}
 			existing.IsActive = row.IsActive
 			existing.SortOrder = row.SortOrder
-			if err := skuRepo.Update(&existing); err != nil {
+			if err := skuRepo.UpdateForProductEdit(&existing, manualStockTotal); err != nil {
 				return err
 			}
 			kept[existing.ID] = struct{}{}
@@ -365,7 +359,7 @@ func (s *WriteService) applyProductSKUsWithStockGuard(
 		// Persist the requested disabled state inside the product transaction.
 		if !row.IsActive {
 			item.IsActive = false
-			if err := skuRepo.Update(&item); err != nil {
+			if err := skuRepo.UpdateForProductEdit(&item, nil); err != nil {
 				return err
 			}
 		}

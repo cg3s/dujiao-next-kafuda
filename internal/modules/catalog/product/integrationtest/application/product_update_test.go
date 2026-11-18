@@ -88,6 +88,76 @@ func TestProductEditPreservesLegacyOrderStockChanges(t *testing.T) {
 	}
 }
 
+func TestProductEditSummarizesCurrentActiveSKUStock(t *testing.T) {
+	for _, scenario := range []struct {
+		name         string
+		secondTotal  int
+		secondActive bool
+		wantTotal    int
+	}{
+		{"finite", 4, true, 13},
+		{"unlimited", constants.ManualStockUnlimited, true, constants.ManualStockUnlimited},
+		{"inactive_unlimited", constants.ManualStockUnlimited, false, 9},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			_, db := newProductServiceForTest(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			price := decimal.NewFromInt(10)
+			product := productdomain.Product{
+				Slug: "multi-sku-stock", TitleJSON: jsonmap.JSON{"zh-CN": "原标题"},
+				FulfillmentType: constants.FulfillmentTypeManual, PriceAmount: money.FromDecimal(price),
+			}
+			if err := db.Create(&product).Error; err != nil {
+				t.Fatal(err)
+			}
+			skus := []productdomain.ProductSKU{
+				{ProductID: product.ID, SKUCode: "first", PriceAmount: product.PriceAmount, IsActive: true,
+					ManualStockTotal: 8, ManualStockLocked: 2, ManualStockSold: 3},
+				{ProductID: product.ID, SKUCode: "second", PriceAmount: product.PriceAmount, IsActive: true,
+					ManualStockTotal: scenario.secondTotal},
+			}
+			if err := db.Create(&skus).Error; err != nil {
+				t.Fatal(err)
+			}
+			skuRepo := productgormstore.NewSKUStore(db)
+			orders := productUpdateTransactionHook{
+				Store: ordergormstore.New(db, "test-guest-credential-secret-with-32-bytes"),
+				before: func() {
+					if affected, err := skuRepo.ReleaseManualStock(skus[0].ID, 1); err != nil || affected != 1 {
+						t.Fatalf("release SKU hold: %d, %v", affected, err)
+					}
+					if affected, err := skuRepo.ConsumeManualStock(skus[0].ID, 1); err != nil || affected != 1 {
+						t.Fatalf("consume SKU hold: %d, %v", affected, err)
+					}
+				},
+			}
+			service := productwrite.NewWriteService(productwrite.Options{
+				Products: productgormstore.NewProductStore(db), SKUs: skuRepo, Orders: orders,
+			})
+			input := productwrite.CreateProductInput{
+				Slug: product.Slug, TitleJSON: jsonmap.JSON{"zh-CN": "编辑后"},
+				SKUs: []productwrite.ProductSKUInput{
+					{ID: skus[0].ID, SKUCode: skus[0].SKUCode, PriceAmount: price},
+					{ID: skus[1].ID, SKUCode: skus[1].SKUCode, PriceAmount: price, IsActive: &scenario.secondActive},
+				},
+			}
+			updated, err := service.Update(strconv.FormatUint(uint64(product.ID), 10), input)
+			if err != nil || updated == nil || updated.ManualStockTotal != scenario.wantTotal {
+				t.Fatalf("expected current SKU stock summary %d: %+v, %v", scenario.wantTotal, updated, err)
+			}
+			first, err := skuRepo.GetByID(skus[0].ID)
+			if err != nil || first == nil || first.ManualStockTotal != 9 || first.ManualStockLocked != 0 || first.ManualStockSold != 4 {
+				t.Fatalf("edit lost SKU stock changes: %+v, %v", first, err)
+			}
+		})
+	}
+}
+
 func TestDirectTypeChangeRechecksDataAfterPreflight(t *testing.T) {
 	for _, change := range []string{"order", "card", "sku_stock", "product_stock", "mapped", "type", "stale_edit"} {
 		t.Run(change, func(t *testing.T) {

@@ -55,6 +55,7 @@ type SKURepository interface {
 	Create(item *productdomain.ProductSKU) error
 	CreateBatch(items []productdomain.ProductSKU) error
 	Update(item *productdomain.ProductSKU) error
+	UpdateForProductEdit(item *productdomain.ProductSKU, manualStockTotal *int) error
 	Delete(id uint) error
 	DeleteByProduct(productID uint) error
 	PurgeSoftDeletedByProductAndCode(productID uint, skuCode string) error

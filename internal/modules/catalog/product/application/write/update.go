@@ -213,6 +213,19 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 				return err
 			}
 		}
+		if len(normalizedSKUs) > 0 && fulfillmentType == constants.FulfillmentTypeManual {
+			product.ManualStockTotal = 0
+			for _, sku := range skus {
+				if !sku.IsActive {
+					continue
+				}
+				if sku.ManualStockTotal == constants.ManualStockUnlimited {
+					product.ManualStockTotal = constants.ManualStockUnlimited
+					break
+				}
+				product.ManualStockTotal += sku.ManualStockTotal
+			}
+		}
 		// 仅当请求显式携带批发价字段时才覆盖，省略字段（nil）保留原有配置，
 		// 避免不关心批发价的局部更新静默清空已配阶梯。
 		if input.WholesalePrices != nil {

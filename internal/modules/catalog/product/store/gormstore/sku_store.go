@@ -119,6 +119,34 @@ func (r *SKUStore) Update(item *productdomain.ProductSKU) error {
 	return r.db.Save(item).Error
 }
 
+// UpdateForProductEdit keeps counters owned by order stock operations out of
+// catalog edits. The available quantity changes only when explicitly supplied.
+func (r *SKUStore) UpdateForProductEdit(item *productdomain.ProductSKU, manualStockTotal *int) error {
+	if item == nil || item.ID == 0 || item.ProductID == 0 {
+		return productcontract.ErrProductSKUInvalid
+	}
+	fields := map[string]interface{}{
+		"sku_code":                item.SKUCode,
+		"spec_values_json":        item.SpecValuesJSON,
+		"price_amount":            item.PriceAmount,
+		"cost_price_amount":       item.CostPriceAmount,
+		"direct_cost_configured":  item.DirectCostConfigured,
+		"direct_catalog_revision": item.DirectCatalogRevision,
+		"is_active":               item.IsActive,
+		"sort_order":              item.SortOrder,
+	}
+	if manualStockTotal != nil {
+		fields["manual_stock_total"] = *manualStockTotal
+	}
+	result := r.db.Model(&productdomain.ProductSKU{}).
+		Where("id = ? AND product_id = ? AND deleted_at IS NULL", item.ID, item.ProductID).
+		Updates(fields)
+	if result.Error == nil && result.RowsAffected == 0 {
+		return productcontract.ErrProductSKUInvalid
+	}
+	return result.Error
+}
+
 // Delete 硬删除单个 SKU（绕过软删除，避免唯一索引冲突）
 func (r *SKUStore) Delete(id uint) error {
 	if id == 0 {

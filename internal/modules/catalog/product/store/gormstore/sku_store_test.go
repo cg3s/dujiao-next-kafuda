@@ -1,10 +1,12 @@
 package gormstore
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 
 	"github.com/dujiao-next/internal/constants"
@@ -63,6 +65,82 @@ func TestSKUStoreListByProductSortOrderDescending(t *testing.T) {
 	}
 	if rows[0].SKUCode != "HIGH" || rows[1].SKUCode != "LOW" {
 		t.Fatalf("expected high sort_order first, got %s then %s", rows[0].SKUCode, rows[1].SKUCode)
+	}
+}
+
+func TestProductSKUEditPreservesChangesFromOrderStockOperations(t *testing.T) {
+	repo, db := setupSKUStoreTest(t)
+	sku := &productdomain.ProductSKU{
+		ProductID: 1, SKUCode: "CONFIG", IsActive: true,
+		PriceAmount:       money.FromDecimal(decimal.NewFromInt(10)),
+		ManualStockTotal:  8,
+		ManualStockLocked: 2,
+		ManualStockSold:   3,
+	}
+	if err := repo.Create(sku); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := repo.GetByID(sku.ID)
+	if err != nil || stale == nil {
+		t.Fatalf("read before order updates: %+v, %v", stale, err)
+	}
+	if affected, err := repo.ReleaseManualStock(sku.ID, 1); err != nil || affected != 1 {
+		t.Fatalf("release: %d, %v", affected, err)
+	}
+	if affected, err := repo.ConsumeManualStock(sku.ID, 1); err != nil || affected != 1 {
+		t.Fatalf("consume: %d, %v", affected, err)
+	}
+	stale.PriceAmount = money.FromDecimal(decimal.NewFromInt(20))
+	stale.IsActive = false
+	zero := 0
+	for _, edit := range []struct {
+		explicitTotal *int
+		wantTotal     int
+	}{
+		{nil, 9},
+		{&zero, 0},
+	} {
+		if err := repo.UpdateForProductEdit(stale, edit.explicitTotal); err != nil {
+			t.Fatal(err)
+		}
+		var stored productdomain.ProductSKU
+		if err := db.First(&stored, sku.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if stored.ManualStockTotal != edit.wantTotal || stored.ManualStockLocked != 0 || stored.ManualStockSold != 4 ||
+			stored.IsActive || stored.PriceAmount.String() != "20.00" {
+			t.Fatalf("unexpected SKU after edit: %+v", stored)
+		}
+	}
+}
+
+func TestProductSKUEditDoesNotRestoreDeletedSKUs(t *testing.T) {
+	for _, mode := range []string{"soft", "hard"} {
+		t.Run(mode, func(t *testing.T) {
+			repo, _ := setupSKUStoreTest(t)
+			sku := &productdomain.ProductSKU{ProductID: 1, SKUCode: "CONFIG"}
+			if err := repo.Create(sku); err != nil {
+				t.Fatal(err)
+			}
+			stale, err := repo.GetByID(sku.ID)
+			if err != nil || stale == nil {
+				t.Fatalf("read before delete: %+v, %v", stale, err)
+			}
+			if mode == "soft" {
+				err = repo.DeleteByProduct(sku.ProductID)
+			} else {
+				err = repo.Delete(sku.ID)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.UpdateForProductEdit(stale, nil); !errors.Is(err, productcontract.ErrProductSKUInvalid) {
+				t.Fatalf("edit after deletion: %v", err)
+			}
+			if got, err := repo.GetByID(sku.ID); err != nil || got != nil {
+				t.Fatalf("deleted SKU reappeared: %+v, %v", got, err)
+			}
+		})
 	}
 }
 

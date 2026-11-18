@@ -24,7 +24,7 @@ type ProductRepository interface {
 type SKURepository interface {
 	ListByProduct(productID uint, onlyActive bool) ([]productdomain.ProductSKU, error)
 	Create(item *productdomain.ProductSKU) error
-	Update(item *productdomain.ProductSKU) error
+	UpdateForProductEdit(item *productdomain.ProductSKU, manualStockTotal *int) error
 	Delete(id uint) error
 	PurgeSoftDeletedByProductAndCode(productID uint, skuCode string) error
 }

@@ -293,6 +293,23 @@ func (repo *memorySKURepository) Update(item *productdomain.ProductSKU) error {
 	return nil
 }
 
+func (repo *memorySKURepository) UpdateForProductEdit(item *productdomain.ProductSKU, manualStockTotal *int) error {
+	for index, existing := range repo.rows {
+		if existing.ID == item.ID && existing.ProductID == item.ProductID {
+			updated := *item
+			updated.ManualStockTotal = existing.ManualStockTotal
+			updated.ManualStockLocked = existing.ManualStockLocked
+			updated.ManualStockSold = existing.ManualStockSold
+			if manualStockTotal != nil {
+				updated.ManualStockTotal = *manualStockTotal
+			}
+			repo.rows[index] = updated
+			return nil
+		}
+	}
+	return productcontract.ErrProductSKUInvalid
+}
+
 func (repo *memorySKURepository) Delete(id uint) error {
 	for index := range repo.rows {
 		if repo.rows[index].ID == id {
@@ -307,7 +324,7 @@ func (repo *memorySKURepository) PurgeSoftDeletedByProductAndCode(uint, string) 
 	return nil
 }
 
-func newSyncSingleSKURepo(t *testing.T) SKURepository {
+func newSyncSingleSKURepo(t *testing.T) *memorySKURepository {
 	t.Helper()
 	return &memorySKURepository{}
 }
