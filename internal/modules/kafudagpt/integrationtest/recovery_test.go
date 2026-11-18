@@ -26,6 +26,14 @@ func TestInterruptedCheckRequiresFreshSubmission(t *testing.T) {
 	if err != nil || record.Stage != kafudadomain.StageChecking {
 		t.Fatalf("live check was recovered: %+v, %v", record, err)
 	}
+	for _, late := range []time.Time{expires, expires.Add(time.Nanosecond)} {
+		if err := service.MarkSubmitting(ctx, first.Attempt.ID, "late_quote", late, late.Add(time.Minute)); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+			t.Fatalf("unrecovered expired check could submit at %s: %v", late, err)
+		}
+	}
+	if err := service.MarkSubmitting(ctx, first.Attempt.ID, " ", now, expires); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+		t.Fatalf("blank quote could submit: %v", err)
+	}
 	var workers sync.WaitGroup
 	for range 8 {
 		workers.Go(func() {
@@ -112,7 +120,7 @@ func TestRecoveryRechecksCandidateUnderLock(t *testing.T) {
 			expires := now.Add(time.Minute)
 			racingStore := advancingRecoveryStore{Store: store, advance: func() {
 				if advance == "submit" {
-					if err := service.MarkSubmitting(ctx, first.Attempt.ID, "quo_1", expires, expires.Add(time.Minute)); err != nil {
+					if err := service.MarkSubmitting(ctx, first.Attempt.ID, "quo_1", expires.Add(-time.Nanosecond), expires.Add(time.Minute)); err != nil {
 						t.Fatal(err)
 					}
 					return

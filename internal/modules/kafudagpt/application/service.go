@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
@@ -102,11 +103,12 @@ func (s *Service) Reserve(ctx context.Context, orderID uint, now, leaseUntil tim
 // MarkSubmitting is committed before calling POST /gpt/orders. Its QuoteID and
 // Reference preserve the exact non-credential request for safe reconciliation.
 func (s *Service) MarkSubmitting(ctx context.Context, attemptID uint, quoteID string, now, nextPoll time.Time) error {
-	if quoteID == "" || len(quoteID) > 128 || !nextPoll.After(now) {
+	if strings.TrimSpace(quoteID) == "" || len(quoteID) > 128 || now.IsZero() || !nextPoll.After(now) {
 		return kafudadomain.ErrInvalidTransition
 	}
 	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
-		if attempt.Status != kafudadomain.AttemptChecking {
+		if record.Stage != kafudadomain.StageChecking || attempt.Status != kafudadomain.AttemptChecking ||
+			attempt.NextPollAt == nil || !now.Before(*attempt.NextPollAt) || now.Before(attempt.UpdatedAt) {
 			return kafudadomain.ErrInvalidTransition
 		}
 		attempt.Status, attempt.QuoteID, attempt.UpdatedAt = kafudadomain.AttemptSubmitting, quoteID, now
