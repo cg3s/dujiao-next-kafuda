@@ -548,7 +548,10 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 	request(order.OrderNo, order.UserID+100, main, response.CodeNotFound, "")
 	request(order.OrderNo, order.UserID, resellercontract.ResellerTenantContext("reseller.example", 1, 1, ""), response.CodeNotFound, "")
 	request(order.Children[0].OrderNo, order.UserID, main, response.CodeNotFound, "")
-	for _, stage := range []kafudadomain.Stage{kafudadomain.StageWaiting, kafudadomain.StageProcessing, kafudadomain.StageManualReview, kafudadomain.StageCompleted} {
+	for _, stage := range []kafudadomain.Stage{
+		kafudadomain.StageWaiting, kafudadomain.StageChecking, kafudadomain.StageSubmitting, kafudadomain.StageProcessing,
+		kafudadomain.StageManualReview, kafudadomain.StageManualDelivery, kafudadomain.StageCompleted,
+	} {
 		if stage == kafudadomain.StageCompleted {
 			if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).Update("status", constants.OrderStatusCompleted).Error; err != nil {
 				t.Fatal(err)
@@ -558,7 +561,11 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 			Updates(map[string]any{"stage": stage, "reason_code": "private-reason", "version": 5}).Error; err != nil {
 			t.Fatal(err)
 		}
-		request(order.OrderNo, order.UserID, main, 0, string(stage))
+		wantStage := stage
+		if stage == kafudadomain.StageManualDelivery {
+			wantStage = kafudadomain.StageManualReview
+		}
+		request(order.OrderNo, order.UserID, main, 0, string(wantStage))
 		record, err := f.store.GetRecharge(context.Background(), childID)
 		if err != nil || record == nil || record.Version != 5 {
 			t.Fatalf("status read changed the recharge: %+v, %v", record, err)

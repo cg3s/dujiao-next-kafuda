@@ -1,6 +1,8 @@
 import { KAFUDA_GPT_DIRECT } from './directPurchase.ts'
 
-export type DirectOrderStage = 'waiting_session' | 'processing' | 'manual_review' | 'completed'
+const DIRECT_ORDER_STAGES = ['waiting_session', 'checking', 'submitting', 'processing', 'manual_review', 'completed'] as const
+
+export type DirectOrderStage = typeof DIRECT_ORDER_STAGES[number]
 
 export interface DirectOrderStatus {
   stage: DirectOrderStage
@@ -22,8 +24,9 @@ export function directStatusOrderNo(order: DirectOrderCandidate | null): string 
 
 export function parseDirectOrderStatus(input: unknown): DirectOrderStatus | null {
   if (!input || typeof input !== 'object') return null
-  const { stage, updated_at } = input as Partial<DirectOrderStatus>
-  if (stage !== 'waiting_session' && stage !== 'processing' && stage !== 'manual_review' && stage !== 'completed') return null
+  const { stage: rawStage, updated_at } = input as Partial<DirectOrderStatus>
+  const stage = DIRECT_ORDER_STAGES.find((candidate) => candidate === rawStage)
+  if (!stage) return null
   if (typeof updated_at !== 'string' || !Number.isFinite(Date.parse(updated_at))) return null
   return { stage, updated_at }
 }

@@ -237,6 +237,8 @@
     "progress": {
       "title": "Recharge progress",
       "waiting_session": "Awaiting submission",
+      "checking": "Checking",
+      "submitting": "Submitting",
       "processing": "Recharge in progress",
       "manual_review": "Under manual review",
       "completed": "Recharge complete",

@@ -237,6 +237,8 @@
     "progress": {
       "title": "直充進度",
       "waiting_session": "待提交",
+      "checking": "檢查中",
+      "submitting": "提交中",
       "processing": "充值處理中",
       "manual_review": "人工核對中",
       "completed": "充值完成",

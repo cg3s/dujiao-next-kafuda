@@ -68,20 +68,16 @@ func newDirectStatusReader(c *container.Container) ordertransport.DirectStatusRe
 		if err != nil || record == nil {
 			return nil, err
 		}
-		var stage string
-		switch record.Stage {
-		case kafudadomain.StageWaiting:
-			stage = "waiting_session"
-		case kafudadomain.StageChecking, kafudadomain.StageSubmitting, kafudadomain.StageProcessing:
-			stage = "processing"
-		case kafudadomain.StageManualReview, kafudadomain.StageManualDelivery:
-			stage = "manual_review"
-		case kafudadomain.StageCompleted:
-			stage = "completed"
+		stage := record.Stage
+		switch stage {
+		case kafudadomain.StageWaiting, kafudadomain.StageChecking, kafudadomain.StageSubmitting,
+			kafudadomain.StageProcessing, kafudadomain.StageManualReview, kafudadomain.StageCompleted:
+		case kafudadomain.StageManualDelivery:
+			stage = kafudadomain.StageManualReview
 		default:
 			return nil, nil
 		}
-		return &ordertransport.DirectStatus{Stage: stage, UpdatedAt: record.UpdatedAt}, nil
+		return &ordertransport.DirectStatus{Stage: string(stage), UpdatedAt: record.UpdatedAt}, nil
 	}
 }
 

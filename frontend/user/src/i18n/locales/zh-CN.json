@@ -1748,6 +1748,8 @@
     "progress": {
       "title": "直充进度",
       "waiting_session": "待提交",
+      "checking": "检查中",
+      "submitting": "提交中",
       "processing": "充值处理中",
       "manual_review": "人工核对中",
       "completed": "充值完成",
