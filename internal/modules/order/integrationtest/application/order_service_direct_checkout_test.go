@@ -413,6 +413,11 @@ func (g directCreateGateway) GetOrder(ctx context.Context, id uint64) (*kafudaco
 }
 
 func TestSubmitCheckedDirectQuote(t *testing.T) {
+	testSubmitCheckedDirectQuote(t, newDirectCheckoutFixture)
+}
+
+func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) directCheckoutFixture) {
+	t.Helper()
 	for _, scenario := range []struct {
 		name       string
 		stage      kafudadomain.Stage
@@ -431,7 +436,7 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 		{"response_mismatch", kafudadomain.StageManualReview, true, "outcome_unknown"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			f := newDirectCheckoutFixture(t)
+			f := newFixture(t)
 			if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
 				t.Fatal(err)
 			}
