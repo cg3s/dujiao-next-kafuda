@@ -5,8 +5,50 @@ import (
 	"errors"
 	"time"
 
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 )
+
+var ErrKnownOrderLookupFailed = errors.New("kafuda known order lookup failed")
+
+// PollKnownOrder performs a read-only lookup outside the database transaction.
+// The caller applies a successful result with the corresponding shop order update.
+func (s *Service) PollKnownOrder(ctx context.Context, gateway kafudacontract.Gateway, attemptID uint, now, retryAt time.Time) (*kafudacontract.OrderResult, error) {
+	if gateway == nil || now.IsZero() || !retryAt.After(now) {
+		return nil, kafudadomain.ErrInvalidTransition
+	}
+	attempt, err := s.store.GetAttempt(ctx, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	if attempt == nil {
+		return nil, kafudadomain.ErrNotFound
+	}
+	if !attempt.Status.Active() || attempt.Status == kafudadomain.AttemptChecking ||
+		attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID == 0 ||
+		attempt.NextPollAt == nil || attempt.NextPollAt.After(now) || now.Before(attempt.UpdatedAt) {
+		return nil, kafudadomain.ErrConflict
+	}
+	record, err := s.store.GetRecharge(ctx, attempt.OrderID)
+	if err != nil {
+		return nil, err
+	}
+	if record == nil || record.CurrentAttemptID == nil || *record.CurrentAttemptID != attemptID {
+		return nil, kafudadomain.ErrConflict
+	}
+	result, err := gateway.GetOrder(ctx, *attempt.UpstreamOrderID)
+	if err == nil && result != nil && result.ID == *attempt.UpstreamOrderID &&
+		result.Reference == attempt.Reference && result.Product == record.Snapshot.Product &&
+		result.Plan == record.Snapshot.Plan && result.Country == record.Snapshot.Country {
+		next := kafudadomain.AttemptStatus(result.Status)
+		if next != kafudadomain.AttemptChecking && attempt.Status.CanTransition(next) &&
+			(result.ChargedUSDCents == nil || *result.ChargedUSDCents >= 0) {
+			return result, nil
+		}
+	}
+	// Never return raw gateway errors, which may contain upstream payloads.
+	return nil, errors.Join(ErrKnownOrderLookupFailed, s.RescheduleKnownOrderPoll(ctx, attemptID, *attempt.NextPollAt, now, retryAt))
+}
 
 // RescheduleKnownOrderPoll defers a failed numeric lookup. A worker that read
 // an older schedule cannot delay a lookup already rescheduled by another worker.

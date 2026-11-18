@@ -184,6 +184,65 @@ type failingRecoveryWriteStore struct {
 	err error
 }
 
+type knownOrderLookupGateway struct {
+	kafudacontract.Gateway
+	result *kafudacontract.OrderResult
+	err    error
+	id     uint64
+}
+
+func (g *knownOrderLookupGateway) GetOrder(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+	g.id = id
+	return g.result, g.err
+}
+
+func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
+	for _, scenario := range []string{"completed", "timeout", "wrong_reference"} {
+		t.Run(scenario, func(t *testing.T) {
+			_, store, service := database(t)
+			ctx, now := context.Background(), time.Now().UTC()
+			prepare(t, service, 10, now)
+			attempt := reserve(t, service, 10, now).Attempt
+			due, retry := now.Add(time.Minute), now.Add(2*time.Minute)
+			if err := service.MarkSubmitting(ctx, attempt.ID, "quo_1", now, due); err != nil {
+				t.Fatal(err)
+			}
+			result := kafudacontract.OrderResult{ID: 101, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing"}
+			if err := service.RecordResult(ctx, attempt.ID, result, now, due); err != nil {
+				t.Fatal(err)
+			}
+			result.Status = "completed"
+			gateway := &knownOrderLookupGateway{result: &result}
+			switch scenario {
+			case "timeout":
+				gateway.err = context.DeadlineExceeded
+			case "wrong_reference":
+				result.Reference = "wrong"
+			}
+			got, err := service.PollKnownOrder(ctx, gateway, attempt.ID, due, retry)
+			if gateway.id != 101 {
+				t.Fatalf("queried wrong upstream ID: %d", gateway.id)
+			}
+			wantNext := due
+			if scenario == "completed" {
+				if err != nil || got == nil || got.Status != "completed" {
+					t.Fatalf("valid result was lost: %+v, %v", got, err)
+				}
+			} else {
+				if got != nil || !errors.Is(err, kafudaapp.ErrKnownOrderLookupFailed) || errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("lookup failure was not classified: %+v, %v", got, err)
+				}
+				wantNext = retry
+			}
+			stored, err := store.GetAttempt(ctx, attempt.ID)
+			if err != nil || stored == nil || stored.Status != kafudadomain.AttemptProcessing ||
+				stored.NextPollAt == nil || !stored.NextPollAt.Equal(wantNext) {
+				t.Fatalf("lookup changed the attempt unexpectedly: %+v, %v", stored, err)
+			}
+		})
+	}
+}
+
 func (s failingRecoveryWriteStore) WithinTransaction(ctx context.Context, run func(kafudacontract.Transaction) error) error {
 	return s.Store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
 		return run(failingRecoveryWriteTx{Transaction: tx, err: s.err})
