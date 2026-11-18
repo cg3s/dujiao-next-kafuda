@@ -79,6 +79,17 @@ func TestPostgresDirectCheckoutDiscountsMatchPreviewAndSnapshot(t *testing.T) {
 	})
 }
 
+func TestPostgresDirectCheckoutPaymentsPreserveRechargeSnapshot(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	testDirectCheckoutPaymentsPreserveRechargeSnapshot(t, func(t *testing.T) directCheckoutFixture {
+		db := openPostgresDirectRaceDB(t, dsn)
+		return seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-payment", 0, 0))
+	})
+}
+
 func TestPostgresDirectCentralMigration(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 	if dsn == "" {
