@@ -288,8 +288,8 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 }
 
 func TestControlledDirectManualCompletionRequiresTerminalAttempt(t *testing.T) {
-	t.Run("http", func(t *testing.T) { testControlledDirectManualCompletion(t, false) })
-	t.Run("notification", func(t *testing.T) { testControlledDirectManualCompletion(t, true) })
+	t.Run("http", func(t *testing.T) { testControlledDirectManualAction(t, "direct-complete", false) })
+	t.Run("notification", func(t *testing.T) { testControlledDirectManualAction(t, "direct-complete", true) })
 }
 
 type directCompletionEmailQueue struct {
@@ -313,7 +313,11 @@ func (q *directCompletionEmailQueue) EnqueueStatusEmail(orderID uint, status str
 	return nil
 }
 
-func testControlledDirectManualCompletion(t *testing.T, notify bool) {
+func TestControlledDirectManualReleaseRequiresTerminalAttempt(t *testing.T) {
+	testControlledDirectManualAction(t, "direct-release", false)
+}
+
+func testControlledDirectManualAction(t *testing.T, action string, notify bool) {
 	f := newDirectCheckoutFixture(t)
 	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
 		t.Fatal(err)
@@ -343,27 +347,30 @@ func testControlledDirectManualCompletion(t *testing.T, notify bool) {
 	}
 	const adminID = 9
 	emailQueue := &directCompletionEmailQueue{t: t, store: f.options.OrderStore, parentID: order.ID}
-	complete := func(attemptID uint, confirmed bool) error {
+	apply := func(attemptID uint, confirmed bool) error {
+		if action == "direct-release" {
+			return kafudaworkflow.ReleaseManual(f.options.OrderStore, childID, attemptID, adminID, confirmed, now)
+		}
 		if notify {
 			return kafudaworkflow.CompleteManualAndNotify(f.options.OrderStore, emailQueue, nil, nil, childID, attemptID, adminID, confirmed, now)
 		}
 		return kafudaworkflow.CompleteManual(f.options.OrderStore, childID, attemptID, adminID, confirmed, now)
 	}
-	if err := complete(id, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+	if err := apply(id, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("unknown attempt allowed manual completion: %v", err)
 	}
 	result := kafudacontract.OrderResult{ID: 101, Reference: reserved.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "failed"}
 	if _, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, now, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := complete(id, false); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+	if err := apply(id, false); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("missing confirmation allowed manual completion: %v", err)
 	}
-	if err := complete(id+1, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+	if err := apply(id+1, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("wrong attempt allowed manual completion: %v", err)
 	}
 	if notify {
-		if err := complete(id, true); err != nil {
+		if err := apply(id, true); err != nil {
 			t.Fatal(err)
 		}
 	} else {
@@ -372,7 +379,7 @@ func testControlledDirectManualCompletion(t *testing.T, notify bool) {
 		router.Use(func(c *gin.Context) { c.Set("admin_id", uint(adminID)) })
 		orderhttp.RegisterAdminRoutes(router.Group("/admin"), handler)
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/orders/%d/direct-complete", childID),
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/orders/%d/%s", childID, action),
 			strings.NewReader(fmt.Sprintf(`{"attempt_id":%d,"confirmed":true,"admin_id":999}`, id)))
 		req.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(rec, req)
@@ -380,8 +387,27 @@ func testControlledDirectManualCompletion(t *testing.T, notify bool) {
 			t.Fatalf("direct completion endpoint: %s", rec.Body.String())
 		}
 	}
-	if err := complete(id, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+	if err := apply(id, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("manual completion replay accepted: %v", err)
+	}
+	if action == "direct-release" {
+		record, err := f.store.GetRecharge(ctx, childID)
+		if err != nil || record == nil || record.Stage != kafudadomain.StageWaiting || record.CurrentAttemptID == nil || *record.CurrentAttemptID != id || record.CompletedAt != nil {
+			t.Fatalf("release did not preserve attempt history: %+v, %v", record, err)
+		}
+		var paidOrders, deliveries int64
+		if err := f.db.Model(&orderdomain.Order{}).Where("id IN ? AND status = ?", ids, constants.OrderStatusPaid).Count(&paidOrders).Error; err != nil || paidOrders != 2 {
+			t.Fatalf("release changed paid orders: %d, %v", paidOrders, err)
+		}
+		if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&deliveries).Error; err != nil || deliveries != 0 {
+			t.Fatalf("release created delivery: %d, %v", deliveries, err)
+		}
+		retryAt := time.Now().UTC()
+		retry, err := records.Reserve(ctx, childID, retryAt, retryAt.Add(time.Minute))
+		if err != nil || retry.Attempt.Sequence != 2 || retry.Attempt.Reference == reserved.Attempt.Reference {
+			t.Fatalf("release did not allow a fresh attempt: %+v, %v", retry, err)
+		}
+		return
 	}
 	if notify && emailQueue.calls != 1 {
 		t.Fatalf("manual completion and replay queued %d emails, want one", emailQueue.calls)

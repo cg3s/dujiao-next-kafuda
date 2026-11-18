@@ -38,6 +38,12 @@ func New(c *container.Container) Handlers {
 				return mapOrderTransportError(kafudaworkflow.CompleteManualAndNotify(c.OrderStore, orderqueue.New(c.QueueClient),
 					c.SettingService, c.Config, childID, attemptID, adminID, confirmed, time.Now().UTC()))
 			},
+			func(childID, attemptID, adminID uint, confirmed bool) error {
+				if c.OrderStore == nil {
+					return ordertransport.ErrOrderNotFound
+				}
+				return mapOrderTransportError(kafudaworkflow.ReleaseManual(c.OrderStore, childID, attemptID, adminID, confirmed, time.Now().UTC()))
+			},
 		),
 		AdminRefund: NewAdminRefundHandler(c),
 		User: ordertransport.NewUserHandler(

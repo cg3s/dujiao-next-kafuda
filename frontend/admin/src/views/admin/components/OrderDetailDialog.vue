@@ -49,19 +49,20 @@ const detailError = ref('')
 const selectedOrder = ref<AdminOrder | null>(null)
 const auth = useAdminAuthStore()
 const directCompleting = ref(false)
-const completeDirect = async () => {
+const handleDirectManualAction = async (action: 'complete' | 'release') => {
   const order = selectedOrder.value
   const recharge = order?.direct_recharge
   if (!order || recharge?.stage !== 'manual_delivery' || !recharge.attempt || recharge.attempt.active || directCompleting.value) return
   directCompleting.value = true
   try {
     const confirmed = await confirmAction({
-      title: t('admin.orders.directReview.complete'),
-      description: t('admin.orders.directReview.completePrompt'),
+      title: t(`admin.orders.directReview.${action}`),
+      description: t(`admin.orders.directReview.${action}Prompt`),
       variant: 'destructive',
     })
     if (!confirmed || selectedOrder.value !== order) return
-    await adminAPI.completeDirectOrder(recharge.child_id, recharge.attempt.id)
+    const submit = action === 'release' ? adminAPI.releaseDirectOrder : adminAPI.completeDirectOrder
+    await submit(recharge.child_id, recharge.attempt.id)
     if (selectedOrder.value === order) await fetchOrderDetail(order.id)
     emit('refresh')
   } catch {
@@ -797,8 +798,12 @@ watch(
               </template>
             </dl>
             <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-complete') && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
-              class="mt-4" size="sm" :disabled="directCompleting" @click="completeDirect">
+              class="mt-4" size="sm" :disabled="directCompleting" @click="handleDirectManualAction('complete')">
               {{ t('admin.orders.directReview.complete') }}
+            </Button>
+            <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-release') && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
+              class="mt-4 ms-2" size="sm" variant="outline" :disabled="directCompleting" @click="handleDirectManualAction('release')">
+              {{ t('admin.orders.directReview.release') }}
             </Button>
           </section>
 

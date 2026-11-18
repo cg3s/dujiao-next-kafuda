@@ -210,9 +210,11 @@ func TestDirectReviewUsesExistingOrderReadPermissions(t *testing.T) {
 				t.Fatalf("%s GET %s allowed=%t, err=%v", role, path, allowed, err)
 			}
 		}
-		allowed, err := svc.EnforceAdmin(42, "/admin/orders/101/direct-complete", "POST")
-		if err != nil || allowed != (role == "support") {
-			t.Fatalf("%s direct completion allowed=%t, err=%v", role, allowed, err)
+		for _, path := range []string{"/admin/orders/101/direct-complete", "/admin/orders/101/direct-release"} {
+			allowed, err := svc.EnforceAdmin(42, path, "POST")
+			if err != nil || allowed != (role == "support") {
+				t.Fatalf("%s POST %s allowed=%t, err=%v", role, path, allowed, err)
+			}
 		}
 	}
 }

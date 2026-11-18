@@ -64,6 +64,37 @@ func ApplyResult(store ordercontract.Store, childID, attemptID uint, result kafu
 // CompleteManual records delivery already carried out by an authorized operator.
 // The caller must attest that the previous supplier attempt cannot deliver.
 func CompleteManual(store ordercontract.Store, childID, attemptID, adminID uint, confirmed bool, now time.Time) error {
+	return withConfirmedManualAttempt(store, childID, attemptID, adminID, confirmed, now, func(tx ordercontract.Transaction, parent *orderdomain.Order, record *kafudadomain.Recharge) error {
+		if err := tx.Fulfillments().Create(&fulfillmentdomain.Fulfillment{
+			OrderID: childID, Type: constants.FulfillmentTypeManual, Status: constants.FulfillmentStatusDelivered,
+			DeliveredBy: &adminID, DeliveredAt: &now, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		record.Stage, record.ReasonCode, record.UpdatedAt, record.CompletedAt = kafudadomain.StageCompleted, "", now, &now
+		if err := tx.KafudaGPT().SaveRecharge(record); err != nil {
+			return err
+		}
+		return completeShopOrders(tx.Orders(), parent, childID)
+	})
+}
+
+// ReleaseManual returns an undelivered order to the buyer submission stage.
+// The terminal attempt and all financial information remain on record.
+func ReleaseManual(store ordercontract.Store, childID, attemptID, adminID uint, confirmed bool, now time.Time) error {
+	err := withConfirmedManualAttempt(store, childID, attemptID, adminID, confirmed, now, func(tx ordercontract.Transaction, _ *orderdomain.Order, record *kafudadomain.Recharge) error {
+		record.Stage, record.ReasonCode, record.UpdatedAt = kafudadomain.StageWaiting, "", now
+		return tx.KafudaGPT().SaveRecharge(record)
+	})
+	if err == nil {
+		logger.Infow("kafuda_manual_takeover_released", "child_order_id", childID, "attempt_id", attemptID, "admin_id", adminID)
+	}
+	return err
+}
+
+func withConfirmedManualAttempt(store ordercontract.Store, childID, attemptID, adminID uint, confirmed bool, now time.Time,
+	run func(ordercontract.Transaction, *orderdomain.Order, *kafudadomain.Recharge) error,
+) error {
 	if childID == 0 || attemptID == 0 || adminID == 0 || !confirmed || now.IsZero() {
 		return orderapp.ErrOrderStatusInvalid
 	}
@@ -76,7 +107,7 @@ func CompleteManual(store ordercontract.Store, childID, attemptID, adminID uint,
 		if err != nil {
 			return err
 		}
-		if record == nil || record.Stage != kafudadomain.StageManualDelivery ||
+		if record == nil || record.Stage != kafudadomain.StageManualDelivery || record.CompletedAt != nil ||
 			record.CurrentAttemptID == nil || *record.CurrentAttemptID != attemptID {
 			return orderapp.ErrOrderStatusInvalid
 		}
@@ -94,17 +125,7 @@ func CompleteManual(store ordercontract.Store, childID, attemptID, adminID uint,
 		} else if exists {
 			return orderapp.ErrOrderStatusInvalid
 		}
-		if err := tx.Fulfillments().Create(&fulfillmentdomain.Fulfillment{
-			OrderID: childID, Type: constants.FulfillmentTypeManual, Status: constants.FulfillmentStatusDelivered,
-			DeliveredBy: &adminID, DeliveredAt: &now, CreatedAt: now, UpdatedAt: now,
-		}); err != nil {
-			return err
-		}
-		record.Stage, record.ReasonCode, record.UpdatedAt, record.CompletedAt = kafudadomain.StageCompleted, "", now, &now
-		if err := recharges.SaveRecharge(record); err != nil {
-			return err
-		}
-		return completeShopOrders(tx.Orders(), parent, childID)
+		return run(tx, parent, record)
 	})
 }
 

@@ -97,6 +97,7 @@ type AdminHandler struct {
 	accounting     AccountingPolicy
 	direct         AdminDirectStatusReader
 	completeDirect func(childID, attemptID, adminID uint, confirmed bool) error
+	releaseDirect  func(childID, attemptID, adminID uint, confirmed bool) error
 }
 
 func NewAdminHandler(
@@ -109,6 +110,7 @@ func NewAdminHandler(
 	accounting AccountingPolicy,
 	direct AdminDirectStatusReader,
 	completeDirect func(childID, attemptID, adminID uint, confirmed bool) error,
+	releaseDirect func(childID, attemptID, adminID uint, confirmed bool) error,
 ) *AdminHandler {
 	if orders == nil || users == nil || coupons == nil || promotions == nil || payments == nil || channels == nil || accounting == nil {
 		panic("order admin handler: required dependency is nil")
@@ -123,6 +125,7 @@ func NewAdminHandler(
 		accounting:     accounting,
 		direct:         direct,
 		completeDirect: completeDirect,
+		releaseDirect:  releaseDirect,
 	}
 }
 
@@ -173,6 +176,14 @@ type AdminDirectAttempt struct {
 type AdminDirectStatusReader func(context.Context, *orderdomain.Order) (*AdminDirectStatus, error)
 
 func (h *AdminHandler) AdminCompleteDirect(c *gin.Context) {
+	h.applyDirectManualAction(c, h.completeDirect)
+}
+
+func (h *AdminHandler) AdminReleaseDirect(c *gin.Context) {
+	h.applyDirectManualAction(c, h.releaseDirect)
+}
+
+func (h *AdminHandler) applyDirectManualAction(c *gin.Context, action func(childID, attemptID, adminID uint, confirmed bool) error) {
 	adminID, ok := ginutil.GetAdminID(c)
 	if !ok {
 		return
@@ -190,7 +201,7 @@ func (h *AdminHandler) AdminCompleteDirect(c *gin.Context) {
 		ginutil.RespondBindError(c, err)
 		return
 	}
-	switch err := h.completeDirect(childID, input.AttemptID, adminID, input.Confirmed); {
+	switch err := action(childID, input.AttemptID, adminID, input.Confirmed); {
 	case err == nil:
 		response.Success(c, gin.H{})
 	case errors.Is(err, ErrOrderNotFound):
