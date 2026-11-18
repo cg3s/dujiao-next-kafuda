@@ -124,16 +124,16 @@ func TestDirectAfterSalesCompetingResolutions(t *testing.T) {
 			}
 
 			wantStatus, wantStage := constants.OrderStatusRefunded, kafudadomain.StageManualDelivery
-			var wantRefunds, wantManualDeliveries int64 = 1, 0
+			var wantRefunds, wantDeliveries int64 = 1, 0
 			if firstErr != nil && alternative != "wallet_refund" {
 				wantRefunds = 0
 				switch alternative {
 				case "manual_delivery":
-					wantStatus, wantStage, wantManualDeliveries = constants.OrderStatusCompleted, kafudadomain.StageCompleted, 1
+					wantStatus, wantStage, wantDeliveries = constants.OrderStatusCompleted, kafudadomain.StageCompleted, 1
 				case "release_and_reserve":
 					wantStatus, wantStage = constants.OrderStatusPaid, kafudadomain.StageChecking
 				case "late_supplier_success", "late_success_vs_manual_delivery":
-					wantStatus, wantStage = constants.OrderStatusCompleted, kafudadomain.StageCompleted
+					wantStatus, wantStage, wantDeliveries = constants.OrderStatusCompleted, kafudadomain.StageCompleted, 1
 				}
 			}
 			for _, id := range []uint{order.ID, childID} {
@@ -152,7 +152,7 @@ func TestDirectAfterSalesCompetingResolutions(t *testing.T) {
 			}{
 				{&orderdomain.OrderRefundRecord{}, wantRefunds},
 				{&walletdomain.Transaction{}, wantRefunds},
-				{&fulfillmentdomain.Fulfillment{}, wantManualDeliveries},
+				{&fulfillmentdomain.Fulfillment{}, wantDeliveries},
 			} {
 				var count int64
 				if err := f.db.Model(check.model).Count(&count).Error; err != nil || count != check.want {

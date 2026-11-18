@@ -896,6 +896,10 @@ func TestDirectShopCompletionUpdatesParentAndChildAtomically(t *testing.T) {
 	if err != nil || record == nil || record.Stage != kafudadomain.StageSubmitting {
 		t.Fatalf("recharge did not roll back: %+v, %v", record, err)
 	}
+	var deliveries int64
+	if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Count(&deliveries).Error; err != nil || deliveries != 0 {
+		t.Fatalf("delivery was not rolled back: %d, %v", deliveries, err)
+	}
 	if err := f.db.Exec("DROP TRIGGER reject_parent_completion").Error; err != nil {
 		t.Fatal(err)
 	}
@@ -903,6 +907,15 @@ func TestDirectShopCompletionUpdatesParentAndChildAtomically(t *testing.T) {
 		if completed, err := apply(); completed != want || err != nil {
 			t.Fatalf("fresh completion %t, %v; want %t", completed, err, want)
 		}
+	}
+	var delivery fulfillmentdomain.Fulfillment
+	if err := f.db.Where("order_id = ?", childID).First(&delivery).Error; err != nil ||
+		delivery.Type != constants.FulfillmentTypeKafudaGPT || delivery.Status != constants.FulfillmentStatusDelivered ||
+		delivery.Payload != "" || delivery.DeliveredBy != nil || delivery.DeliveredAt == nil || !delivery.DeliveredAt.Equal(now) {
+		t.Fatalf("unexpected supplier delivery: %+v, %v", delivery, err)
+	}
+	if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Count(&deliveries).Error; err != nil || deliveries != 1 {
+		t.Fatalf("delivery count after replay: %d, %v", deliveries, err)
 	}
 	for _, id := range []uint{order.ID, childID} {
 		var row orderdomain.Order

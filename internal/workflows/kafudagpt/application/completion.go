@@ -52,8 +52,23 @@ func ApplyResult(store ordercontract.Store, childID, attemptID uint, result kafu
 	var completed bool
 	err := withLockedDirectOrder(store, childID, func(tx ordercontract.Transaction, parent *orderdomain.Order) error {
 		var err error
-		completed, err = kafudaapp.RecordResultInTransaction(tx.KafudaGPT(), childID, attemptID, result, observedAt, nextPoll)
+		recharges := tx.KafudaGPT()
+		completed, err = kafudaapp.RecordResultInTransaction(recharges, childID, attemptID, result, observedAt, nextPoll)
 		if err != nil || !completed {
+			return err
+		}
+		record, err := recharges.GetRechargeForUpdate(childID)
+		if err != nil {
+			return err
+		}
+		if record == nil || record.CompletedAt == nil {
+			return orderapp.ErrOrderStatusInvalid
+		}
+		deliveredAt := *record.CompletedAt
+		if err := tx.Fulfillments().Create(&fulfillmentdomain.Fulfillment{
+			OrderID: childID, Type: constants.FulfillmentTypeKafudaGPT, Status: constants.FulfillmentStatusDelivered,
+			DeliveredAt: &deliveredAt, CreatedAt: deliveredAt, UpdatedAt: deliveredAt,
+		}); err != nil {
 			return err
 		}
 		return completeShopOrders(tx.Orders(), parent, childID)

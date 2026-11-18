@@ -162,7 +162,7 @@
                 <div class="flex items-center justify-between mb-3">
                   <h3 class="text-sm font-semibold text-foreground">{{
                     t('orderDetail.childFulfillmentTitle') }}</h3>
-                  <button v-if="child.fulfillment?.status === 'delivered'"
+                  <button v-if="child.fulfillment?.status === 'delivered' && child.fulfillment.type !== KAFUDA_GPT_DIRECT"
                     class="inline-flex items-center gap-1 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors shadow-sm"
                     :class="fulfillmentCopied ? 'bg-emerald-600 text-white' : 'bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800'"
                     @click="handleCopyFulfillment(child.fulfillment)">
@@ -446,6 +446,7 @@ import EmptyState from '../components/EmptyState.vue'
 import BreadcrumbNav from '../components/BreadcrumbNav.vue'
 import SmartImage from '../components/SmartImage.vue'
 import { useOrderDetail } from '../composables/useOrderDetail'
+import { KAFUDA_GPT_DIRECT } from '../utils/directPurchase'
 import DirectOrderStatus from '../components/DirectOrderStatus.vue'
 
 const { t } = useI18n()

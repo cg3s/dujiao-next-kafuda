@@ -15,7 +15,7 @@
           <Download /> {{ downloading ? t('orderDetail.fulfillmentDownloading') : t('orderDetail.fulfillmentDownload') }}
         </Button>
         <Button
-          v-if="fulfillment.status === 'delivered' && !isFulfillmentTruncated(fulfillment)"
+          v-if="fulfillment.status === 'delivered' && fulfillment.type !== KAFUDA_GPT_DIRECT && !isFulfillmentTruncated(fulfillment)"
           type="button"
           :variant="fulfillmentCopied ? 'default' : 'outline'"
           size="sm"
@@ -56,6 +56,7 @@ import { useI18n } from 'vue-i18n'
 import { Copy, Check, Download, Info } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { useOrderDisplayHelpers } from '../../../composables/useOrderDisplayHelpers'
+import { KAFUDA_GPT_DIRECT } from '@/utils/directPurchase'
 
 defineProps<{
   title?: string
