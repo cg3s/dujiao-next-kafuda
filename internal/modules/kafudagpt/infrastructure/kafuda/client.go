@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
@@ -21,9 +22,11 @@ const maxResponseBytes = 2 << 20
 var safeKey = regexp.MustCompile(`^[a-zA-Z0-9._:-]{1,80}$`)
 
 type Client struct {
-	baseURL string
-	token   string
-	http    *http.Client
+	baseURL             string
+	token               string
+	http                *http.Client
+	orderLookupMu       sync.Mutex
+	orderLookupResumeAt time.Time
 }
 
 func (c *Client) String() string { return "Kafuda GPT API client [credentials redacted]" }
@@ -94,7 +97,24 @@ func (c *Client) GetOrder(ctx context.Context, id uint64) (*kafudacontract.Order
 	if id == 0 {
 		return nil, apiError(0, "invalid_request")
 	}
+	// Subsequent worker batches may contain different orders while the
+	// supplier's numeric lookup limit is still in effect.
+	c.orderLookupMu.Lock()
+	retryAfter := time.Until(c.orderLookupResumeAt)
+	c.orderLookupMu.Unlock()
+	if retryAfter > 0 {
+		return nil, &kafudacontract.APIError{HTTPStatus: http.StatusTooManyRequests, Code: "rate_limited", RetryAfter: retryAfter}
+	}
 	result, err := c.order(ctx, http.MethodGet, "/api/v1/gpt/orders/"+strconv.FormatUint(id, 10), nil, "")
+	var limit *kafudacontract.APIError
+	if errors.As(err, &limit) && limit.HTTPStatus == http.StatusTooManyRequests && limit.RetryAfter > 0 {
+		resumeAt := time.Now().Add(limit.RetryAfter)
+		c.orderLookupMu.Lock()
+		if resumeAt.After(c.orderLookupResumeAt) {
+			c.orderLookupResumeAt = resumeAt
+		}
+		c.orderLookupMu.Unlock()
+	}
 	if err == nil && result.ID != id {
 		return nil, apiError(0, "invalid_response")
 	}
@@ -161,7 +181,7 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 			code = "service_unavailable"
 		}
 		e := apiError(resp.StatusCode, code)
-		// Kafuda documents x-ratelimit-reset as Unix seconds.
+		// Interpret the reset in Unix seconds and bound the accepted delay.
 		if reset, parseErr := strconv.ParseInt(resp.Header.Get("x-ratelimit-reset"), 10, 64); parseErr == nil {
 			if delay := time.Until(time.Unix(reset, 0)); delay > 0 && delay <= time.Hour {
 				e.RetryAfter = delay

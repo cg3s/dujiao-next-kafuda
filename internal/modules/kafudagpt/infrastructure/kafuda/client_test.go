@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -199,5 +200,42 @@ func TestRateLimitDelayIsBounded(t *testing.T) {
 	var apiErr *kafudacontract.APIError
 	if !errors.As(err, &apiErr) || apiErr.RetryAfter <= 0 || apiErr.RetryAfter > 20*time.Second {
 		t.Fatalf("unexpected rate limit delay: %v", err)
+	}
+}
+
+func TestOrderLookupSharesRateLimitAcrossDifferentOrders(t *testing.T) {
+	var lookups atomic.Int32
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/gpt/catalog" {
+			fmt.Fprint(w, `{"data":{"plans":[],"regions":[]}}`)
+			return
+		}
+		if lookups.Add(1) == 1 {
+			w.Header().Set("x-ratelimit-reset", fmt.Sprint(time.Now().Add(time.Minute).Unix()))
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		fmt.Fprint(w, `{"data":{"id":2,"status":"processing"}}`)
+	})
+	ctx := context.Background()
+	for _, id := range []uint64{1, 2} {
+		_, err := c.GetOrder(ctx, id)
+		var limit *kafudacontract.APIError
+		if !errors.As(err, &limit) || limit.HTTPStatus != http.StatusTooManyRequests || limit.RetryAfter <= 0 {
+			t.Fatalf("lookup %d did not honor rate limit: %v", id, err)
+		}
+	}
+	if calls := lookups.Load(); calls != 1 {
+		t.Fatalf("second lookup sent an HTTP request during cooldown: %d requests", calls)
+	}
+	if _, err := c.Catalog(ctx); err != nil {
+		t.Fatalf("numeric lookup limit blocked a catalog request: %v", err)
+	}
+	c.orderLookupMu.Lock()
+	c.orderLookupResumeAt = time.Now().Add(-time.Second)
+	c.orderLookupMu.Unlock()
+	got, err := c.GetOrder(ctx, 2)
+	if err != nil || got.ID != 2 || lookups.Load() != 2 {
+		t.Fatalf("lookup did not resume: %+v, %v, %d requests", got, err, lookups.Load())
 	}
 }
