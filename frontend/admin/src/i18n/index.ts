@@ -3,6 +3,8 @@ import { createI18n } from 'vue-i18n'
 const messages = {
   'zh-CN': {
     kafuda: {
+      skuRegions: '规格地区',
+      unknownRegion: '未指定地区',
       type: 'Kafuda GPT Direct（直充）',
       sync: '刷新直充套餐',
       tip: '套餐和地区来自 Kafuda。请逐个确认成本价与售价，再启用规格；目录刷新保留您的价格。此商品不使用卡密或人工库存。',
@@ -4662,6 +4664,8 @@ const messages = {
   },
   'zh-TW': {
     kafuda: {
+      skuRegions: '規格地區',
+      unknownRegion: '未指定地區',
       type: 'Kafuda GPT Direct（直充）',
       sync: '更新直充套餐',
       tip: '套餐與地區來自 Kafuda。請逐項確認成本價與售價後再啟用規格；目錄更新保留您的價格。此商品不使用卡密或人工庫存。',
@@ -9321,6 +9325,8 @@ const messages = {
   },
   'en-US': {
     kafuda: {
+      skuRegions: 'SKU regions',
+      unknownRegion: 'Unspecified region',
       type: 'Kafuda GPT Direct',
       sync: 'Refresh recharge plans',
       tip: 'Plans and regions come from Kafuda. Confirm each cost and selling price before enabling a variant. Refreshes preserve your prices. This product uses no card-key or manual inventory.',
