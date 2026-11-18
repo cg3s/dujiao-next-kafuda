@@ -25,14 +25,19 @@ func setupRiskGateDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&orderdomain.Order{}, &orderdomain.OrderItem{}, &orderriskdomain.LockKey{}); err != nil {
-		t.Fatal(err)
-	}
 	sqlDB, err := db.DB()
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := sqlDB.Close(); err != nil {
+			t.Errorf("close risk-gate database: %v", err)
+		}
+	})
 	sqlDB.SetMaxOpenConns(10)
+	if err := db.AutoMigrate(&orderdomain.Order{}, &orderdomain.OrderItem{}, &orderriskdomain.LockKey{}); err != nil {
+		t.Fatal(err)
+	}
 	return db
 }
 
