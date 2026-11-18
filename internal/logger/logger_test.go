@@ -25,17 +25,17 @@ func TestResolveLogFilePathDefaultDir(t *testing.T) {
 		t.Fatalf("resolve default log path failed: %v", err)
 	}
 
-	realTmpDir, err := filepath.EvalSymlinks(tmpDir)
+	expectedRoot, err := os.Stat(tmpDir)
 	if err != nil {
-		t.Fatalf("resolve tmp dir symlink failed: %v", err)
+		t.Fatalf("stat temp dir: %v", err)
 	}
-	realGot, err := filepath.EvalSymlinks(filepath.Dir(got))
+	gotDir := filepath.Dir(got)
+	gotRoot, err := os.Stat(filepath.Dir(gotDir))
 	if err != nil {
-		t.Fatalf("resolve got dir symlink failed: %v", err)
+		t.Fatalf("stat log root: %v", err)
 	}
-	expectedDir := filepath.Join(realTmpDir, defaultLogDirName)
-	if realGot != expectedDir {
-		t.Fatalf("unexpected log dir: got=%s expected=%s", realGot, expectedDir)
+	if filepath.Base(gotDir) != defaultLogDirName || !os.SameFile(gotRoot, expectedRoot) {
+		t.Fatalf("unexpected log dir: got=%s expected=%s", gotDir, filepath.Join(tmpDir, defaultLogDirName))
 	}
 	if filepath.Base(got) != defaultLogFilename {
 		t.Fatalf("unexpected log filename: %s", filepath.Base(got))
@@ -51,7 +51,12 @@ func TestNewReleaseWritesToConfiguredFile(t *testing.T) {
 		Dir:      tmpDir,
 		Filename: "release.log",
 	}
-	log := New("release", cfg)
+	log, closeLog := newLogger("release", cfg)
+	t.Cleanup(func() {
+		if err := closeLog(); err != nil {
+			t.Errorf("close release log: %v", err)
+		}
+	})
 	log.Info("release-log-test")
 	_ = log.Sync()
 

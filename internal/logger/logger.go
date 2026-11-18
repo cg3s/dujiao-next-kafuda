@@ -52,6 +52,12 @@ func Init(mode string, options Options) *zap.Logger {
 
 // New 创建日志实例
 func New(mode string, options Options) *zap.Logger {
+	logger, _ := newLogger(mode, options)
+	return logger
+}
+
+func newLogger(mode string, options Options) (*zap.Logger, func() error) {
+	noClose := func() error { return nil }
 	level := zap.NewAtomicLevelAt(zap.InfoLevel)
 	if strings.EqualFold(strings.TrimSpace(mode), "debug") {
 		level = zap.NewAtomicLevelAt(zap.DebugLevel)
@@ -71,10 +77,10 @@ func New(mode string, options Options) *zap.Logger {
 			zapcore.AddSync(os.Stdout),
 			level,
 		)
-		return zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
+		return zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1)), noClose
 	}
 
-	writeSyncer, err := newFileWriteSyncer(options)
+	writeSyncer, closeLog, err := newFileWriteSyncer(options)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "logger init failed, fallback to stdout: %v\n", err)
 		core := zapcore.NewCore(
@@ -82,7 +88,7 @@ func New(mode string, options Options) *zap.Logger {
 			zapcore.AddSync(os.Stdout),
 			level,
 		)
-		return zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
+		return zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1)), noClose
 	}
 
 	core := zapcore.NewCore(
@@ -90,7 +96,7 @@ func New(mode string, options Options) *zap.Logger {
 		writeSyncer,
 		level,
 	)
-	return zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
+	return zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1)), closeLog
 }
 
 // StdLogger 返回兼容标准库 log 的 logger
@@ -158,10 +164,10 @@ func fallbackLogger() *zap.Logger {
 	return fallbackLog
 }
 
-func newFileWriteSyncer(options Options) (zapcore.WriteSyncer, error) {
+func newFileWriteSyncer(options Options) (zapcore.WriteSyncer, func() error, error) {
 	logFilePath, err := resolveLogFilePath(options)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	writer := &lumberjack.Logger{
@@ -176,7 +182,7 @@ func newFileWriteSyncer(options Options) (zapcore.WriteSyncer, error) {
 	} else {
 		writer.Compress = defaultLogCompress
 	}
-	return zapcore.AddSync(writer), nil
+	return zapcore.AddSync(writer), writer.Close, nil
 }
 
 func resolveLogFilePath(options Options) (string, error) {
