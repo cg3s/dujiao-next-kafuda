@@ -3,6 +3,7 @@ package application
 import (
 	"errors"
 	"math"
+	"strings"
 	"time"
 
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
@@ -10,16 +11,20 @@ import (
 )
 
 var (
-	ErrQuoteUnavailable = errors.New("kafuda purchased plan is unavailable")
-	ErrQuoteExpired     = errors.New("kafuda quote has expired")
-	ErrQuotePolicy      = errors.New("kafuda quote exceeds merchant policy")
+	ErrQuoteUnavailable  = errors.New("kafuda purchased plan is unavailable")
+	ErrQuoteExpired      = errors.New("kafuda quote has expired")
+	ErrQuotePolicy       = errors.New("kafuda quote exceeds merchant policy")
+	ErrQuoteRegionLocked = errors.New("kafuda account is region locked")
 )
 
 // SelectQuote matches only the paid order's plan and country. Local prices are
 // intentionally absent from cost calculations: upstream costs are USD cents.
-func SelectQuote(result kafudacontract.CheckResult, snapshot kafudadomain.Snapshot, allowedKinds []string, now time.Time) (*kafudacontract.Quote, error) {
+func SelectQuote(result kafudacontract.CheckResult, snapshot kafudadomain.Snapshot, now time.Time) (*kafudacontract.Quote, error) {
 	if snapshot.Validate() != nil || result.Country != snapshot.Country || result.PayMode != snapshot.PayMode {
 		return nil, ErrQuotePolicy
+	}
+	if result.RegionLocked {
+		return nil, ErrQuoteRegionLocked
 	}
 	var selected *kafudacontract.Quote
 	expired := false
@@ -27,11 +32,11 @@ func SelectQuote(result kafudacontract.CheckResult, snapshot kafudadomain.Snapsh
 		if candidate.Plan != snapshot.Plan || candidate.Status != "available" {
 			continue
 		}
-		if candidate.QuoteID == "" || !candidate.ExpiresAt.After(now) {
+		if !candidate.ExpiresAt.After(now) {
 			expired = true
 			continue
 		}
-		if selected != nil || !allowedKind(candidate.Kind, allowedKinds) || !validAutoCard(candidate, snapshot) {
+		if selected != nil || strings.TrimSpace(candidate.QuoteID) == "" || !allowedKind(candidate.Kind, snapshot.AllowedKinds) || !validAutoCard(candidate, snapshot) {
 			return nil, ErrQuotePolicy
 		}
 		quote := candidate
