@@ -32,6 +32,39 @@ type cardSecretImportHook struct {
 	before func()
 }
 
+func TestCardSecretUpdateDoesNotRestoreDeletedInventory(t *testing.T) {
+	for _, hardDelete := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hard_delete_%t", hardDelete), func(t *testing.T) {
+			db := setupCardSecretServiceTestDB(t)
+			store := cardsecretgormstore.New(db)
+			item := cardsecretdomain.Secret{ProductID: 42, Secret: "original", Status: cardsecretdomain.StatusUsed}
+			if err := db.Create(&item).Error; err != nil {
+				t.Fatal(err)
+			}
+			stale, err := store.GetByID(item.ID)
+			if err != nil || stale == nil {
+				t.Fatalf("load original card secret: %v", err)
+			}
+			if hardDelete {
+				if err := db.Delete(&item).Error; err != nil {
+					t.Fatal(err)
+				}
+			} else if err := store.DeleteByProduct(item.ProductID); err != nil {
+				t.Fatal(err)
+			}
+			stale.Secret = "stale edit"
+			stale.Status = cardsecretdomain.StatusAvailable
+			if err := store.Update(stale); !errors.Is(err, gorm.ErrRecordNotFound) {
+				t.Fatalf("update deleted card secret: got %v, want record not found", err)
+			}
+			total, available, used, err := store.CountByProduct(item.ProductID, 0)
+			if err != nil || total != 0 || available != 0 || used != 0 {
+				t.Fatalf("inventory after stale edit = (%d, %d, %d), %v", total, available, used, err)
+			}
+		})
+	}
+}
+
 func (u cardSecretImportHook) Transaction(fn func(cardsecretcontract.Repository, cardsecretcontract.BatchRepository, cardsecretcontract.ProductRepository, cardsecretcontract.ProductSKURepository) error) error {
 	u.before()
 	return u.UnitOfWork.Transaction(fn)

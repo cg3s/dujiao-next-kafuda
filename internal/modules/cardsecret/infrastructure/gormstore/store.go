@@ -260,7 +260,17 @@ func (r *Store) GetByID(id uint) (*cardsecretdomain.Secret, error) {
 
 // Update 更新卡密
 func (r *Store) Update(secret *cardsecretdomain.Secret) error {
-	return r.db.Save(secret).Error
+	result := r.db.Model(&cardsecretdomain.Secret{}).
+		Where("id = ? AND deleted_at IS NULL", secret.ID).
+		Updates(map[string]interface{}{
+			"secret":     secret.Secret,
+			"status":     secret.Status,
+			"updated_at": secret.UpdatedAt,
+		})
+	if result.Error == nil && result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return result.Error
 }
 
 // BatchUpdateStatus 批量更新卡密状态
