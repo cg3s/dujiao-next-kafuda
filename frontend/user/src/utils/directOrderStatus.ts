@@ -28,26 +28,49 @@ export function parseDirectOrderStatus(input: unknown): DirectOrderStatus | null
   return { stage, updated_at }
 }
 
+const ACTIVE_POLL_INTERVAL = 10_000
+const MANUAL_REVIEW_POLL_INTERVAL = 60_000
+
 export function startDirectOrderPolling(
   fetchStatus: () => Promise<unknown>,
   onUpdate: (status: DirectOrderStatus | null) => void,
+  page: Pick<Document, 'visibilityState' | 'addEventListener' | 'removeEventListener'>,
 ): () => void {
   let stopped = false
+  let inFlight = false
+  let lastStage: DirectOrderStage | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
+  const stop = () => {
+    stopped = true
+    clearTimeout(timer)
+    page.removeEventListener('visibilitychange', onVisibilityChange)
+  }
   const refresh = async () => {
+    if (stopped || inFlight || page.visibilityState === 'hidden') return
+    inFlight = true
     let status: DirectOrderStatus | null = null
     try {
       status = parseDirectOrderStatus(await fetchStatus())
     } catch {
-      // A transport failure is an unavailable refresh, not an order outcome.
+      // A transport failure leaves the last confirmed stage available.
+    } finally {
+      inFlight = false
     }
     if (stopped) return
+    if (status) lastStage = status.stage
     onUpdate(status)
-    if (!stopped && status?.stage !== 'completed') timer = setTimeout(refresh, 10_000)
+    if (lastStage === 'completed') {
+      stop()
+    } else if (!stopped && page.visibilityState === 'visible') {
+      const interval = lastStage === 'manual_review' ? MANUAL_REVIEW_POLL_INTERVAL : ACTIVE_POLL_INTERVAL
+      timer = setTimeout(refresh, interval)
+    }
   }
-  void refresh()
-  return () => {
-    stopped = true
+  const onVisibilityChange = () => {
     clearTimeout(timer)
+    void refresh()
   }
+  page.addEventListener('visibilitychange', onVisibilityChange)
+  void refresh()
+  return stop
 }

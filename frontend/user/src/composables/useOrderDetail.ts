@@ -78,6 +78,7 @@ export function useOrderDetail() {
           if (status.stage === 'completed' && order.value?.status !== 'completed') void loadOrder(false)
         }
       },
+      document,
     ))
   })
 
