@@ -74,7 +74,7 @@ type ResellerOrderStore interface {
 // Transaction 是已打开事务的订单工作单元。
 // 每个方法只暴露相应领域端口，保证事务原子性同时隔离 GORM。
 type Transaction interface {
-	KafudaGPT() kafudacontract.CheckoutRepository
+	KafudaGPT() KafudaOrderTransaction
 	Orders() Store
 	Products() productcontract.Repository
 	ProductSKUs() productcontract.SKURepository
@@ -87,4 +87,9 @@ type Transaction interface {
 	ResellerOrders() ResellerOrderStore
 	ResellerAccounting() resellercontract.AccountingLedgerStore
 	ExpirePendingPaymentsByOrderIDs(orderIDs []uint, expiredAt time.Time) (int64, error)
+}
+
+type KafudaOrderTransaction interface {
+	kafudacontract.CheckoutRepository
+	kafudacontract.Transaction
 }

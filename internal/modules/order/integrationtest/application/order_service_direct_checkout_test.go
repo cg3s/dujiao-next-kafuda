@@ -38,6 +38,7 @@ import (
 	"github.com/dujiao-next/internal/platform/http/response"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
+	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -49,6 +50,69 @@ type directCheckoutFixture struct {
 	input   orderapp.CreateOrderInput
 	catalog *kafudadomain.Catalog
 	store   *kafudastore.Store
+}
+
+func TestDirectShopCompletionUpdatesParentAndChildAtomically(t *testing.T) {
+	f := newDirectCheckoutFixture(t)
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+		t.Fatal(err)
+	}
+	order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+	if err != nil || order == nil || len(order.Children) != 1 {
+		t.Fatalf("create checkout: %+v, %v", order, err)
+	}
+	ctx, now := context.Background(), time.Now().UTC()
+	childID := order.Children[0].ID
+	records := kafudaapp.New(f.store)
+	reserved, err := records.Reserve(ctx, childID, now, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := reserved.Attempt
+	if err := records.MarkSubmitting(ctx, attempt.ID, "quote_1", now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	result := kafudacontract.OrderResult{ID: 101, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed"}
+	apply := func() (bool, error) {
+		return kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, result, now, time.Time{})
+	}
+	if completed, err := apply(); completed || !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("unpaid completion: %t, %v", completed, err)
+	}
+	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	trigger := fmt.Sprintf("CREATE TRIGGER reject_parent_completion BEFORE UPDATE ON orders WHEN OLD.id = %d AND NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'parent update failed'); END", order.ID)
+	if err := f.db.Exec(trigger).Error; err != nil {
+		t.Fatal(err)
+	}
+	if completed, err := apply(); completed || err == nil {
+		t.Fatalf("parent write failure was not returned: %t, %v", completed, err)
+	}
+	for _, id := range []uint{order.ID, childID} {
+		var row orderdomain.Order
+		if err := f.db.First(&row, id).Error; err != nil || row.Status != constants.OrderStatusPaid {
+			t.Fatalf("order %d did not roll back: %+v, %v", id, row, err)
+		}
+	}
+	record, err := f.store.GetRecharge(ctx, childID)
+	if err != nil || record == nil || record.Stage != kafudadomain.StageSubmitting {
+		t.Fatalf("recharge did not roll back: %+v, %v", record, err)
+	}
+	if err := f.db.Exec("DROP TRIGGER reject_parent_completion").Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []bool{true, false} {
+		if completed, err := apply(); completed != want || err != nil {
+			t.Fatalf("fresh completion %t, %v; want %t", completed, err, want)
+		}
+	}
+	for _, id := range []uint{order.ID, childID} {
+		var row orderdomain.Order
+		if err := f.db.First(&row, id).Error; err != nil || row.Status != constants.OrderStatusCompleted {
+			t.Fatalf("order %d did not complete: %+v, %v", id, row, err)
+		}
+	}
 }
 
 func TestDirectCheckoutDiscountsMatchPreviewAndSnapshot(t *testing.T) {

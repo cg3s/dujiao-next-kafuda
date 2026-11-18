@@ -4,7 +4,6 @@ import (
 	"strings"
 	"time"
 
-	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
 	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
 
@@ -60,7 +59,7 @@ func (tx transaction) Orders() ordercontract.Store {
 	return &Store{db: tx.db, guestCredentialSecret: tx.guestCredentialSecret}
 }
 
-func (tx transaction) KafudaGPT() kafudacontract.CheckoutRepository { return kafudastore.New(tx.db) }
+func (tx transaction) KafudaGPT() ordercontract.KafudaOrderTransaction { return kafudastore.New(tx.db) }
 
 func (tx transaction) Products() productcontract.Repository {
 	return productgormstore.NewProductStore(tx.db)
