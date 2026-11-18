@@ -34,6 +34,7 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n()
 const submitting = ref(false)
+const productLoading = ref(false)
 const isEditing = ref(false)
 const originalManualStockTotal = ref<number | null>(null)
 const paymentChannels = ref<AdminPaymentChannel[]>([])
@@ -517,9 +518,18 @@ const isTextLikeField = (fieldType: string) => {
   return fieldType === 'text' || fieldType === 'textarea' || fieldType === 'phone' || fieldType === 'email'
 }
 
-const resetForm = () => {
+const resetDirectCatalog = () => {
+  catalogRequest++
+  catalogBusy.value = false
+  catalogStale.value = true
+  catalogSyncedAt.value = ''
   catalogSalesBlockReason.value = ''
   activeSKURegion.value = ''
+  directAvailability.value = {}
+  directReviewRequired.value = {}
+}
+
+const resetForm = () => {
   initialCategoryID.value = null
   originalManualStockTotal.value = null
   Object.assign(form, {
@@ -551,8 +561,6 @@ const resetForm = () => {
 }
 
 const populateForm = (product: AdminProduct) => {
-  catalogSalesBlockReason.value = ''
-  activeSKURegion.value = ''
   initialCategoryID.value = Number(product.category_id || 0) || null
   originalManualStockTotal.value = resolveManualStockMetrics(product).total
   let imagesList: string[] = []
@@ -599,7 +607,6 @@ const populateForm = (product: AdminProduct) => {
     sort_order: Number(product.sort_order || 0),
     manual_form_schema: parseManualFormSchemaForEdit(product.manual_form_schema),
   })
-  if (isDirect.value) void loadDirectCatalog(false)
 }
 
 const isDirect = computed(() => form.fulfillment_type === 'kafuda_gpt_direct')
@@ -635,10 +642,12 @@ type DirectOption = { sku_code: string; plan: string; country: string; label: st
 
 const loadDirectCatalog = async (sync: boolean) => {
   const request = ++catalogRequest
+  const productId = props.productId
+  const isCurrent = () => request === catalogRequest && props.modelValue && props.productId === productId && isDirect.value
   catalogBusy.value = true
   try {
     const response = sync ? await adminAPI.syncKafudaCatalog() : await adminAPI.getKafudaCatalog()
-    if (request !== catalogRequest || !props.modelValue || !isDirect.value) return
+    if (!isCurrent()) return
     const catalog = response.data.data
     const options: DirectOption[] = Array.isArray(catalog.options) ? catalog.options : []
     const old = new Map(form.skus.filter((item) => item.sku_code.startsWith('KGPT_')).map((item) => [item.sku_code, item]))
@@ -666,14 +675,17 @@ const loadDirectCatalog = async (sync: boolean) => {
     catalogSalesBlockReason.value = String(catalog.sales_block_reason || '')
     catalogSyncedAt.value = catalog.synced_at ? new Date(catalog.synced_at).toLocaleString() : ''
   } catch (error) {
-    if (!isNotifiedError(error)) notifyError(t('kafuda.failed'))
+    if (isCurrent() && !isNotifiedError(error)) notifyError(t('kafuda.failed'))
   } finally {
     if (request === catalogRequest) catalogBusy.value = false
   }
 }
 
 watch(() => form.fulfillment_type, () => {
-  if (!isDirect.value) { catalogRequest++; catalogBusy.value = false; return }
+  if (!isDirect.value) {
+    resetDirectCatalog()
+    return
+  }
   form.purchase_type = 'member'
   form.min_purchase_quantity = 1
   form.max_purchase_quantity = 1
@@ -686,6 +698,7 @@ const closeModal = () => {
 }
 
 const handleSubmit = async () => {
+  if (productLoading.value || submitting.value || !props.modelValue) return
   submitting.value = true
   try {
     const normalizedCategoryID = Number(form.category_id)
@@ -781,60 +794,42 @@ const removeTag = (index: number) => {
   form.tags.splice(index, 1)
 }
 
-// Watch productId to determine create vs edit mode and fetch product details
 watch(
-  () => props.productId,
-  async (newId) => {
-    if (!props.modelValue) return
+  [() => props.modelValue, () => props.productId],
+  async ([open, productId], _, onCleanup) => {
+    resetDirectCatalog()
+    productLoading.value = false
+    if (!open) return
     currentLang.value = 'zh-CN'
-    if (newId != null && newId > 0) {
-      // Edit mode
-      isEditing.value = true
-      try {
-        const res = await adminAPI.getProduct(newId)
-        const product = res.data.data
-        editingIsMapped.value = Boolean(product.is_mapped)
-        populateForm(product)
-      } catch (err: any) {
-        if (isNotifiedError(err)) return
-        notifyError(t('admin.products.errors.operationFailed', { message: err?.message || '' }))
-        closeModal()
-      }
-    } else {
-      // Create mode
-      isEditing.value = false
-      editingIsMapped.value = false
-      resetForm()
-    }
-  }
-)
-
-// Also handle when modal opens
-watch(
-  () => props.modelValue,
-  (newVal) => {
-    if (!newVal) return
-    currentLang.value = 'zh-CN'
+    editingIsMapped.value = false
+    isEditing.value = productId != null && productId > 0
+    resetForm()
     if (paymentChannels.value.length === 0) {
-      loadPaymentChannels()
+      void loadPaymentChannels()
     }
-    if (props.productId != null && props.productId > 0) {
-      isEditing.value = true
-      adminAPI.getProduct(props.productId).then((res) => {
-        const product = res.data.data
-        editingIsMapped.value = Boolean(product.is_mapped)
-        populateForm(product)
-      }).catch((err: any) => {
-        if (isNotifiedError(err)) return
+    if (productId == null || productId <= 0) return
+
+    let canceled = false
+    onCleanup(() => { canceled = true })
+    const isCurrent = () => !canceled && props.modelValue && props.productId === productId
+    productLoading.value = true
+    try {
+      const res = await adminAPI.getProduct(productId)
+      if (!isCurrent()) return
+      const product = res.data.data
+      editingIsMapped.value = Boolean(product.is_mapped)
+      populateForm(product)
+    } catch (err: any) {
+      if (!isCurrent()) return
+      if (!isNotifiedError(err)) {
         notifyError(t('admin.products.errors.operationFailed', { message: err?.message || '' }))
-        closeModal()
-      })
-    } else {
-      isEditing.value = false
-      editingIsMapped.value = false
-      resetForm()
+      }
+      closeModal()
+    } finally {
+      if (isCurrent()) productLoading.value = false
     }
-  }
+  },
+  { immediate: true },
 )
 </script>
 
@@ -844,7 +839,8 @@ watch(
       <DialogHeader>
         <DialogTitle>{{ isEditing ? t('admin.products.modal.editTitle') : t('admin.products.modal.createTitle') }}</DialogTitle>
       </DialogHeader>
-      <form class="space-y-6" @submit.prevent="handleSubmit">
+      <p v-if="productLoading" class="text-sm text-muted-foreground" role="status">{{ t('admin.common.loading') }}</p>
+      <form v-else class="space-y-6" @submit.prevent="handleSubmit">
         <div class="border-b border-border">
           <div class="flex gap-2 overflow-x-auto pb-1 sm:gap-4">
             <button
