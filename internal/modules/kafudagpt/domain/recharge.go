@@ -21,6 +21,13 @@ const (
 	StageCompleted      Stage = "completed"
 )
 
+const (
+	ReasonQuoteRegionLocked = "quote_region_locked"
+	ReasonQuoteExpired      = "quote_expired"
+	ReasonQuoteUnavailable  = "quote_unavailable"
+	ReasonQuotePolicy       = "quote_policy"
+)
+
 var (
 	ErrNotFound          = errors.New("kafuda recharge not found")
 	ErrInvalidSnapshot   = errors.New("invalid kafuda recharge snapshot")

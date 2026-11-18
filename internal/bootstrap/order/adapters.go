@@ -149,6 +149,7 @@ func newAdminDirectStatusReader(c *container.Container) ordertransport.AdminDire
 		status := &ordertransport.AdminDirectStatus{ChildID: child.ID, Stage: string(record.Stage), UpdatedAt: record.UpdatedAt}
 		switch record.ReasonCode {
 		case "check_rejected", "session_invalid", "outcome_unknown", "upstream_review", "upstream_failed", "upstream_cancelled",
+			kafudadomain.ReasonQuoteRegionLocked, kafudadomain.ReasonQuoteExpired, kafudadomain.ReasonQuoteUnavailable, kafudadomain.ReasonQuotePolicy,
 			"cost_limit_exceeded", "lookup_deadline_exceeded", "check_interrupted":
 			status.Reason = record.ReasonCode
 		}

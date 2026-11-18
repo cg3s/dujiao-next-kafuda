@@ -25,9 +25,9 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 	}
 	attempt := reservation.Attempt
 	now := time.Now().UTC()
-	quote, err := kafudaapp.SelectQuote(check, reservation.Recharge.Snapshot, now)
+	quote, err := records.CheckQuote(ctx, attempt.ID, check, reservation.Recharge.Snapshot, now)
 	if err != nil {
-		return false, errors.Join(err, records.CheckRejected(ctx, attempt.ID, false, now))
+		return false, err
 	}
 
 	// Persist the quote and reference before an upstream request can escape.

@@ -1,6 +1,7 @@
 package application
 
 import (
+	"context"
 	"errors"
 	"math"
 	"strings"
@@ -16,6 +17,24 @@ var (
 	ErrQuotePolicy       = errors.New("kafuda quote exceeds merchant policy")
 	ErrQuoteRegionLocked = errors.New("kafuda account is region locked")
 )
+
+// CheckQuote selects a quote or classifies the rejected attempt using a local reason.
+func (s *Service) CheckQuote(ctx context.Context, attemptID uint, result kafudacontract.CheckResult, snapshot kafudadomain.Snapshot, now time.Time) (*kafudacontract.Quote, error) {
+	quote, err := SelectQuote(result, snapshot, now)
+	if err == nil {
+		return quote, nil
+	}
+	reason := kafudadomain.ReasonQuotePolicy
+	switch {
+	case errors.Is(err, ErrQuoteRegionLocked):
+		reason = kafudadomain.ReasonQuoteRegionLocked
+	case errors.Is(err, ErrQuoteExpired):
+		reason = kafudadomain.ReasonQuoteExpired
+	case errors.Is(err, ErrQuoteUnavailable):
+		reason = kafudadomain.ReasonQuoteUnavailable
+	}
+	return nil, errors.Join(err, s.rejectCheck(ctx, attemptID, kafudadomain.StageManualDelivery, reason, now))
+}
 
 // SelectQuote matches only the paid order's plan and country. Local prices are
 // intentionally absent from cost calculations: upstream costs are USD cents.

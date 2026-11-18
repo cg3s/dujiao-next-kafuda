@@ -971,6 +971,10 @@ const messages = {
           },
           reasons: {
             check_rejected: '检查被拒绝',
+            quote_region_locked: '账号地区受限',
+            quote_expired: '报价已过期',
+            quote_unavailable: '所购套餐当前不可用',
+            quote_policy: '报价不符合商户策略',
             session_invalid: '会话无效',
             outcome_unknown: '结果不明',
             upstream_review: '上游待核对',
@@ -5626,6 +5630,10 @@ const messages = {
           },
           reasons: {
             check_rejected: '檢查被拒絕',
+            quote_region_locked: '帳號地區受限',
+            quote_expired: '報價已過期',
+            quote_unavailable: '所購方案目前無法使用',
+            quote_policy: '報價不符合商戶策略',
             session_invalid: '工作階段無效',
             outcome_unknown: '結果不明',
             upstream_review: '上游待核對',
@@ -10281,6 +10289,10 @@ const messages = {
           },
           reasons: {
             check_rejected: 'Check rejected',
+            quote_region_locked: 'Account region restricted',
+            quote_expired: 'Quote expired',
+            quote_unavailable: 'Purchased plan currently unavailable',
+            quote_policy: 'Quote does not meet merchant policy',
             session_invalid: 'Invalid session',
             outcome_unknown: 'Unknown outcome',
             upstream_review: 'Supplier review',

@@ -137,16 +137,19 @@ func (s *Service) MarkSubmitting(ctx context.Context, attemptID uint, quoteID st
 // CheckRejected applies only before a potentially chargeable request was sent.
 // Reason is classified locally; never persist upstream messages or Session.
 func (s *Service) CheckRejected(ctx context.Context, attemptID uint, retryable bool, now time.Time) error {
+	if retryable {
+		return s.rejectCheck(ctx, attemptID, kafudadomain.StageWaiting, "session_invalid", now)
+	}
+	return s.rejectCheck(ctx, attemptID, kafudadomain.StageManualDelivery, "check_rejected", now)
+}
+
+func (s *Service) rejectCheck(ctx context.Context, attemptID uint, stage kafudadomain.Stage, reason string, now time.Time) error {
 	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 		if !hasLiveCheck(record, attempt, now) {
 			return kafudadomain.ErrInvalidTransition
 		}
 		attempt.Status, attempt.ActiveOrderID, attempt.NextPollAt, attempt.UpdatedAt = kafudadomain.AttemptFailed, nil, nil, now
-		record.Stage, record.ReasonCode = kafudadomain.StageManualDelivery, "check_rejected"
-		if retryable {
-			record.Stage, record.ReasonCode = kafudadomain.StageWaiting, "session_invalid"
-		}
-		record.UpdatedAt = now
+		record.Stage, record.ReasonCode, record.UpdatedAt = stage, reason, now
 		return nil
 	})
 }

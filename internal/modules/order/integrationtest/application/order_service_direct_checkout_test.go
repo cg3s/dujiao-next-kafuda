@@ -411,16 +411,20 @@ func (g directCreateGateway) GetOrder(ctx context.Context, id uint64) (*kafudaco
 
 func TestSubmitCheckedDirectQuote(t *testing.T) {
 	for _, scenario := range []struct {
-		name     string
-		stage    kafudadomain.Stage
-		wantCall bool
+		name       string
+		stage      kafudadomain.Stage
+		wantCall   bool
+		wantReason string
 	}{
-		{"policy_rejected", kafudadomain.StageManualDelivery, false},
-		{"processing", kafudadomain.StageProcessing, true},
-		{"completed", kafudadomain.StageCompleted, true},
-		{"completed_after_sales_disabled", kafudadomain.StageCompleted, true},
-		{"response_lost", kafudadomain.StageManualReview, true},
-		{"response_mismatch", kafudadomain.StageManualReview, true},
+		{"region_locked", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuoteRegionLocked},
+		{"quote_expired", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuoteExpired},
+		{"quote_unavailable", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuoteUnavailable},
+		{"policy_rejected", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuotePolicy},
+		{"processing", kafudadomain.StageProcessing, true, ""},
+		{"completed", kafudadomain.StageCompleted, true, ""},
+		{"completed_after_sales_disabled", kafudadomain.StageCompleted, true, ""},
+		{"response_lost", kafudadomain.StageManualReview, true, "outcome_unknown"},
+		{"response_mismatch", kafudadomain.StageManualReview, true, "outcome_unknown"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			f := newDirectCheckoutFixture(t)
@@ -467,12 +471,20 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 				t.Fatal(err)
 			}
 			check := kafudacontract.CheckResult{
-				Country: "PH", PayMode: "auto_card", RegionLocked: !scenario.wantCall,
+				Country: "PH", PayMode: "auto_card", RegionLocked: scenario.name == "region_locked",
 				Plans: []kafudacontract.Quote{{
 					Plan: "plus", Status: "available", Kind: "new", QuoteID: "quote_checkout",
 					PriceCents: 900, ExpiresAt: now.Add(time.Minute),
 					AutoCard: &kafudacontract.AutoCard{ProductCode: "checkout-card", OpenFeeCents: 50, LoadCents: 50, TotalCents: 1000},
 				}},
+			}
+			switch scenario.name {
+			case "quote_expired":
+				check.Plans[0].ExpiresAt = now
+			case "quote_unavailable":
+				check.Plans[0].Status = "not_eligible"
+			case "policy_rejected":
+				check.Plans[0].AutoCard.ProductCode = "wrong-card"
 			}
 			calls := 0
 			gateway := directCreateGateway{create: func(ctx context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
@@ -506,7 +518,7 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 				t.Fatalf("create called %d times", calls)
 			}
 			record, err := f.store.GetRecharge(ctx, childID)
-			if err != nil || record == nil || record.Stage != scenario.stage {
+			if err != nil || record == nil || record.Stage != scenario.stage || record.ReasonCode != scenario.wantReason {
 				t.Fatalf("unexpected persisted recharge: %+v, %v", record, err)
 			}
 			if scenario.stage == kafudadomain.StageCompleted {
