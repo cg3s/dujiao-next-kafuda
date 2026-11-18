@@ -17,6 +17,11 @@ type manualStockSummary struct {
 	ByLegacyProduct map[uint]int
 }
 
+type manualStockMutationPolicy struct {
+	requireAffected bool
+	requireExisting bool
+}
+
 func summarizeManualStockItems(items []orderdomain.OrderItem) manualStockSummary {
 	result := manualStockSummary{
 		BySKU:           make(map[uint]int),
@@ -49,7 +54,7 @@ func releaseManualStockByItems(productRepo productcontract.Repository, productSK
 	if productRepo != nil {
 		productOp = productRepo.ReleaseManualStock
 	}
-	return applyManualStockByItems(productRepo, productSKURepo, items, skuOp, productOp, false)
+	return applyManualStockByItems(productRepo, productSKURepo, items, skuOp, productOp, manualStockMutationPolicy{})
 }
 
 // reserveManualStockByItems 重新占用人工库存，库存不足时返回 ErrManualStockInsufficient。
@@ -63,7 +68,10 @@ func reserveManualStockByItems(productRepo productcontract.Repository, productSK
 	if productRepo != nil {
 		productOp = productRepo.ReserveManualStock
 	}
-	return applyManualStockByItems(productRepo, productSKURepo, items, skuOp, productOp, true)
+	return applyManualStockByItems(productRepo, productSKURepo, items, skuOp, productOp, manualStockMutationPolicy{
+		requireAffected: true,
+		requireExisting: true,
+	})
 }
 
 func ConsumeManualStockByItems(productRepo productcontract.Repository, productSKURepo productcontract.SKURepository, items []orderdomain.OrderItem) error {
@@ -75,7 +83,7 @@ func ConsumeManualStockByItems(productRepo productcontract.Repository, productSK
 	if productRepo != nil {
 		productOp = productRepo.ConsumeManualStock
 	}
-	return applyManualStockByItems(productRepo, productSKURepo, items, skuOp, productOp, true)
+	return applyManualStockByItems(productRepo, productSKURepo, items, skuOp, productOp, manualStockMutationPolicy{requireAffected: true})
 }
 
 func applyManualStockByItems(
@@ -84,7 +92,7 @@ func applyManualStockByItems(
 	items []orderdomain.OrderItem,
 	updateSKU func(uint, int) (int64, error),
 	updateProduct func(uint, int) (int64, error),
-	requireAffected bool,
+	policy manualStockMutationPolicy,
 ) error {
 	summary := summarizeManualStockItems(items)
 	if productSKURepo != nil && updateSKU != nil {
@@ -93,14 +101,20 @@ func applyManualStockByItems(
 			if err != nil {
 				return err
 			}
-			if sku == nil || sku.ManualStockTotal == constants.ManualStockUnlimited {
+			if sku == nil {
+				if policy.requireExisting {
+					return ErrManualStockInsufficient
+				}
+				continue
+			}
+			if sku.ManualStockTotal == constants.ManualStockUnlimited {
 				continue
 			}
 			affected, err := updateSKU(skuID, quantity)
 			if err != nil {
 				return err
 			}
-			if requireAffected && affected != 1 {
+			if policy.requireAffected && affected != 1 {
 				return ErrManualStockInsufficient
 			}
 		}
@@ -118,14 +132,20 @@ func applyManualStockByItems(
 		if err != nil {
 			return err
 		}
-		if product == nil || product.ManualStockTotal == constants.ManualStockUnlimited {
+		if product == nil {
+			if policy.requireExisting {
+				return ErrManualStockInsufficient
+			}
+			continue
+		}
+		if product.ManualStockTotal == constants.ManualStockUnlimited {
 			continue
 		}
 		affected, err := updateProduct(productID, quantity)
 		if err != nil {
 			return err
 		}
-		if requireAffected && affected != 1 {
+		if policy.requireAffected && affected != 1 {
 			return ErrManualStockInsufficient
 		}
 	}

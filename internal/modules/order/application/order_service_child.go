@@ -500,6 +500,26 @@ func ReopenCanceledOrderInTx(tx ordercontract.Transaction, order *orderdomain.Or
 		return ErrOrderStatusInvalid
 	}
 
+	productRepo := tx.Products()
+	if productRepo != nil {
+		// Keep manual stock rows stable while checking unlimited inventory,
+		// which has no reservation write to protect a surviving SKU.
+		owners := order.Children
+		if len(owners) == 0 {
+			owners = []orderdomain.Order{*order}
+		}
+		var manualProductIDs []uint
+		for _, owner := range owners {
+			for productID := range summarizeManualStockItems(owner.Items).ByProductAll {
+				manualProductIDs = append(manualProductIDs, productID)
+			}
+		}
+		if len(manualProductIDs) > 0 {
+			if err := productRepo.LockByIDs(manualProductIDs); err != nil {
+				return err
+			}
+		}
+	}
 	orderStore := tx.Orders()
 	reopenUpdates := func() map[string]interface{} {
 		return map[string]interface{}{"canceled_at": nil, "updated_at": now}
@@ -515,7 +535,6 @@ func ReopenCanceledOrderInTx(tx ordercontract.Transaction, order *orderdomain.Or
 	// 人工库存必须在这里重新占用，否则随后 markOrderPaid 的 ConsumeManualStock 只看 locked 总量，
 	// 会扣掉其他待支付订单占着的库存。库存不足时整体回滚。
 	secretRepo := tx.CardSecrets()
-	productRepo := tx.Products()
 	productSKURepo := tx.ProductSKUs()
 	if len(order.Children) > 0 {
 		for idx := range order.Children {

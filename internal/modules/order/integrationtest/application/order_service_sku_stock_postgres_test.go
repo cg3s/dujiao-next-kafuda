@@ -10,12 +10,62 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dujiao-next/internal/constants"
+	cardsecretdomain "github.com/dujiao-next/internal/modules/cardsecret/domain"
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
+	orderapp "github.com/dujiao-next/internal/modules/order/application"
+	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
+	orderstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
+	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
 
 	"gorm.io/gorm"
 )
+
+func TestPostgresManualOrderCannotReopenAfterSKUDeletion(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	db := openPostgresDirectRaceDB(t, dsn)
+	f := seedCouponLimitRaceFixture(t, db, "manual-sku-reopen", 0, 0)
+	if err := db.AutoMigrate(&cardsecretdomain.Secret{}, &paymentdomain.Payment{}); err != nil {
+		t.Fatal(err)
+	}
+	service := f.service(f.couponRepo, f.usageRepo)
+	order, err := service.CreateOrder(f.input(f.users[0].ID))
+	if err != nil || order == nil || len(order.Children) != 1 {
+		t.Fatalf("create manual order: %+v, %v", order, err)
+	}
+	if _, err := service.CancelOrder(order.ID, order.UserID); err != nil {
+		t.Fatal(err)
+	}
+	if err := productstore.NewSKUStore(db).Delete(f.sku.ID); err != nil {
+		t.Fatal(err)
+	}
+	orders := orderstore.New(db, "test-guest-credential-secret-with-32-bytes")
+	err = orders.WithinTransaction(func(tx ordercontract.Transaction) error {
+		locked, err := tx.Orders().GetByIDForUpdateWithChildren(order.ID)
+		if err != nil {
+			return err
+		}
+		return orderapp.ReopenCanceledOrderInTx(tx, locked, time.Now().UTC())
+	})
+	if !errors.Is(err, orderapp.ErrManualStockInsufficient) {
+		t.Fatalf("reopen without original SKU: %v, want insufficient stock", err)
+	}
+	for _, id := range []uint{order.ID, order.Children[0].ID} {
+		record, err := orders.GetByID(id)
+		if err != nil || record == nil || record.Status != constants.OrderStatusCanceled || record.CanceledAt == nil || record.PaidAt != nil {
+			t.Fatalf("failed reopen changed order %d: %+v, %v", id, record, err)
+		}
+	}
+	usages, err := f.usageRepo.ListByOrderID(order.ID)
+	if err != nil || len(usages) != 0 {
+		t.Fatalf("failed reopen restored coupon usage: %d, %v", len(usages), err)
+	}
+}
 
 func TestPostgresManualSKUDeleteRechecksConcurrentReservation(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))

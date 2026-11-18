@@ -374,6 +374,73 @@ func TestManualConfirmPaymentCanceledOrderPaymentNotCoveringTotal(t *testing.T) 
 	}
 }
 
+func TestManualConfirmPaymentReopenRequiresOriginalManualInventory(t *testing.T) {
+	for _, inventory := range []string{"removed_sku", "removed_legacy_product", "inactive_unlimited_sku"} {
+		t.Run(inventory, func(t *testing.T) {
+			fixture := newManualConfirmFixture(t, constants.OrderStatusCanceled, 1)
+			pool, err := fixture.db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			product := productdomain.Product{
+				ID: 11, Slug: "manual-payment-stock", TitleJSON: jsonmap.JSON{"zh-CN": "人工交付"},
+				FulfillmentType: constants.FulfillmentTypeManual, ManualStockTotal: 8,
+			}
+			if err := fixture.db.Create(&product).Error; err != nil {
+				t.Fatal(err)
+			}
+			sku := productdomain.ProductSKU{
+				ID: 21, ProductID: product.ID, SKUCode: "original", ManualStockTotal: constants.ManualStockUnlimited,
+			}
+			if err := fixture.db.Create(&sku).Error; err != nil {
+				t.Fatal(err)
+			}
+			skuID := sku.ID
+			switch inventory {
+			case "removed_sku":
+				if err := productgormstore.NewSKUStore(fixture.db).Delete(sku.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "removed_legacy_product":
+				skuID = 0
+				if err := productgormstore.NewProductStore(fixture.db).Delete("11"); err != nil {
+					t.Fatal(err)
+				}
+			case "inactive_unlimited_sku":
+				if err := fixture.db.Model(&sku).Update("is_active", false).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := fixture.db.Model(&orderdomain.OrderItem{}).Where("order_id = ?", fixture.order.ID).
+				Updates(map[string]any{"fulfillment_type": constants.FulfillmentTypeManual, "sku_id": skuID}).Error; err != nil {
+				t.Fatal(err)
+			}
+			payment := fixture.addPayment(t, 50, constants.PaymentStatusSuccess, constants.PaymentExceptionClosedOrderSucceeded)
+			_, err = fixture.confirmPayment(payment.ID)
+			order := fixture.reloadOrder(t)
+			if inventory == "inactive_unlimited_sku" {
+				if err != nil || order.Status != constants.OrderStatusPaid || order.PaidAt == nil {
+					t.Fatalf("original unlimited SKU must remain fulfillable: status=%s, %v", order.Status, err)
+				}
+				return
+			}
+			if !errors.Is(err, orderapp.ErrManualStockInsufficient) {
+				t.Fatalf("missing original inventory: %v, want manual stock insufficient", err)
+			}
+			if order.Status != constants.OrderStatusCanceled || order.PaidAt != nil || order.CanceledAt == nil {
+				t.Fatalf("failed reopen changed canceled order: status=%s paid_at=%v canceled_at=%v", order.Status, order.PaidAt, order.CanceledAt)
+			}
+			var recorded paymentdomain.Payment
+			if err := fixture.db.First(&recorded, payment.ID).Error; err != nil || recorded.Status != constants.PaymentStatusSuccess ||
+				recorded.ExceptionCode != constants.PaymentExceptionClosedOrderSucceeded || recorded.ProviderRef != payment.ProviderRef {
+				t.Fatalf("failed reopen changed the verified receipt: %+v, %v", recorded, err)
+			}
+		})
+	}
+}
+
 func TestManualConfirmPaymentReopenFailsWhenManualStockTakenByOtherOrder(t *testing.T) {
 	fixture := newManualConfirmFixture(t, constants.OrderStatusCanceled, 1)
 	// 把订单项改成人工交付，库存只剩 0 件可售、1 件被其他待支付订单占用。
