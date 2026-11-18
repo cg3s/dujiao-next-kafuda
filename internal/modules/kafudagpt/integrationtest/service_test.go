@@ -161,6 +161,42 @@ func TestUnknownOutcomeRetainsSlotAndLateSuccessConverges(t *testing.T) {
 	}
 }
 
+func TestStalePollCannotRegressScheduleAndLateCompletionStillConverges(t *testing.T) {
+	_, store, service := database(t)
+	ctx, now := context.Background(), time.Now().UTC()
+	prepare(t, service, 10, now)
+	reservation := reserve(t, service, 10, now)
+	id := reservation.Attempt.ID
+	if err := service.MarkSubmitting(ctx, id, "quo_1", now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	newer, nextPoll := now.Add(10*time.Second), now.Add(2*time.Minute)
+	result := kafudacontract.OrderResult{ID: 101, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing"}
+	if err := service.RecordResult(ctx, id, result, newer, nextPoll); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordResult(ctx, id, result, now, now.Add(time.Minute)); !errors.Is(err, kafudadomain.ErrConflict) {
+		t.Fatalf("stale processing result was accepted: %v", err)
+	}
+	if err := service.MarkUnknown(ctx, id, now, now.Add(time.Minute)); !errors.Is(err, kafudadomain.ErrConflict) {
+		t.Fatalf("stale lookup failure was accepted: %v", err)
+	}
+	attempt, err := store.GetAttempt(ctx, id)
+	if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptProcessing ||
+		attempt.NextPollAt == nil || !attempt.NextPollAt.Equal(nextPoll) || !attempt.UpdatedAt.Equal(newer) {
+		t.Fatalf("stale polls changed the attempt: %+v, %v", attempt, err)
+	}
+	result.Status = "completed"
+	if err := service.RecordResult(ctx, id, result, now, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.GetRecharge(ctx, 10)
+	if err != nil || record == nil || record.Stage != kafudadomain.StageCompleted ||
+		record.CompletedAt == nil || !record.CompletedAt.Equal(newer) || !record.UpdatedAt.Equal(newer) {
+		t.Fatalf("late completion did not converge with monotonic timestamps: %+v, %v", record, err)
+	}
+}
+
 func TestOverCapChargeRequiresReviewAndKeepsSupplierOutcome(t *testing.T) {
 	for _, initialStatus := range []string{"processing", "completed"} {
 		t.Run(initialStatus, func(t *testing.T) {

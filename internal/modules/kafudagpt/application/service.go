@@ -145,12 +145,15 @@ func hasLiveCheck(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt, 
 }
 
 func (s *Service) MarkUnknown(ctx context.Context, attemptID uint, now, nextPoll time.Time) error {
-	if !nextPoll.After(now) {
+	if now.IsZero() || !nextPoll.After(now) {
 		return kafudadomain.ErrInvalidTransition
 	}
 	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 		if !attempt.Status.CanTransition(kafudadomain.AttemptReview) {
 			return kafudadomain.ErrInvalidTransition
+		}
+		if now.Before(attempt.UpdatedAt) {
+			return kafudadomain.ErrConflict
 		}
 		attempt.Status, attempt.NextPollAt, attempt.UpdatedAt = kafudadomain.AttemptReview, &nextPoll, now
 		record.Stage, record.UpdatedAt = kafudadomain.StageManualReview, now
@@ -178,11 +181,22 @@ func (s *Service) RecordResult(ctx context.Context, attemptID uint, result kafud
 		if !attempt.Status.Active() {
 			return errNoRecordChange
 		}
+		if now.IsZero() {
+			return kafudadomain.ErrInvalidTransition
+		}
 		if result.ChargedUSDCents != nil && *result.ChargedUSDCents < 0 {
 			return kafudadomain.ErrInvalidTransition
 		}
-		if next.Active() && !nextPoll.After(now) {
-			return kafudadomain.ErrInvalidTransition
+		if next.Active() {
+			if !nextPoll.After(now) {
+				return kafudadomain.ErrInvalidTransition
+			}
+			if now.Before(attempt.UpdatedAt) {
+				return kafudadomain.ErrConflict
+			}
+		} else if now.Before(attempt.UpdatedAt) {
+			// An authoritative terminal result may arrive after a newer poll.
+			now = attempt.UpdatedAt
 		}
 		attempt.UpstreamOrderID, attempt.Status, attempt.UpdatedAt = &result.ID, next, now
 		// The gateway already masks account_email. Never accept a full email at
