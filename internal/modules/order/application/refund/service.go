@@ -289,7 +289,7 @@ func (s *Service) AdminManualRefund(input AdminManualRefundInput) (*orderdomain.
 
 	if err := s.orderStore.WithinTransaction(func(tx ordercontract.Transaction) error {
 		orders := tx.Orders()
-		locked, err := orders.GetByIDForUpdate(input.OrderID)
+		locked, err := orders.GetByIDForUpdateWithChildren(input.OrderID)
 		if err != nil {
 			return err
 		}
@@ -297,7 +297,7 @@ func (s *Service) AdminManualRefund(input AdminManualRefundInput) (*orderdomain.
 			return ErrOrderNotFound
 		}
 		order := *locked
-		if order.PaidAt == nil {
+		if order.PaidAt == nil || order.HasDirectRecharge() {
 			return ErrOrderStatusInvalid
 		}
 		if settingsapp.IsOrderRefundWindowExpired(order.CreatedAt, order.PaidAt, cfg.MaxRefundDays, time.Now()) {

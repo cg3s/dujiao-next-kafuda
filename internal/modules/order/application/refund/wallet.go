@@ -66,7 +66,7 @@ func (s *Service) AdminRefundToWallet(
 
 	err := s.orderStore.WithinTransaction(func(tx ordercontract.Transaction) error {
 		orderRepository := tx.Orders()
-		locked, err := orderRepository.GetByIDForUpdate(input.OrderID)
+		locked, err := orderRepository.GetByIDForUpdateWithChildren(input.OrderID)
 		if err != nil {
 			return err
 		}
@@ -77,7 +77,7 @@ func (s *Service) AdminRefundToWallet(
 		if order.UserID == 0 {
 			return walletcontract.ErrNotSupportedForGuest
 		}
-		if order.PaidAt == nil {
+		if order.PaidAt == nil || order.HasDirectRecharge() {
 			return ErrOrderStatusInvalid
 		}
 		now := time.Now()

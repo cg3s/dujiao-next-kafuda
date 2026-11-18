@@ -20,6 +20,8 @@ import (
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
 	coupondomain "github.com/dujiao-next/internal/modules/coupon/domain"
+	fulfillmentapp "github.com/dujiao-next/internal/modules/fulfillment/application"
+	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	userstore "github.com/dujiao-next/internal/modules/identity/user/infrastructure/gormstore"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
@@ -29,6 +31,7 @@ import (
 	memberdomain "github.com/dujiao-next/internal/modules/memberlevel/domain"
 	memberstore "github.com/dujiao-next/internal/modules/memberlevel/infrastructure/gormstore"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
+	orderrefund "github.com/dujiao-next/internal/modules/order/application/refund"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
 	orderhttp "github.com/dujiao-next/internal/modules/order/transport/http"
@@ -37,6 +40,9 @@ import (
 	promotiondomain "github.com/dujiao-next/internal/modules/promotion/domain"
 	promotionstore "github.com/dujiao-next/internal/modules/promotion/infrastructure/gormstore"
 	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
+	walletapp "github.com/dujiao-next/internal/modules/wallet/application"
+	walletdomain "github.com/dujiao-next/internal/modules/wallet/domain"
+	walletstore "github.com/dujiao-next/internal/modules/wallet/infrastructure/gormstore"
 	"github.com/dujiao-next/internal/platform/http/response"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
@@ -52,6 +58,72 @@ type directCheckoutFixture struct {
 	input   orderapp.CreateOrderInput
 	catalog *kafudadomain.Catalog
 	store   *kafudastore.Store
+}
+
+func TestDirectCheckoutGenericAfterSalesCannotBypassReview(t *testing.T) {
+	f := newDirectCheckoutFixture(t)
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &orderdomain.OrderRefundRecord{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
+		t.Fatal(err)
+	}
+	service := orderapp.NewOrderService(f.options)
+	order, err := service.CreateOrder(f.input)
+	if err != nil || order == nil || len(order.Children) != 1 {
+		t.Fatalf("create direct order: %+v, %v", order, err)
+	}
+	ctx, now := context.Background(), time.Now().UTC()
+	childID := order.Children[0].ID
+	ids := []uint{order.ID, childID}
+	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", ids).Updates(map[string]any{
+		"status": constants.OrderStatusPaid, "paid_at": now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	records := kafudaapp.New(f.store)
+	reservation, err := records.Reserve(ctx, childID, now, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := reservation.Attempt.ID
+	if err := records.MarkSubmitting(ctx, id, "quote", now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := records.MarkUnknown(ctx, id, now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	wallets := walletstore.New(f.db)
+	refunds := orderrefund.New(f.options.OrderStore, nil, nil, nil, walletapp.NewService(walletapp.Options{Repository: wallets, Transactions: wallets}), nil)
+	fulfillment := fulfillmentapp.New(fulfillmentapp.Options{OrderStore: f.options.OrderStore})
+	amount := money.FromDecimal(decimal.NewFromInt(1))
+	for _, orderID := range ids {
+		if _, _, _, err := refunds.AdminRefundToWallet(orderrefund.AdminRefundToWalletInput{OrderID: orderID, Amount: amount}); !errors.Is(err, orderrefund.ErrOrderStatusInvalid) {
+			t.Fatalf("wallet refund on %d: %v", orderID, err)
+		}
+		if _, _, err := refunds.AdminManualRefund(orderrefund.AdminManualRefundInput{OrderID: orderID, Amount: amount}); !errors.Is(err, orderrefund.ErrOrderStatusInvalid) {
+			t.Fatalf("manual refund on %d: %v", orderID, err)
+		}
+		for _, status := range []string{constants.OrderStatusCompleted, constants.OrderStatusRefunded} {
+			if _, err := service.UpdateOrderStatus(orderID, status); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+				t.Fatalf("common status update on %d to %s: %v", orderID, status, err)
+			}
+		}
+		var stored orderdomain.Order
+		if err := f.db.First(&stored, orderID).Error; err != nil || stored.Status != constants.OrderStatusPaid || !stored.RefundedAmount.IsZero() {
+			t.Fatalf("after-sales changed %d: %+v, %v", orderID, stored, err)
+		}
+	}
+	if _, err := fulfillment.CreateManual(fulfillmentapp.CreateManualInput{OrderID: childID, AdminID: 1, Payload: "test"}); !errors.Is(err, fulfillmentapp.ErrOrderStatusInvalid) {
+		t.Fatalf("generic manual delivery: %v", err)
+	}
+	for _, model := range []any{&orderdomain.OrderRefundRecord{}, &walletdomain.Transaction{}, &fulfillmentdomain.Fulfillment{}} {
+		var count int64
+		if err := f.db.Model(model).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("rejected after-sales left %T rows: %d, %v", model, count, err)
+		}
+	}
+	attempt, err := f.store.GetAttempt(ctx, id)
+	if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptReview || attempt.ActiveOrderID == nil {
+		t.Fatalf("after-sales changed the unknown attempt: %+v, %v", attempt, err)
+	}
 }
 
 func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {

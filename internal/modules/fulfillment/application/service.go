@@ -120,11 +120,11 @@ func (s *Service) CreateManual(input CreateManualInput) (*fulfillmentdomain.Fulf
 	var created *fulfillmentdomain.Fulfillment
 	err = s.orderStore.WithinTransaction(func(tx ordercontract.Transaction) error {
 		// 事务内锁住订单并复核状态：事务外的检查之后退款可能已经提交。
-		locked, err := tx.Orders().GetByIDForUpdate(input.OrderID)
+		locked, err := tx.Orders().GetByIDForUpdateWithChildren(input.OrderID)
 		if err != nil {
 			return err
 		}
-		if locked == nil || (locked.Status != constants.OrderStatusPaid && locked.Status != constants.OrderStatusFulfilling) {
+		if locked == nil || locked.HasDirectRecharge() || (locked.Status != constants.OrderStatusPaid && locked.Status != constants.OrderStatusFulfilling) {
 			return ErrOrderStatusInvalid
 		}
 		if _, found, err := tx.Fulfillments().FindByOrderIDForUpdate(input.OrderID); err != nil {

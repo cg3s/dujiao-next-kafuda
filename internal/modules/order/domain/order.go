@@ -3,9 +3,25 @@ package domain
 import (
 	"time"
 
+	"github.com/dujiao-next/internal/constants"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	"github.com/dujiao-next/internal/shared/money"
 )
+
+// HasDirectRecharge checks the immutable line items on an order or its children.
+func (o Order) HasDirectRecharge() bool {
+	for _, item := range o.Items {
+		if item.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+			return true
+		}
+	}
+	for _, child := range o.Children {
+		if child.HasDirectRecharge() {
+			return true
+		}
+	}
+	return false
+}
 
 // Order 订单表
 type Order struct {
