@@ -17,6 +17,8 @@ import (
 // recharge update; this service does not independently mark a shop order paid.
 type Service struct{ store kafudacontract.Store }
 
+const costLimitExceeded = "cost_limit_exceeded"
+
 func New(store kafudacontract.Store) *Service { return &Service{store: store} }
 
 // Prepare preserves the first paid-order snapshot, including administrator cost.
@@ -148,7 +150,10 @@ func (s *Service) MarkUnknown(ctx context.Context, attemptID uint, now, nextPoll
 			return kafudadomain.ErrInvalidTransition
 		}
 		attempt.Status, attempt.NextPollAt, attempt.UpdatedAt = kafudadomain.AttemptReview, &nextPoll, now
-		record.Stage, record.ReasonCode, record.UpdatedAt = kafudadomain.StageManualReview, "outcome_unknown", now
+		record.Stage, record.UpdatedAt = kafudadomain.StageManualReview, now
+		if record.ReasonCode != costLimitExceeded {
+			record.ReasonCode = "outcome_unknown"
+		}
 		return nil
 	})
 }
@@ -196,6 +201,13 @@ func (s *Service) RecordResult(ctx context.Context, attemptID uint, result kafud
 			attempt.ActiveOrderID = nil
 		}
 		record.UpdatedAt = now
+		// Keep the upstream outcome for reconciliation. An over-cap charge
+		// needs review even if the supplier reports a completed recharge.
+		if record.ReasonCode == costLimitExceeded ||
+			(attempt.ChargedUSDCents != nil && *attempt.ChargedUSDCents > record.Snapshot.MaxCostCents) {
+			record.Stage, record.ReasonCode = kafudadomain.StageManualReview, costLimitExceeded
+			return nil
+		}
 		switch next {
 		case kafudadomain.AttemptSubmitting, kafudadomain.AttemptProcessing:
 			if record.Stage != kafudadomain.StageManualReview {

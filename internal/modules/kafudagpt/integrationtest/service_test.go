@@ -160,6 +160,57 @@ func TestUnknownOutcomeRetainsSlotAndLateSuccessConverges(t *testing.T) {
 	}
 }
 
+func TestOverCapChargeRequiresReviewAndKeepsSupplierOutcome(t *testing.T) {
+	for _, initialStatus := range []string{"processing", "completed"} {
+		t.Run(initialStatus, func(t *testing.T) {
+			_, store, service := database(t)
+			ctx, now := context.Background(), time.Now().UTC()
+			prepare(t, service, 10, now)
+			reservation := reserve(t, service, 10, now)
+			id := reservation.Attempt.ID
+			if err := service.MarkSubmitting(ctx, id, "quo_1", now, now.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			charge := reservation.Recharge.Snapshot.MaxCostCents + 1
+			result := kafudacontract.OrderResult{ID: 101, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: initialStatus, ChargedUSDCents: &charge}
+			if err := service.RecordResult(ctx, id, result, now, now.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			if initialStatus == "processing" {
+				attempt, err := store.GetAttempt(ctx, id)
+				if err != nil || attempt == nil || attempt.ActiveOrderID == nil || attempt.NextPollAt == nil {
+					t.Fatalf("in-flight attempt must retain its slot and schedule: %+v, %v", attempt, err)
+				}
+				if err := service.MarkUnknown(ctx, id, now, now.Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+				record, err := store.GetRecharge(ctx, 10)
+				if err != nil || record == nil || record.ReasonCode != "cost_limit_exceeded" {
+					t.Fatalf("temporary lookup failure erased the review reason: %+v, %v", record, err)
+				}
+			}
+			result.Status, result.ChargedUSDCents = "completed", nil
+			if err := service.RecordResult(ctx, id, result, now.Add(time.Second), time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			attempt, err := store.GetAttempt(ctx, id)
+			if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptCompleted || attempt.ActiveOrderID != nil ||
+				attempt.ChargedUSDCents == nil || *attempt.ChargedUSDCents != charge {
+				t.Fatalf("supplier completion or charge lost: %+v, %v", attempt, err)
+			}
+			record, err := store.GetRecharge(ctx, 10)
+			if err != nil || record == nil || record.Stage != kafudadomain.StageManualReview ||
+				record.ReasonCode != "cost_limit_exceeded" || record.CompletedAt != nil ||
+				!record.Snapshot.SellPrice.Equal(reservation.Recharge.Snapshot.SellPrice.Decimal) {
+				t.Fatalf("over-cap recharge bypassed review or changed buyer price: %+v, %v", record, err)
+			}
+			if _, err := service.Reserve(ctx, 10, now.Add(time.Second), now.Add(time.Minute)); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+				t.Fatalf("over-cap recharge allowed another attempt: %v", err)
+			}
+		})
+	}
+}
+
 func TestInputCorrectionReleasesSlotButBusinessFailureRequiresManual(t *testing.T) {
 	_, store, service := database(t)
 	ctx, now := context.Background(), time.Now().UTC()
