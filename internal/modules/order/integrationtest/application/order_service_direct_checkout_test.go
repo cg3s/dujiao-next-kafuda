@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dujiao-next/internal/app/container"
+	"github.com/dujiao-next/internal/app/httpserver/middleware"
 	kafudawiring "github.com/dujiao-next/internal/bootstrap/kafudagpt"
 	orderwiring "github.com/dujiao-next/internal/bootstrap/order"
 	"github.com/dujiao-next/internal/config"
@@ -24,6 +25,7 @@ import (
 	fulfillmentapp "github.com/dujiao-next/internal/modules/fulfillment/application"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	userstore "github.com/dujiao-next/internal/modules/identity/user/infrastructure/gormstore"
+	userauthapp "github.com/dujiao-next/internal/modules/identity/userauth/application"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
@@ -618,20 +620,38 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 		OrderService: service, OrderStore: f.options.OrderStore,
 		KafudaGPT: &kafudawiring.Module{Store: f.store},
 	}).User
-	router := gin.New()
-	userID := uint(0)
-	router.Use(func(c *gin.Context) {
-		if userID != 0 {
-			c.Set("user_id", userID)
-		}
-	})
-	orderhttp.RegisterUserReadRoutes(router, handler)
-	request := func(orderNo string, uid uint, tenant resellercontract.TenantContext, wantCode int, wantStage, wantRenewal string) {
+	const userJWTSecret = "orders-direct-status-integration-test-key"
+	auth := userauthapp.NewService(&config.Config{UserJWT: config.JWTConfig{SecretKey: userJWTSecret}}, f.options.UserStore, nil, nil, nil, nil, nil)
+	tokenFor := func(userIndex int, stale bool) string {
 		t.Helper()
-		userID = uid
+		user := f.users[userIndex]
+		if stale {
+			user.TokenVersion++
+		}
+		token, _, err := auth.GenerateUserJWT(&user, 1)
+		if err != nil {
+			t.Fatalf("generate test user token: %v", err)
+		}
+		return token
+	}
+	ownerToken, otherToken, staleToken := tokenFor(0, false), tokenFor(1, false), tokenFor(0, true)
+	const resellerID = uint(1)
+	resellerToken, err := auth.BindUserTokenTenant(ownerToken, resellerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.Use(middleware.UserJWTAuthMiddleware(userJWTSecret, f.options.UserStore))
+	orderhttp.RegisterUserReadRoutes(router, handler)
+	request := func(orderNo, token string, tenant resellercontract.TenantContext, wantCode int, wantStage, wantRenewal string) {
+		t.Helper()
 		ctx := resellercontract.WithTenantContext(context.Background(), tenant)
 		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/orders/"+orderNo+"/direct-status", nil).WithContext(ctx))
+		req := httptest.NewRequest(http.MethodGet, "/orders/"+orderNo+"/direct-status", nil).WithContext(ctx)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		router.ServeHTTP(recorder, req)
 		var responseBody struct {
 			Code int                        `json:"status_code"`
 			Data map[string]json.RawMessage `json:"data"`
@@ -651,15 +671,20 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 		}
 	}
 	main := resellercontract.MainTenantContext("shop.example")
-	request(order.OrderNo, order.UserID, main, response.CodeNotFound, "", "")
+	request(order.OrderNo, ownerToken, main, response.CodeNotFound, "", "")
 	now := time.Now().UTC()
 	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).Updates(map[string]any{"paid_at": now, "status": constants.OrderStatusPaid}).Error; err != nil {
 		t.Fatal(err)
 	}
-	request(order.OrderNo, 0, main, response.CodeUnauthorized, "", "")
-	request(order.OrderNo, order.UserID+100, main, response.CodeNotFound, "", "")
-	request(order.OrderNo, order.UserID, resellercontract.ResellerTenantContext("reseller.example", 1, 1, ""), response.CodeNotFound, "", "")
-	request(order.Children[0].OrderNo, order.UserID, main, response.CodeNotFound, "", "")
+	request(order.OrderNo, "", main, response.CodeUnauthorized, "", "")
+	request(order.OrderNo, otherToken, main, response.CodeNotFound, "", "")
+	reseller := resellercontract.ResellerTenantContext("reseller.example", resellerID, 1, "")
+	request(order.OrderNo, ownerToken, reseller, response.CodeUnauthorized, "", "")
+	request(order.OrderNo, resellerToken, main, response.CodeUnauthorized, "", "")
+	request(order.OrderNo, resellerToken, reseller, response.CodeNotFound, "", "")
+	request(order.OrderNo, staleToken, main, response.CodeUnauthorized, "", "")
+	request(order.OrderNo, "not-a-token", main, response.CodeUnauthorized, "", "")
+	request(order.Children[0].OrderNo, ownerToken, main, response.CodeNotFound, "", "")
 	for _, stage := range []kafudadomain.Stage{
 		kafudadomain.StageWaiting, kafudadomain.StageChecking, kafudadomain.StageSubmitting, kafudadomain.StageProcessing,
 		kafudadomain.StageManualReview, kafudadomain.StageManualDelivery, kafudadomain.StageCompleted,
@@ -677,7 +702,7 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 		if stage == kafudadomain.StageManualDelivery {
 			wantStage = kafudadomain.StageManualReview
 		}
-		request(order.OrderNo, order.UserID, main, 0, string(wantStage), "")
+		request(order.OrderNo, ownerToken, main, 0, string(wantStage), "")
 		record, err := f.store.GetRecharge(context.Background(), childID)
 		if err != nil || record == nil || record.Version != 5 {
 			t.Fatalf("status read changed the recharge: %+v, %v", record, err)
@@ -699,15 +724,15 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 	if err := f.db.Model(&kafudadomain.Recharge{}).Where("order_id = ?", childID).Update("current_attempt_id", attempt.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	request(order.OrderNo, order.UserID, main, 0, "completed", "false")
+	request(order.OrderNo, ownerToken, main, 0, "completed", "false")
 	if err := f.db.Model(&attempt).Update("renewal_cancelled", true).Error; err != nil {
 		t.Fatal(err)
 	}
-	request(order.OrderNo, order.UserID, main, 0, "completed", "true")
+	request(order.OrderNo, ownerToken, main, 0, "completed", "true")
 	if err := f.db.Model(&attempt).Update("renewal_cancelled", nil).Error; err != nil {
 		t.Fatal(err)
 	}
-	request(order.OrderNo, order.UserID, main, 0, "completed", "")
+	request(order.OrderNo, ownerToken, main, 0, "completed", "")
 	if err := f.db.Model(&attempt).Update("renewal_cancelled", true).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -720,7 +745,7 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 		Select("snapshot").Updates(record).Error; err != nil {
 		t.Fatal(err)
 	}
-	request(order.OrderNo, order.UserID, main, 0, "completed", "")
+	request(order.OrderNo, ownerToken, main, 0, "completed", "")
 	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
 		Update("status", constants.OrderStatusRefunded).Error; err != nil {
 		t.Fatal(err)
@@ -729,8 +754,8 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 		Update("refunded_amount", order.TotalAmount).Error; err != nil {
 		t.Fatal(err)
 	}
-	request(order.OrderNo, order.UserID, main, 0, "refunded", "")
-	request(order.OrderNo, order.UserID+100, main, response.CodeNotFound, "", "")
+	request(order.OrderNo, ownerToken, main, 0, "refunded", "")
+	request(order.OrderNo, otherToken, main, response.CodeNotFound, "", "")
 }
 
 func TestControlledDirectManualCompletionRequiresTerminalAttempt(t *testing.T) {
