@@ -151,3 +151,58 @@ func TestRecoveryRechecksCandidateUnderLock(t *testing.T) {
 		})
 	}
 }
+
+type failingRecoveryWriteStore struct {
+	kafudacontract.Store
+	err error
+}
+
+func (s failingRecoveryWriteStore) WithinTransaction(ctx context.Context, run func(kafudacontract.Transaction) error) error {
+	return s.Store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
+		return run(failingRecoveryWriteTx{Transaction: tx, err: s.err})
+	})
+}
+
+type failingRecoveryWriteTx struct {
+	kafudacontract.Transaction
+	err error
+}
+
+func (tx failingRecoveryWriteTx) SaveRecharge(record *kafudadomain.Recharge) error {
+	if record.OrderID == 10 {
+		return tx.err
+	}
+	return tx.Transaction.SaveRecharge(record)
+}
+
+func TestRecoveryContinuesAfterOneRechargeWriteFails(t *testing.T) {
+	_, store, service := database(t)
+	ctx, now := context.Background(), time.Now().UTC()
+	prepare(t, service, 10, now)
+	first := reserve(t, service, 10, now)
+	prepare(t, service, 11, now)
+	reserve(t, service, 11, now.Add(time.Second))
+	deadline := now.Add(2 * time.Minute)
+	writeErr := errors.New("recharge write failed")
+	failing := kafudaapp.New(failingRecoveryWriteStore{Store: store, err: writeErr})
+	if err := failing.RecoverExpiredChecks(ctx, deadline, 100); !errors.Is(err, writeErr) {
+		t.Fatalf("recovery did not return the write failure: %v", err)
+	}
+	attempt, err := store.GetAttempt(ctx, first.Attempt.ID)
+	if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptChecking || attempt.ActiveOrderID == nil {
+		t.Fatalf("failed transaction did not roll back the attempt: %+v, %v", attempt, err)
+	}
+	for orderID, want := range map[uint]kafudadomain.Stage{10: kafudadomain.StageChecking, 11: kafudadomain.StageWaiting} {
+		record, err := store.GetRecharge(ctx, orderID)
+		if err != nil || record == nil || record.Stage != want {
+			t.Fatalf("recharge %d: got %+v, %v, want %s", orderID, record, err, want)
+		}
+	}
+	if err := service.RecoverExpiredChecks(ctx, deadline, 100); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.GetRecharge(ctx, 10)
+	if err != nil || record == nil || record.Stage != kafudadomain.StageWaiting {
+		t.Fatalf("retry did not recover failed recharge: %+v, %v", record, err)
+	}
+}

@@ -19,7 +19,11 @@ func (s *Service) RecoverExpiredChecks(ctx context.Context, now time.Time, limit
 	if err != nil {
 		return err
 	}
+	var failures []error
 	for _, candidate := range attempts {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(failures, err)...)
+		}
 		err := s.change(ctx, candidate.ID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 			// Recheck under the same locks used by MarkSubmitting. A live
 			// request or another worker may have advanced since the scan.
@@ -32,8 +36,8 @@ func (s *Service) RecoverExpiredChecks(ctx context.Context, now time.Time, limit
 			return nil
 		})
 		if err != nil && !errors.Is(err, kafudadomain.ErrConflict) && !errors.Is(err, kafudadomain.ErrNotFound) {
-			return err
+			failures = append(failures, err)
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
