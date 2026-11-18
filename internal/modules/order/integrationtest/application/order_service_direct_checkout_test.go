@@ -19,6 +19,7 @@ import (
 	orderwiring "github.com/dujiao-next/internal/bootstrap/order"
 	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/constants"
+	productadmin "github.com/dujiao-next/internal/modules/catalog/product/application/admin"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
 	coupondomain "github.com/dujiao-next/internal/modules/coupon/domain"
@@ -43,7 +44,7 @@ import (
 	paymentapp "github.com/dujiao-next/internal/modules/payment/application"
 	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
 	paymentstore "github.com/dujiao-next/internal/modules/payment/infrastructure/gormstore"
-	promotiondomain "github.com/dujiao-next/internal/modules/promotion/domain"
+	promotionapp "github.com/dujiao-next/internal/modules/promotion/application"
 	promotionstore "github.com/dujiao-next/internal/modules/promotion/infrastructure/gormstore"
 	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
 	walletapp "github.com/dujiao-next/internal/modules/wallet/application"
@@ -1008,6 +1009,11 @@ func TestDirectShopCompletionUpdatesParentAndChildAtomically(t *testing.T) {
 }
 
 func TestDirectCheckoutDiscountsMatchPreviewAndSnapshot(t *testing.T) {
+	testDirectCheckoutDiscountsMatchPreviewAndSnapshot(t, newDirectCheckoutFixture)
+}
+
+func testDirectCheckoutDiscountsMatchPreviewAndSnapshot(t *testing.T, fixture func(*testing.T) directCheckoutFixture) {
+	t.Helper()
 	for _, scenario := range []struct {
 		name                                     string
 		promotion, wholesale, floor              int64
@@ -1022,40 +1028,44 @@ func TestDirectCheckoutDiscountsMatchPreviewAndSnapshot(t *testing.T) {
 		{"exclusive_loses", 10, 85, 1, 80, 75, "68.00", "0.00", "15.00", "17.00"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			f := newDirectCheckoutFixture(t)
+			f := fixture(t)
 			amount := func(value int64) money.Amount { return money.FromDecimal(decimal.NewFromInt(value)) }
 			if err := f.db.AutoMigrate(&memberdomain.MemberLevel{}, &memberdomain.MemberLevelPrice{}, &memberdomain.UserProductPrice{}); err != nil {
 				t.Fatal(err)
 			}
-			promotion := promotiondomain.Promotion{
-				Name: "direct discount", ScopeType: constants.ScopeTypeProduct, ScopeRefID: f.product.ID,
-				Type: constants.PromotionTypeFixed, Value: amount(scenario.promotion), IsActive: true,
-			}
-			if err := f.db.Create(&promotion).Error; err != nil {
+			promotions := promotionapp.NewAdminService(promotionstore.New(f.db))
+			if _, err := promotions.Create(promotionapp.CreatePromotionInput{
+				Name: "direct discount", ScopeRefID: f.product.ID,
+				Type: constants.PromotionTypeFixed, Value: amount(scenario.promotion),
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if scenario.wholesale > 0 {
-				tiers := productdomain.WholesalePriceTiers{{MinQuantity: int(scenario.floor), UnitPrice: amount(scenario.wholesale)}}
-				if err := f.db.Model(&f.product).Update("wholesale_prices", tiers).Error; err != nil {
+				products := productadmin.NewAdminService(productadmin.Options{Products: productstore.NewProductStore(f.db)})
+				tiers := []productdomain.WholesalePriceInput{{
+					SKUID: f.sku.ID, MinQuantity: int(scenario.floor), UnitPrice: decimal.NewFromInt(scenario.wholesale),
+				}}
+				if _, err := products.UpdateWholesalePrices(fmt.Sprint(f.product.ID), tiers); err != nil {
 					t.Fatal(err)
 				}
 			}
+			members := memberapp.NewService(memberstore.NewLevelStore(f.db), memberstore.NewPriceStore(f.db), memberstore.NewUserStore(f.db), memberstore.NewUserPriceStore(f.db))
 			if scenario.memberRate > 0 {
-				level := memberdomain.MemberLevel{Slug: "direct-member", NameJSON: jsonmap.JSON{"en-US": "Member"}, DiscountRate: amount(scenario.memberRate)}
-				if err := f.db.Create(&level).Error; err != nil {
+				level := &memberdomain.MemberLevel{Slug: "direct-member", NameJSON: jsonmap.JSON{"en-US": "Member"}, DiscountRate: amount(scenario.memberRate), IsActive: true}
+				if err := members.CreateLevel(level); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.db.Model(&f.users[0]).Update("member_level_id", level.ID).Error; err != nil {
+				if err := members.SetUserLevel(f.users[0].ID, level.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if scenario.exclusive > 0 {
 				price := memberdomain.UserProductPrice{UserID: f.users[0].ID, ProductID: f.product.ID, SKUID: f.sku.ID, PriceAmount: amount(scenario.exclusive)}
-				if err := f.db.Create(&price).Error; err != nil {
+				if err := members.BatchUpsertUserPrices([]memberdomain.UserProductPrice{price}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			f.options.MemberLevelService = memberapp.NewService(memberstore.NewLevelStore(f.db), memberstore.NewPriceStore(f.db), memberstore.NewUserStore(f.db), memberstore.NewUserPriceStore(f.db))
+			f.options.MemberLevelService = members
 			svc := orderapp.NewOrderService(f.options)
 			preview, err := svc.PreviewOrder(f.input)
 			if err != nil || preview.TotalAmount.String() != scenario.total {

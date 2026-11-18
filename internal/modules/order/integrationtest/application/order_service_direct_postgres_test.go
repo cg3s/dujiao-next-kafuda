@@ -68,6 +68,17 @@ func TestPostgresAdminDirectReviewFilterAndProjection(t *testing.T) {
 	testAdminDirectReviewFilterAndProjection(t, seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-review", 0, 0)))
 }
 
+func TestPostgresDirectCheckoutDiscountsMatchPreviewAndSnapshot(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	testDirectCheckoutDiscountsMatchPreviewAndSnapshot(t, func(t *testing.T) directCheckoutFixture {
+		db := openPostgresDirectRaceDB(t, dsn)
+		return seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-price", 0, 0))
+	})
+}
+
 func TestPostgresDirectCentralMigration(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 	if dsn == "" {
