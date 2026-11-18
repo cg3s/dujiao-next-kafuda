@@ -180,13 +180,13 @@ func (s *Service) MarkUnknown(ctx context.Context, attemptID uint, now, nextPoll
 // RecordResult consumes a normalized query/create response, not arbitrary text.
 // A terminal duplicate is a no-op. Old terminal events never reopen a recharge.
 func (s *Service) RecordResult(ctx context.Context, attemptID uint, result kafudacontract.OrderResult, now, nextPoll time.Time) error {
-	return s.change(ctx, attemptID, resultUpdate(result, now, nextPoll))
+	return s.change(ctx, attemptID, resultUpdate(result, now, now, nextPoll))
 }
 
 // RecordResultInTransaction allows the caller to complete the shop order in
 // the same transaction. The returned flag is true only for a fresh completion.
-func RecordResultInTransaction(tx kafudacontract.Transaction, orderID, attemptID uint, result kafudacontract.OrderResult, now, nextPoll time.Time) (bool, error) {
-	update := resultUpdate(result, now, nextPoll)
+func RecordResultInTransaction(tx kafudacontract.Transaction, orderID, attemptID uint, result kafudacontract.OrderResult, startedAt, now, nextPoll time.Time) (bool, error) {
+	update := resultUpdate(result, startedAt, now, nextPoll)
 	completed := false
 	err := changeInTransaction(tx, orderID, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 		if err := update(record, attempt); err != nil {
@@ -198,7 +198,7 @@ func RecordResultInTransaction(tx kafudacontract.Transaction, orderID, attemptID
 	return completed && err == nil, err
 }
 
-func resultUpdate(result kafudacontract.OrderResult, now, nextPoll time.Time) func(*kafudadomain.Recharge, *kafudadomain.Attempt) error {
+func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll time.Time) func(*kafudadomain.Recharge, *kafudadomain.Attempt) error {
 	return func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 		if result.ID == 0 || result.Reference != attempt.Reference || result.Product != record.Snapshot.Product || result.Plan != record.Snapshot.Plan || result.Country != record.Snapshot.Country {
 			return kafudadomain.ErrInvalidTransition
@@ -213,7 +213,7 @@ func resultUpdate(result kafudacontract.OrderResult, now, nextPoll time.Time) fu
 		if !attempt.Status.Active() {
 			return errNoRecordChange
 		}
-		if now.IsZero() {
+		if startedAt.IsZero() || now.IsZero() || now.Before(startedAt) {
 			return kafudadomain.ErrInvalidTransition
 		}
 		if result.ChargedUSDCents != nil && *result.ChargedUSDCents < 0 {
@@ -223,7 +223,8 @@ func resultUpdate(result kafudacontract.OrderResult, now, nextPoll time.Time) fu
 			if !nextPoll.After(now) {
 				return kafudadomain.ErrInvalidTransition
 			}
-			if now.Before(attempt.UpdatedAt) {
+			// A slow response cannot supersede an update made after the lookup began.
+			if startedAt.Before(attempt.UpdatedAt) {
 				return kafudadomain.ErrConflict
 			}
 		} else if now.Before(attempt.UpdatedAt) {

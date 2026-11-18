@@ -44,7 +44,7 @@ func ReconcileUnknownOrder(ctx context.Context, store ordercontract.Store, gatew
 	if err != nil {
 		return false, err
 	}
-	observedAt := time.Now().UTC()
+	lookupStarted := time.Now()
 	result, err := gateway.GetOrder(ctx, upstreamID)
 	if err != nil || result == nil {
 		return false, ErrReconciliationLookup
@@ -54,7 +54,9 @@ func ReconcileUnknownOrder(ctx context.Context, store ordercontract.Store, gatew
 	}
 	// ApplyResult checks reference, product, plan and country again in the
 	// transaction, and prevents binding a different ID after a concurrent lookup.
-	completed, err := ApplyResult(store, childID, attemptID, *result, observedAt, observedAt.Add(pollInterval))
+	startedAt := lookupStarted.UTC()
+	receivedAt := startedAt.Add(time.Since(lookupStarted))
+	completed, err := ApplyResult(store, childID, attemptID, *result, startedAt, receivedAt, pollInterval)
 	if errors.Is(err, kafudadomain.ErrInvalidTransition) || errors.Is(err, kafudadomain.ErrConflict) {
 		return false, orderapp.ErrOrderStatusInvalid
 	}

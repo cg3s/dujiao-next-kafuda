@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -34,6 +35,7 @@ type kafudaPollTestGateway struct {
 	result kafudacontract.OrderResult
 	ids    []uint64
 	err    error
+	delay  time.Duration
 }
 
 type kafudaDeadlineTestGateway struct {
@@ -70,6 +72,7 @@ func (q *kafudaStatusEmailQueue) EnqueueStatusEmail(orderID uint, status string)
 
 func (g *kafudaPollTestGateway) GetOrder(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
 	g.ids = append(g.ids, id)
+	time.Sleep(g.delay)
 	return &g.result, g.err
 }
 
@@ -235,7 +238,7 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 
 func TestKafudaPollStopsCurrentBatchWhenUpstreamRateLimits(t *testing.T) {
 	gateway := &kafudaPollTestGateway{err: &kafudacontract.APIError{HTTPStatus: 429, RetryAfter: 5 * time.Minute}}
-	c, store, due := newKafudaPollBatch(t, gateway)
+	c, store, due := newKafudaPollBatch(t, gateway, 1, 2)
 	ctx := t.Context()
 	if err := c.pollKnownKafudaOrders(ctx); !errors.Is(err, kafudaapp.ErrKnownOrderRateLimited) {
 		t.Fatalf("missing rate-limit classification: %v", err)
@@ -252,7 +255,7 @@ func TestKafudaPollStopsCurrentBatchWhenUpstreamRateLimits(t *testing.T) {
 func TestKafudaRecoveryTaskPersistsBackoffAfterLookupDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		gateway := &kafudaDeadlineTestGateway{}
-		c, store, _ := newKafudaPollBatch(t, gateway)
+		c, store, _ := newKafudaPollBatch(t, gateway, 1, 2)
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
 		started := time.Now().UTC()
@@ -288,7 +291,48 @@ func TestKafudaRecoveryTaskPersistsBackoffAfterLookupDeadline(t *testing.T) {
 	})
 }
 
-func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway) (*Consumer, *gormstore.Store, time.Time) {
+func TestKafudaRecoveryTaskSchedulesFromSuccessfulLookupResponse(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const interval = 10 * time.Second
+		gateway := &kafudaPollTestGateway{delay: 25 * time.Second}
+		c, store, _ := newKafudaPollBatch(t, gateway, 1)
+		c.Config = &config.Config{KafudaGPT: config.KafudaGPTConfig{PollIntervalSeconds: int(interval / time.Second)}}
+		ctx := t.Context()
+		started := time.Now().UTC()
+		due, err := store.DueKnownOrderPolls(ctx, started, 10)
+		if err != nil || len(due) != 1 || due[0].UpstreamOrderID == nil {
+			t.Fatalf("expected one due attempt with an upstream ID, got %+v, %v", due, err)
+		}
+		gateway.result = kafudacontract.OrderResult{
+			ID: *due[0].UpstreamOrderID, Reference: due[0].Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing",
+		}
+
+		mux := asynq.NewServeMux()
+		c.Register(mux)
+		task := queue.NewKafudaRecoverChecksTask()
+		if err := mux.ProcessTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		receivedAt := started.Add(gateway.delay)
+		stored, err := store.GetAttempt(ctx, due[0].ID)
+		if err != nil || stored == nil || stored.Status != kafudadomain.AttemptProcessing || !stored.UpdatedAt.Equal(receivedAt) ||
+			stored.NextPollAt == nil || !stored.NextPollAt.Equal(receivedAt.Add(interval)) {
+			t.Fatalf("expected a processing attempt with the next poll one interval after the response, got %+v, %v", stored, err)
+		}
+		if delay := kafudaRetryDelay(*stored, interval); delay != 2*interval {
+			t.Fatalf("slow successful lookup inflated future backoff to %v", delay)
+		}
+		time.Sleep(interval - time.Second)
+		if err := mux.ProcessTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if len(gateway.ids) != 1 || gateway.ids[0] != gateway.result.ID {
+			t.Fatalf("scanner queried before the next scheduled poll: %v", gateway.ids)
+		}
+	})
+}
+
+func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway, orderIDs ...uint) (*Consumer, *gormstore.Store, time.Time) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -300,7 +344,7 @@ func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway) (*Consumer
 	}
 	pool.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = pool.Close() })
-	if err := db.AutoMigrate(&kafudadomain.Recharge{}, &kafudadomain.Attempt{}); err != nil {
+	if err := db.AutoMigrate(&kafudadomain.Recharge{}, &kafudadomain.Attempt{}, &orderdomain.Order{}, &orderdomain.OrderItem{}, &fulfillmentdomain.Fulfillment{}); err != nil {
 		t.Fatal(err)
 	}
 	store := gormstore.New(db)
@@ -313,7 +357,24 @@ func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway) (*Consumer
 		PayMode: "auto_card", ProductCode: "test-card", PaymentProfile: "default",
 		Currency: "CNY", SellPrice: money.FromDecimal(decimal.NewFromInt(1)), MaxCostCents: 2000,
 	}
-	for _, orderID := range []uint{1, 2} {
+	for _, orderID := range orderIDs {
+		parent := orderdomain.Order{
+			ID: orderID + 100, OrderNo: fmt.Sprintf("poll-parent-%d", orderID), UserID: 20,
+			Status: constants.OrderStatusPaid, PaidAt: &past, Currency: "CNY",
+		}
+		child := orderdomain.Order{
+			ID: orderID, ParentID: &parent.ID, OrderNo: fmt.Sprintf("poll-child-%d", orderID), UserID: parent.UserID,
+			Status: parent.Status, PaidAt: &past, Currency: parent.Currency,
+		}
+		item := orderdomain.OrderItem{
+			OrderID: child.ID, ProductID: snapshot.ProductID, SKUID: snapshot.SKUID, Quantity: 1,
+			TitleJSON: jsonmap.JSON{"en-US": "Direct recharge"}, FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+		}
+		for _, row := range []any{&parent, &child, &item} {
+			if err := db.Create(row).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
 		if _, err := records.Prepare(ctx, orderID, snapshot, past); err != nil {
 			t.Fatal(err)
 		}

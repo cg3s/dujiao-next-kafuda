@@ -61,7 +61,7 @@ func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testin
 			}
 			result := kafudacontract.OrderResult{ID: 173, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "failed"}
 			if alternative != "late_supplier_success" && alternative != "late_success_vs_manual_delivery" {
-				if _, err := kafudaworkflow.ApplyResult(orders, childID, attemptID, result, now, time.Time{}); err != nil {
+				if _, err := kafudaworkflow.ApplyResult(orders, childID, attemptID, result, now, now, 0); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -99,7 +99,8 @@ func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testin
 			case "late_supplier_success", "late_success_vs_manual_delivery":
 				competingAction = func() error {
 					result.Status = "completed"
-					completed, err := kafudaworkflow.ApplyResult(orders, childID, attemptID, result, time.Now().UTC(), time.Time{})
+					receivedAt := time.Now().UTC()
+					completed, err := kafudaworkflow.ApplyResult(orders, childID, attemptID, result, receivedAt, receivedAt, 0)
 					if err == nil && !completed {
 						t.Error("late success did not complete the order")
 					}

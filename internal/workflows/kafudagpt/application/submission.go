@@ -45,7 +45,7 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 	}
 	if err == nil {
 		observedAt := time.Now().UTC()
-		completed, applyErr := ApplyResult(orders, attempt.OrderID, attempt.ID, *result, observedAt, observedAt.Add(pollInterval))
+		completed, applyErr := ApplyResult(orders, attempt.OrderID, attempt.ID, *result, observedAt, observedAt, pollInterval)
 		if applyErr == nil {
 			return completed, nil
 		}

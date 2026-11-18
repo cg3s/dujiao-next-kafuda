@@ -172,7 +172,7 @@ func TestRechargeCompletionCanShareCallerTransaction(t *testing.T) {
 	result := kafudacontract.OrderResult{ID: 101, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed"}
 	orderWriteErr := errors.New("shop order update failed")
 	if err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
-		completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, time.Time{})
+		completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, now, time.Time{})
 		if err != nil || !completed {
 			t.Fatalf("expected fresh completion: %t, %v", completed, err)
 		}
@@ -190,7 +190,7 @@ func TestRechargeCompletionCanShareCallerTransaction(t *testing.T) {
 	}
 	for _, wantFresh := range []bool{true, false} {
 		if err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
-			completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, time.Time{})
+			completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, now, time.Time{})
 			if err != nil || completed != wantFresh {
 				t.Fatalf("fresh completion = %t, %v; want %t", completed, err, wantFresh)
 			}
@@ -210,29 +210,41 @@ func TestStalePollCannotRegressScheduleAndLateCompletionStillConverges(t *testin
 	if err := service.MarkSubmitting(ctx, id, "quo_1", now, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	newer, nextPoll := now.Add(10*time.Second), now.Add(2*time.Minute)
+	newerStart, newerReceipt := now.Add(5*time.Second), now.Add(10*time.Second)
+	nextPoll := newerReceipt.Add(2 * time.Minute)
+	lateReceipt := newerReceipt.Add(20 * time.Second)
 	result := kafudacontract.OrderResult{ID: 101, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing"}
-	if err := service.RecordResult(ctx, id, result, newer, nextPoll); err != nil {
-		t.Fatal(err)
+	apply := func(startedAt, receivedAt, next time.Time) (bool, error) {
+		var completed bool
+		err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
+			var err error
+			completed, err = kafudaapp.RecordResultInTransaction(tx, 10, id, result, startedAt, receivedAt, next)
+			return err
+		})
+		return completed, err
 	}
-	if err := service.RecordResult(ctx, id, result, now, now.Add(time.Minute)); !errors.Is(err, kafudadomain.ErrConflict) {
-		t.Fatalf("stale processing result was accepted: %v", err)
+	if completed, err := apply(newerStart, newerReceipt, nextPoll); err != nil || completed {
+		t.Fatalf("new processing result = %t, %v", completed, err)
+	}
+	if completed, err := apply(now, lateReceipt, lateReceipt.Add(time.Minute)); completed || !errors.Is(err, kafudadomain.ErrConflict) {
+		t.Fatalf("stale processing result was accepted: %t, %v", completed, err)
 	}
 	if err := service.MarkUnknown(ctx, id, now, now.Add(time.Minute)); !errors.Is(err, kafudadomain.ErrConflict) {
 		t.Fatalf("stale lookup failure was accepted: %v", err)
 	}
 	attempt, err := store.GetAttempt(ctx, id)
 	if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptProcessing ||
-		attempt.NextPollAt == nil || !attempt.NextPollAt.Equal(nextPoll) || !attempt.UpdatedAt.Equal(newer) {
+		attempt.NextPollAt == nil || !attempt.NextPollAt.Equal(nextPoll) || !attempt.UpdatedAt.Equal(newerReceipt) {
 		t.Fatalf("stale polls changed the attempt: %+v, %v", attempt, err)
 	}
 	result.Status = "completed"
-	if err := service.RecordResult(ctx, id, result, now, time.Time{}); err != nil {
-		t.Fatal(err)
+	// This terminal response was received earlier but applied after the newer write.
+	if completed, err := apply(now, newerStart, time.Time{}); err != nil || !completed {
+		t.Fatalf("late terminal result = %t, %v", completed, err)
 	}
 	record, err := store.GetRecharge(ctx, 10)
 	if err != nil || record == nil || record.Stage != kafudadomain.StageCompleted ||
-		record.CompletedAt == nil || !record.CompletedAt.Equal(newer) || !record.UpdatedAt.Equal(newer) {
+		record.CompletedAt == nil || !record.CompletedAt.Equal(newerReceipt) || !record.UpdatedAt.Equal(newerReceipt) {
 		t.Fatalf("late completion did not converge with monotonic timestamps: %+v, %v", record, err)
 	}
 }

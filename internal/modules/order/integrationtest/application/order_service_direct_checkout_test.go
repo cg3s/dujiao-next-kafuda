@@ -249,7 +249,7 @@ func testDirectCheckoutRefund(t *testing.T, f directCheckoutFixture, method stri
 		t.Fatalf("confirmed unknown refund: %v", err)
 	}
 	result := kafudacontract.OrderResult{ID: 101, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "failed"}
-	if _, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, now, time.Time{}); err != nil {
+	if _, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, now, now, 0); err != nil {
 		t.Fatal(err)
 	}
 	for _, input := range []struct{ orderID, attemptID uint }{{childID, id}, {order.ID, id + 1}, {order.ID, 0}} {
@@ -303,7 +303,8 @@ func testDirectCheckoutRefund(t *testing.T, f directCheckoutFixture, method stri
 		t.Fatalf("buyer reservation after refund: %v", err)
 	}
 	result.Status = "completed"
-	if completed, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, time.Now().UTC(), time.Time{}); completed || !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+	receivedAt := time.Now().UTC()
+	if completed, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, receivedAt, receivedAt, 0); completed || !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("supplier completion after refund: completed=%v err=%v", completed, err)
 	}
 	var refund orderdomain.OrderRefundRecord
@@ -571,7 +572,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				if err != nil {
 					t.Fatal(err)
 				}
-				completed, err = kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, *result, at, at.Add(time.Minute))
+				completed, err = kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, *result, at, at, time.Minute)
 				if err != nil || !completed {
 					t.Fatalf("polled order completion: completed=%t, err=%v", completed, err)
 				}
@@ -880,7 +881,7 @@ func testControlledDirectManualAction(t *testing.T, f directCheckoutFixture, act
 		t.Fatalf("unknown attempt allowed manual completion: %v", err)
 	}
 	result := kafudacontract.OrderResult{ID: 101, Reference: reserved.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "failed"}
-	if _, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, now, time.Time{}); err != nil {
+	if _, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, now, now, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := apply(id, false); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
@@ -970,7 +971,7 @@ func TestDirectShopCompletionUpdatesParentAndChildAtomically(t *testing.T) {
 	}
 	result := kafudacontract.OrderResult{ID: 101, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed"}
 	apply := func() (bool, error) {
-		return kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, result, now, time.Time{})
+		return kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, result, now, now, 0)
 	}
 	if completed, err := apply(); completed || !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("unpaid completion: %t, %v", completed, err)
