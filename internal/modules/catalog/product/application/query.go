@@ -63,20 +63,29 @@ func NewService(options Options) *Service {
 
 // ListPublic 获取公开商品列表
 func (s *Service) ListPublic(categoryID, search string, page, pageSize int) ([]productdomain.Product, int64, error) {
-	categoryIDs, err := expandPublicCategoryIDs(s.categories, categoryID)
-	if err != nil {
-		return nil, 0, err
-	}
+	return s.listPublic(productcontract.ListFilter{
+		Page: page, PageSize: pageSize, CategoryID: categoryID, Search: search,
+	}, false)
+}
 
-	filter := productcontract.ListFilter{
-		Page:         page,
-		PageSize:     pageSize,
-		CategoryID:   categoryID,
-		CategoryIDs:  categoryIDs,
-		Search:       search,
-		OnlyActive:   true,
-		WithCategory: true,
+// ListForChannel excludes storefront-only fulfillment before counting and paging.
+func (s *Service) ListForChannel(categoryID string, exact bool, page, pageSize int) ([]productdomain.Product, int64, error) {
+	return s.listPublic(productcontract.ListFilter{
+		Page: page, PageSize: pageSize, CategoryID: categoryID,
+		ExcludeFulfillmentType: constants.FulfillmentTypeKafudaGPT,
+	}, exact)
+}
+
+func (s *Service) listPublic(filter productcontract.ListFilter, exact bool) ([]productdomain.Product, int64, error) {
+	if !exact {
+		categoryIDs, err := expandPublicCategoryIDs(s.categories, filter.CategoryID)
+		if err != nil {
+			return nil, 0, err
+		}
+		filter.CategoryIDs = categoryIDs
 	}
+	filter.OnlyActive = true
+	filter.WithCategory = true
 	return s.products.List(filter)
 }
 
@@ -110,29 +119,25 @@ func (s *Service) ListPublicForTenant(tenant reseller.TenantContext, resellerRep
 	return s.products.List(filter)
 }
 
-// ListForUpstreamSync 上游同步专用：可选包含已下架商品，便于下游识别下架状态
-// includeInactive=true 时返回所有未软删商品（含 is_active=false）
+// ListForUpstreamSync 查询可供下游同步的非直充商品。
+// includeInactive=true 时保留未软删的下架商品，便于下游同步下架状态。
 func (s *Service) ListForUpstreamSync(updatedAfter *time.Time, includeInactive bool, page, pageSize int) ([]productdomain.Product, int64, error) {
 	filter := productcontract.ListFilter{
-		Page:         page,
-		PageSize:     pageSize,
-		OnlyActive:   !includeInactive,
-		WithCategory: true,
-		UpdatedAfter: updatedAfter,
+		Page:                   page,
+		PageSize:               pageSize,
+		OnlyActive:             !includeInactive,
+		WithCategory:           true,
+		UpdatedAfter:           updatedAfter,
+		ExcludeFulfillmentType: constants.FulfillmentTypeKafudaGPT,
 	}
 	return s.products.List(filter)
 }
 
 // ListPublicExact 获取公开商品列表（精确匹配分类，不展开父分类）
 func (s *Service) ListPublicExact(categoryID string, page, pageSize int) ([]productdomain.Product, int64, error) {
-	filter := productcontract.ListFilter{
-		Page:         page,
-		PageSize:     pageSize,
-		CategoryID:   categoryID,
-		OnlyActive:   true,
-		WithCategory: true,
-	}
-	return s.products.List(filter)
+	return s.listPublic(productcontract.ListFilter{
+		Page: page, PageSize: pageSize, CategoryID: categoryID,
+	}, true)
 }
 
 // GetPublicBySlug 获取公开商品详情

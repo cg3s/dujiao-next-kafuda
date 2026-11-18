@@ -35,7 +35,122 @@ import (
 
 type channelCatalogTestResponse struct {
 	StatusCode int            `json:"status_code"`
+	ErrorCode  string         `json:"error_code"`
 	Data       map[string]any `json:"data"`
+}
+
+func TestChannelCatalogExcludesDirectRechargeBeforePagination(t *testing.T) {
+	dsn := fmt.Sprintf("file:channel_catalog_direct_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = pool.Close() })
+	if err := db.AutoMigrate(
+		&categorydomain.Category{}, &productdomain.Product{}, &productdomain.ProductSKU{}, &settingsstore.SettingRecord{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	category := func(slug string, parent uint) categorydomain.Category {
+		t.Helper()
+		row := categorydomain.Category{Slug: slug, ParentID: parent, NameJSON: jsonmap.JSON{"zh-CN": slug}, IsActive: true}
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		return row
+	}
+	parent := category("parent", 0)
+	child := category("child", parent.ID)
+	directOnly := category("direct-only", 0)
+	product := func(slug, fulfillmentType string, categoryID uint, sortOrder int) productdomain.Product {
+		t.Helper()
+		row := productdomain.Product{
+			Slug: slug, TitleJSON: jsonmap.JSON{"zh-CN": slug}, CategoryID: categoryID, IsActive: true,
+			FulfillmentType: fulfillmentType, PriceAmount: money.FromDecimal(decimal.NewFromInt(10)),
+			SortOrder: sortOrder,
+		}
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		return row
+	}
+	direct := product("direct", constants.FulfillmentTypeKafudaGPT, parent.ID, 30)
+	ordinary := product("ordinary", constants.FulfillmentTypeManual, parent.ID, 20)
+	childProduct := product("ordinary-child", constants.FulfillmentTypeManual, child.ID, 10)
+	product("only-direct", constants.FulfillmentTypeKafudaGPT, directOnly.ID, 0)
+
+	categoryRepo := categorygormstore.NewCategoryStore(db)
+	productRepo := productgormstore.NewProductStore(db)
+	handler := &channeltransport.Handler{Dependencies: channeltransport.Dependencies{
+		CategoryRepo:    categoryRepo,
+		CategoryService: categoryapp.NewService(categoryRepo),
+		ProductRepo:     productRepo,
+		ProductService:  productapplication.NewService(productapplication.Options{Products: productRepo, Categories: categoryRepo}),
+		SettingService:  settingsapp.NewService(settingsstore.New(db)),
+	}}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	channeltransport.RegisterRoutes(router.Group("/api/v1/channel"), handler)
+	get := func(path string, wantStatus int) channelCatalogTestResponse {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/channel/catalog"+path, nil))
+		if recorder.Code != wantStatus {
+			t.Fatalf("%s: HTTP %d, want %d: %s", path, recorder.Code, wantStatus, recorder.Body.String())
+		}
+		var response channelCatalogTestResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+			t.Fatalf("%s: decode channel response: %v", path, err)
+		}
+		return response
+	}
+	assertList := func(path string, wantID uint, wantCount int) {
+		t.Helper()
+		list := get(path, http.StatusOK)
+		items, ok := list.Data["items"].([]any)
+		if list.StatusCode != 0 || !ok || len(items) != 1 ||
+			list.Data["total"] != float64(wantCount) || list.Data["total_page"] != float64(wantCount) {
+			t.Fatalf("%s: unexpected pagination: %+v", path, list)
+		}
+		item, ok := items[0].(map[string]any)
+		if !ok || item["id"] != float64(wantID) {
+			t.Fatalf("%s: expected product %d, got %v", path, wantID, items[0])
+		}
+	}
+	path := fmt.Sprintf("/products?category_id=%d&page_size=1", parent.ID)
+	assertList(path, ordinary.ID, 2)
+	assertList(path+"&page=2", childProduct.ID, 2)
+	assertList(path+"&exact=1", ordinary.ID, 1)
+	if detail := get(fmt.Sprintf("/products/%d", ordinary.ID), http.StatusOK); detail.Data["id"] != float64(ordinary.ID) {
+		t.Fatalf("ordinary product detail was not preserved: %+v", detail)
+	}
+	if detail := get(fmt.Sprintf("/products/%d", direct.ID), http.StatusNotFound); detail.ErrorCode != "product_not_found" || detail.Data != nil {
+		t.Fatalf("direct detail should be indistinguishable from unavailable product: %+v", detail)
+	}
+
+	categories := get("/categories", http.StatusOK)
+	items, ok := categories.Data["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("expected only categories with channel-visible products, got %+v", categories)
+	}
+	counts := make(map[string]any)
+	for _, item := range items {
+		row, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("invalid category payload: %v", item)
+		}
+		slug, _ := row["slug"].(string)
+		counts[slug] = row["product_count"]
+	}
+	if counts[parent.Slug] != float64(1) || counts[child.Slug] != float64(1) {
+		t.Fatalf("unexpected channel-visible counts: %+v", counts)
+	}
 }
 
 func TestGetCategoriesIncludesParentIDAndVisibleParent(t *testing.T) {

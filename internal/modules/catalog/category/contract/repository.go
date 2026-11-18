@@ -15,6 +15,7 @@ type Repository interface {
 	CountChildren(categoryID string) (int64, error)
 	CountProducts(categoryID string) (int64, error)
 	CountActiveProducts(categoryID string) (int64, error)
+	CountActiveProductsForChannel(categoryID string) (int64, error)
 	GetBySlug(slug string) (*categorydomain.Category, error)
 	GetBySlugUnscoped(slug string) (*categorydomain.Category, error)
 	Restore(category *categorydomain.Category) error

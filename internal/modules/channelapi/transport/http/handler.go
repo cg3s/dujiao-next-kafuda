@@ -151,12 +151,11 @@ type CategoryService interface {
 }
 
 type CategoryRepository interface {
-	CountActiveProducts(categoryID string) (int64, error)
+	CountActiveProductsForChannel(categoryID string) (int64, error)
 }
 
 type ProductService interface {
-	ListPublicExact(categoryID string, page, pageSize int) ([]productdomain.Product, int64, error)
-	ListPublic(categoryID, search string, page, pageSize int) ([]productdomain.Product, int64, error)
+	ListForChannel(categoryID string, exact bool, page, pageSize int) ([]productdomain.Product, int64, error)
 	ApplyAutoStockCounts(products []productdomain.Product) error
 }
 

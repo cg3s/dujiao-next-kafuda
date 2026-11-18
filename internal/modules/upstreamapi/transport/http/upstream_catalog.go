@@ -172,6 +172,10 @@ func (h *Handler) GetProduct(c *gin.Context) {
 		errorResponse(c, http.StatusInternalServerError, "internal_error", "failed to get product")
 		return
 	}
+	if product == nil || product.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+		errorResponse(c, http.StatusNotFound, "product_not_found", "product not found")
+		return
+	}
 
 	// 商品下架（IsActive=false）：仍返回 200，由下游根据 is_active 字段判断
 	// 这样下游可在不下单的前提下感知下架状态、自动同步本地下架

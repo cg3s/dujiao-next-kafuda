@@ -47,7 +47,7 @@ func (h *Handler) GetCategories(c *gin.Context) {
 	// 记录哪些 parentID 有子分类
 	hasChildren := make(map[uint]struct{})
 	for _, cat := range categories {
-		count, err := h.CategoryRepo.CountActiveProducts(fmt.Sprintf("%d", cat.ID))
+		count, err := h.CategoryRepo.CountActiveProductsForChannel(fmt.Sprintf("%d", cat.ID))
 		if err != nil {
 			logger.Warnw("channel_catalog_count_products", "category_id", cat.ID, "error", err)
 			count = 0
@@ -143,14 +143,7 @@ func (h *Handler) GetProducts(c *gin.Context) {
 	page, pageSize := ginutil.ParsePaginationWithBounds(c, "page", "page_size", 5, 20)
 	exact := c.DefaultQuery("exact", "") == "1"
 
-	var products []productdomain.Product
-	var total int64
-	var err error
-	if exact {
-		products, total, err = h.ProductService.ListPublicExact(categoryID, page, pageSize)
-	} else {
-		products, total, err = h.ProductService.ListPublic(categoryID, "", page, pageSize)
-	}
+	products, total, err := h.ProductService.ListForChannel(categoryID, exact, page, pageSize)
 	if err != nil {
 		logger.Errorw("channel_catalog_list_products", "error", err)
 		respondChannelError(c, 500, 500, "internal_error", "error.internal_error", err)
@@ -274,7 +267,7 @@ func (h *Handler) GetProductDetail(c *gin.Context) {
 		respondChannelError(c, 500, 500, "internal_error", "error.internal_error", err)
 		return
 	}
-	if product == nil || !product.IsActive || !product.Category.IsActive {
+	if product == nil || !product.IsActive || !product.Category.IsActive || product.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
 		respondChannelError(c, 404, 404, "product_not_found", "error.product_not_found", nil)
 		return
 	}

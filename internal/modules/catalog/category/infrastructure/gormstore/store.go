@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/dujiao-next/internal/constants"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 
 	categorycontract "github.com/dujiao-next/internal/modules/catalog/category/contract"
@@ -148,8 +149,21 @@ func (r *CategoryStore) Restore(category *categorydomain.Category) error {
 
 // CountActiveProducts 统计某分类下已上架商品数
 func (r *CategoryStore) CountActiveProducts(categoryID string) (int64, error) {
+	return r.countActiveProducts(categoryID, "")
+}
+
+// CountActiveProductsForChannel 与渠道商品列表保持相同的履约范围。
+func (r *CategoryStore) CountActiveProductsForChannel(categoryID string) (int64, error) {
+	return r.countActiveProducts(categoryID, constants.FulfillmentTypeKafudaGPT)
+}
+
+func (r *CategoryStore) countActiveProducts(categoryID, excludedFulfillmentType string) (int64, error) {
+	query := r.db.Model(&productdomain.Product{}).Where("deleted_at IS NULL AND category_id = ? AND is_active = ?", categoryID, true)
+	if excludedFulfillmentType != "" {
+		query = query.Where("fulfillment_type <> ?", excludedFulfillmentType)
+	}
 	var count int64
-	if err := r.db.Model(&productdomain.Product{}).Where("deleted_at IS NULL AND category_id = ? AND is_active = ?", categoryID, true).Count(&count).Error; err != nil {
+	if err := query.Count(&count).Error; err != nil {
 		return 0, err
 	}
 	return count, nil
