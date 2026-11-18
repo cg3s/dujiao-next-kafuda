@@ -148,9 +148,13 @@ func withLockedDirectOrder(store ordercontract.Store, childID uint, run func(ord
 	if hint == nil || hint.ParentID == nil {
 		return orderapp.ErrOrderNotFound
 	}
+	return withLockedDirectOrderIDs(store, *hint.ParentID, childID, run)
+}
+
+func withLockedDirectOrderIDs(store ordercontract.Store, parentID, childID uint, run func(ordercontract.Transaction, *orderdomain.Order) error) error {
 	return store.WithinTransaction(func(tx ordercontract.Transaction) error {
 		orders := tx.Orders()
-		parent, err := orders.GetByIDForUpdateWithChildren(*hint.ParentID)
+		parent, err := orders.GetByIDForUpdateWithChildren(parentID)
 		if err != nil {
 			return err
 		}

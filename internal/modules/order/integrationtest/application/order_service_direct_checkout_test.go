@@ -283,6 +283,10 @@ func testDirectCheckoutRefund(t *testing.T, method string) {
 	if err := kafudaworkflow.ReleaseManual(f.options.OrderStore, childID, id, 9, true, time.Now().UTC()); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("release after refund: %v", err)
 	}
+	reserveAt := time.Now().UTC()
+	if _, err := kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, ordercontract.TenantScope{}, order.OrderNo, order.UserID, reserveAt, reserveAt.Add(time.Minute)); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("buyer reservation after refund: %v", err)
+	}
 	result.Status = "completed"
 	if completed, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, time.Now().UTC(), time.Time{}); completed || !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("supplier completion after refund: completed=%v err=%v", completed, err)
@@ -294,6 +298,203 @@ func testDirectCheckoutRefund(t *testing.T, method string) {
 	var credits int64
 	if err := f.db.Model(&walletdomain.Transaction{}).Count(&credits).Error; err != nil || (method == "wallet" && credits != 1) || (method == "manual" && credits != 0) {
 		t.Fatalf("wallet credits: %d, %v", credits, err)
+	}
+}
+
+func TestReserveBuyerAttemptRequiresPaidScopedCheckoutAndDeduplicates(t *testing.T) {
+	f := newDirectCheckoutFixture(t)
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+		t.Fatal(err)
+	}
+	order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := order.Children[0]
+	now := time.Now().UTC()
+	reserve := func(orderNo string, userID uint, scope ordercontract.TenantScope) (*kafudaapp.Reservation, error) {
+		return kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, scope, orderNo, userID, now, now.Add(time.Minute))
+	}
+	main := ordercontract.TenantScope{}
+	if _, err := reserve(order.OrderNo, order.UserID, main); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("unpaid checkout: %v", err)
+	}
+	ids := []uint{order.ID, child.ID}
+	update := func(status string, refunded money.Amount) {
+		t.Helper()
+		if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", ids).
+			Updates(map[string]any{"status": status, "paid_at": now, "refunded_amount": refunded}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	update(constants.OrderStatusCanceled, money.Amount{})
+	if _, err := reserve(order.OrderNo, order.UserID, main); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("canceled checkout: %v", err)
+	}
+	update(constants.OrderStatusRefunded, order.TotalAmount)
+	if _, err := reserve(order.OrderNo, order.UserID, main); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("refunded checkout: %v", err)
+	}
+	update(constants.OrderStatusPaid, money.Amount{})
+	resellerID := uint(42)
+	for _, request := range []struct {
+		orderNo string
+		userID  uint
+		scope   ordercontract.TenantScope
+	}{
+		{order.OrderNo, 0, main},
+		{order.OrderNo, f.users[1].ID, main},
+		{child.OrderNo, order.UserID, main},
+		{order.OrderNo, order.UserID, ordercontract.TenantScope{ResellerID: &resellerID}},
+	} {
+		if _, err := reserve(request.orderNo, request.userID, request.scope); !errors.Is(err, orderapp.ErrOrderNotFound) {
+			t.Fatalf("unscoped reservation accepted: %+v, %v", request, err)
+		}
+	}
+	var attempts int64
+	if err := f.db.Model(&kafudadomain.Attempt{}).Count(&attempts).Error; err != nil || attempts != 0 {
+		t.Fatalf("rejected attempts persisted: %d, %v", attempts, err)
+	}
+
+	const buyers = 8
+	start := make(chan struct{})
+	results := make(chan *kafudaapp.Reservation, buyers)
+	for range buyers {
+		go func() {
+			<-start
+			result, err := reserve(order.OrderNo, order.UserID, main)
+			if err != nil {
+				t.Errorf("reserve buyer attempt: %v", err)
+			}
+			results <- result
+		}()
+	}
+	close(start)
+	created := 0
+	var attemptID uint
+	for range buyers {
+		result := <-results
+		if result == nil {
+			continue
+		}
+		if result.Created {
+			created++
+		}
+		if attemptID == 0 {
+			attemptID = result.Attempt.ID
+		}
+		if result.Attempt.ID != attemptID || result.Attempt.OrderID != child.ID || result.Recharge.OrderID != child.ID {
+			t.Fatalf("unexpected reservation: %+v", result)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("created %d attempts, want one", created)
+	}
+	if err := f.db.Model(&kafudadomain.Attempt{}).Count(&attempts).Error; err != nil || attempts != 1 {
+		t.Fatalf("persisted attempts: %d, %v", attempts, err)
+	}
+}
+
+type directCreateGateway struct {
+	kafudacontract.Gateway
+	create func(context.Context, kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error)
+}
+
+func (g directCreateGateway) CreateOrder(ctx context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
+	return g.create(ctx, req)
+}
+
+func TestSubmitCheckedDirectQuote(t *testing.T) {
+	for _, scenario := range []struct {
+		name     string
+		stage    kafudadomain.Stage
+		wantCall bool
+	}{
+		{"policy_rejected", kafudadomain.StageManualDelivery, false},
+		{"processing", kafudadomain.StageProcessing, true},
+		{"completed", kafudadomain.StageCompleted, true},
+		{"response_lost", kafudadomain.StageManualReview, true},
+		{"response_mismatch", kafudadomain.StageManualReview, true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newDirectCheckoutFixture(t)
+			if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+				t.Fatal(err)
+			}
+			order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			childID := order.Children[0].ID
+			ids := []uint{order.ID, childID}
+			if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", ids).
+				Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": now}).Error; err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			records := kafudaapp.New(f.store)
+			reservation, err := kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, ordercontract.TenantScope{}, order.OrderNo, order.UserID, now, now.Add(time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := kafudacontract.CheckResult{
+				Country: "PH", PayMode: "auto_card", RegionLocked: !scenario.wantCall,
+				Plans: []kafudacontract.Quote{{
+					Plan: "plus", Status: "available", Kind: "new", QuoteID: "quote_checkout",
+					PriceCents: 900, ExpiresAt: now.Add(time.Minute),
+					AutoCard: &kafudacontract.AutoCard{ProductCode: "checkout-card", OpenFeeCents: 50, LoadCents: 50, TotalCents: 1000},
+				}},
+			}
+			calls := 0
+			gateway := directCreateGateway{create: func(ctx context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
+				calls++
+				attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
+				if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptSubmitting ||
+					attempt.Reference != req.Reference || attempt.QuoteID != req.QuoteID ||
+					req.Reference != reservation.Attempt.Reference || req.QuoteID != "quote_checkout" {
+					t.Fatalf("create without committed attempt: %+v, %v", attempt, err)
+				}
+				result := &kafudacontract.OrderResult{ID: 100, Reference: req.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing"}
+				switch scenario.name {
+				case "completed":
+					result.Status = "completed"
+				case "response_lost":
+					return nil, errors.New("supplier response lost")
+				case "response_mismatch":
+					result.Reference = "other-reference"
+				}
+				return result, nil
+			}}
+			completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check)
+			wantError := scenario.stage == kafudadomain.StageManualDelivery || scenario.stage == kafudadomain.StageManualReview
+			if completed != (scenario.stage == kafudadomain.StageCompleted) || (err != nil) != wantError {
+				t.Fatalf("unexpected outcome: completed=%v, err=%v", completed, err)
+			}
+			if _, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+				t.Fatalf("stale submission replay: %v", err)
+			}
+			if (scenario.wantCall && calls != 1) || (!scenario.wantCall && calls != 0) {
+				t.Fatalf("create called %d times", calls)
+			}
+			record, err := f.store.GetRecharge(ctx, childID)
+			if err != nil || record == nil || record.Stage != scenario.stage {
+				t.Fatalf("unexpected persisted recharge: %+v, %v", record, err)
+			}
+			if scenario.stage == kafudadomain.StageCompleted {
+				var completedOrders int64
+				if err := f.db.Model(&orderdomain.Order{}).Where("id IN ? AND status = ?", ids, constants.OrderStatusCompleted).
+					Count(&completedOrders).Error; err != nil || completedOrders != 2 {
+					t.Fatalf("create response did not complete both orders: %d, %v", completedOrders, err)
+				}
+			}
+			if scenario.stage == kafudadomain.StageManualReview {
+				attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
+				if err != nil || attempt == nil || attempt.ActiveOrderID == nil || attempt.UpstreamOrderID != nil {
+					t.Fatalf("unknown outcome lost active attempt: %+v, %v", attempt, err)
+				}
+			}
+		})
 	}
 }
 

@@ -56,53 +56,65 @@ type Reservation struct {
 // Only Created=true permits a caller to check Session and start a new request.
 // leaseUntil permits recovery of a process that exits during credential checking.
 func (s *Service) Reserve(ctx context.Context, orderID uint, now, leaseUntil time.Time) (*Reservation, error) {
+	var reservation *Reservation
+	err := s.store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
+		var err error
+		reservation, err = ReserveInTransaction(tx, orderID, now, leaseUntil)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return reservation, nil
+}
+
+// ReserveInTransaction lets commerce validate and lock the paid order before
+// creating an attempt in the same transaction.
+func ReserveInTransaction(tx kafudacontract.Transaction, orderID uint, now, leaseUntil time.Time) (*Reservation, error) {
 	if now.IsZero() || !leaseUntil.After(now) {
 		return nil, kafudadomain.ErrInvalidTransition
 	}
 	result := &Reservation{}
-	err := s.store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
-		record, err := tx.GetRechargeForUpdate(orderID)
+	record, err := tx.GetRechargeForUpdate(orderID)
+	if err != nil {
+		return nil, err
+	}
+	if record == nil {
+		return nil, kafudadomain.ErrNotFound
+	}
+	result.Recharge = record
+	if record.CurrentAttemptID != nil {
+		attempt, err := tx.GetAttemptForUpdate(*record.CurrentAttemptID)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if record == nil {
-			return kafudadomain.ErrNotFound
+		if attempt == nil {
+			return nil, kafudadomain.ErrConflict
 		}
-		result.Recharge = record
-		if record.CurrentAttemptID != nil {
-			attempt, err := tx.GetAttemptForUpdate(*record.CurrentAttemptID)
-			if err != nil {
-				return err
-			}
-			if attempt == nil {
-				return kafudadomain.ErrConflict
-			}
-			if attempt.Status.Active() {
-				result.Attempt = attempt
-				return nil
-			}
+		if attempt.Status.Active() {
+			result.Attempt = attempt
+			return result, nil
 		}
-		if record.Stage != kafudadomain.StageWaiting {
-			return kafudadomain.ErrInvalidTransition
-		}
-		activeID := orderID
-		attempt := &kafudadomain.Attempt{
-			OrderID: orderID, ActiveOrderID: &activeID, Sequence: record.AttemptCount + 1,
-			Reference: "kgpt-" + uuid.NewString(), Status: kafudadomain.AttemptChecking,
-			NextPollAt: &leaseUntil, CreatedAt: now, UpdatedAt: now,
-		}
-		if err := tx.CreateAttempt(attempt); err != nil {
-			return err
-		}
-		record.CurrentAttemptID, record.AttemptCount = &attempt.ID, attempt.Sequence
-		record.Stage, record.ReasonCode, record.UpdatedAt = kafudadomain.StageChecking, "", now
-		if err := tx.SaveRecharge(record); err != nil {
-			return err
-		}
-		result.Attempt, result.Created = attempt, true
-		return nil
-	})
-	return result, err
+	}
+	if record.Stage != kafudadomain.StageWaiting {
+		return nil, kafudadomain.ErrInvalidTransition
+	}
+	activeID := orderID
+	attempt := &kafudadomain.Attempt{
+		OrderID: orderID, ActiveOrderID: &activeID, Sequence: record.AttemptCount + 1,
+		Reference: "kgpt-" + uuid.NewString(), Status: kafudadomain.AttemptChecking,
+		NextPollAt: &leaseUntil, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := tx.CreateAttempt(attempt); err != nil {
+		return nil, err
+	}
+	record.CurrentAttemptID, record.AttemptCount = &attempt.ID, attempt.Sequence
+	record.Stage, record.ReasonCode, record.UpdatedAt = kafudadomain.StageChecking, "", now
+	if err := tx.SaveRecharge(record); err != nil {
+		return nil, err
+	}
+	result.Attempt, result.Created = attempt, true
+	return result, nil
 }
 
 // MarkSubmitting is committed before calling POST /gpt/orders. Its QuoteID and
