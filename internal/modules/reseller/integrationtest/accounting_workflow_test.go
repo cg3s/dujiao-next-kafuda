@@ -28,6 +28,7 @@ import (
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
 	"github.com/glebarez/sqlite"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -77,7 +78,7 @@ func openResellerAccountingServiceTestDB(t *testing.T) *gorm.DB {
 
 func seedResellerAccountingProfile(t *testing.T, db *gorm.DB) resellerdomain.Profile {
 	t.Helper()
-	user := userdomain.User{Email: fmt.Sprintf("reseller-%d@example.test", time.Now().UnixNano()), PasswordHash: "x"}
+	user := userdomain.User{Email: "reseller-" + uuid.NewString() + "@example.test", PasswordHash: "x"}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create reseller user failed: %v", err)
 	}
@@ -217,7 +218,7 @@ func TestResellerAccountingServiceApplyUserWithdrawRequiresActiveNormalProfile(t
 
 func seedPaidResellerOrderSnapshot(t *testing.T, db *gorm.DB, eligible bool) (orderdomain.Order, paymentdomain.Payment, resellerdomain.OrderSnapshot) {
 	t.Helper()
-	user := userdomain.User{Email: fmt.Sprintf("buyer-%d@example.test", time.Now().UnixNano()), PasswordHash: "x"}
+	user := userdomain.User{Email: "buyer-" + uuid.NewString() + "@example.test", PasswordHash: "x"}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user failed: %v", err)
 	}

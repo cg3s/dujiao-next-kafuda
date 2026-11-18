@@ -38,6 +38,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -133,7 +134,7 @@ func adminResellerSiteConfigHTTP(h *adminResellerFixture) *resellerhttp.AdminSit
 
 func seedAdminResellerManagementProfile(t *testing.T, db *gorm.DB, status string) resellerdomain.Profile {
 	t.Helper()
-	user := userdomain.User{Email: fmt.Sprintf("reseller-management-%d@example.test", time.Now().UnixNano()), PasswordHash: "hash", DisplayName: "Reseller Management"}
+	user := userdomain.User{Email: "reseller-management-" + uuid.NewString() + "@example.test", PasswordHash: "hash", DisplayName: "Reseller Management"}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user failed: %v", err)
 	}
