@@ -3,7 +3,9 @@ package consumer
 import (
 	"github.com/dujiao-next/internal/app/container"
 	"github.com/dujiao-next/internal/logger"
+	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
+	orderqueue "github.com/dujiao-next/internal/modules/order/infrastructure/queueadapter"
 	"github.com/dujiao-next/internal/queue"
 
 	"github.com/hibiken/asynq"
@@ -12,7 +14,8 @@ import (
 // Consumer 异步任务消费者
 type Consumer struct {
 	*container.Container
-	orderReader orderReader
+	orderReader      orderReader
+	orderStatusQueue ordercontract.Queue
 }
 
 type orderReader interface {
@@ -22,12 +25,15 @@ type orderReader interface {
 // New 创建消费者
 func New(c *container.Container) *Consumer {
 	var orders orderReader
+	var statusQueue ordercontract.Queue
 	if c != nil {
 		orders = c.OrderStore
+		statusQueue = orderqueue.New(c.QueueClient)
 	}
 	return &Consumer{
-		Container:   c,
-		orderReader: orders,
+		Container:        c,
+		orderReader:      orders,
+		orderStatusQueue: statusQueue,
 	}
 }
 

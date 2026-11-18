@@ -5,7 +5,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dujiao-next/internal/config"
+	"github.com/dujiao-next/internal/constants"
+	"github.com/dujiao-next/internal/logger"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
+	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
 	"github.com/hibiken/asynq"
 )
@@ -63,7 +67,10 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 			}
 			continue
 		}
-		_, err = kafudaworkflow.ApplyResult(c.OrderStore, attempt.OrderID, attempt.ID, *result, observedAt, observedAt.Add(kafudaPollInterval))
+		completed, err := kafudaworkflow.ApplyResult(c.OrderStore, attempt.OrderID, attempt.ID, *result, observedAt, observedAt.Add(kafudaPollInterval))
+		if completed {
+			c.enqueueKafudaCompletionEmail(attempt.OrderID)
+		}
 		if err == nil || errors.Is(err, kafudadomain.ErrConflict) || errors.Is(err, kafudadomain.ErrNotFound) {
 			continue
 		}
@@ -74,4 +81,22 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
+}
+
+func (c *Consumer) enqueueKafudaCompletionEmail(childID uint) {
+	if c.orderStatusQueue == nil || !c.orderStatusQueue.Enabled() {
+		return
+	}
+	child, err := c.OrderStore.GetByID(childID)
+	if err != nil || child == nil || child.ParentID == nil {
+		logger.Warnw("kafuda_completion_email_order_unavailable", "child_order_id", childID)
+		return
+	}
+	var emailConfig config.EmailConfig
+	if c.Config != nil {
+		emailConfig = c.Config.Email
+	}
+	if _, err := orderapp.EnqueueStatusEmailTaskIfEligible(c.OrderStore, c.orderStatusQueue, c.SettingService, emailConfig, *child.ParentID, constants.OrderStatusCompleted); err != nil {
+		logger.Warnw("kafuda_completion_email_enqueue_failed", "order_id", *child.ParentID)
+	}
 }

@@ -10,10 +10,12 @@ import (
 	kafudawiring "github.com/dujiao-next/internal/bootstrap/kafudagpt"
 	"github.com/dujiao-next/internal/constants"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
+	userdomain "github.com/dujiao-next/internal/modules/identity/user/domain"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	"github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
+	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
 	"github.com/dujiao-next/internal/queue"
@@ -30,6 +32,26 @@ type kafudaPollTestGateway struct {
 	result kafudacontract.OrderResult
 	ids    []uint64
 	err    error
+}
+
+type kafudaStatusEmailQueue struct {
+	ordercontract.Queue
+	t       *testing.T
+	orders  ordercontract.Store
+	orderID uint
+	calls   int
+}
+
+func (q *kafudaStatusEmailQueue) Enabled() bool { return true }
+
+func (q *kafudaStatusEmailQueue) EnqueueStatusEmail(orderID uint, status string) error {
+	q.t.Helper()
+	q.calls++
+	order, err := q.orders.GetByID(orderID)
+	if err != nil || order == nil || order.Status != constants.OrderStatusCompleted || orderID != q.orderID || status != constants.OrderStatusCompleted {
+		q.t.Fatalf("unexpected completion notification: %d %s, order=%+v, err=%v", orderID, status, order, err)
+	}
+	return nil
 }
 
 func (g *kafudaPollTestGateway) GetOrder(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
@@ -58,7 +80,7 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 	}
 	pool.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = pool.Close() })
-	if err := db.AutoMigrate(&kafudadomain.Recharge{}, &kafudadomain.Attempt{}, &orderdomain.Order{}, &orderdomain.OrderItem{}, &fulfillmentdomain.Fulfillment{}); err != nil {
+	if err := db.AutoMigrate(&kafudadomain.Recharge{}, &kafudadomain.Attempt{}, &orderdomain.Order{}, &orderdomain.OrderItem{}, &fulfillmentdomain.Fulfillment{}, &userdomain.User{}); err != nil {
 		t.Fatal(err)
 	}
 	store := gormstore.New(db)
@@ -76,9 +98,10 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	parent := orderdomain.Order{ID: 10, OrderNo: "poll-parent", UserID: 20, Status: constants.OrderStatusPaid, PaidAt: &past, Currency: "CNY"}
+	buyer := userdomain.User{ID: parent.UserID, Email: "completion@example.test", PasswordHash: "test"}
 	child := orderdomain.Order{ID: 11, ParentID: &parent.ID, OrderNo: "poll-child", UserID: parent.UserID, Status: parent.Status, PaidAt: &past, Currency: parent.Currency}
 	item := orderdomain.OrderItem{OrderID: child.ID, ProductID: 1, SKUID: 1, Quantity: 1, TitleJSON: jsonmap.JSON{"en-US": "Direct recharge"}, FulfillmentType: constants.FulfillmentTypeKafudaGPT}
-	for _, row := range []any{&parent, &child, &item} {
+	for _, row := range []any{&buyer, &parent, &child, &item} {
 		if err := db.Create(row).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -104,6 +127,8 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 		KafudaGPT:  &kafudawiring.Module{Records: records, Store: store, Gateway: gateway},
 		OrderStore: orderstore.New(db, "test-guest-credential-secret-with-32-bytes"),
 	})
+	emailQueue := &kafudaStatusEmailQueue{t: t, orders: c.OrderStore, orderID: parent.ID}
+	c.orderStatusQueue = emailQueue
 	mux := asynq.NewServeMux()
 	c.Register(mux)
 	task := queue.NewKafudaRecoverChecksTask()
@@ -142,6 +167,9 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 	}
 	if len(gateway.ids) != 4 || gateway.ids[0] != 101 || gateway.ids[3] != 101 {
 		t.Fatalf("unexpected upstream reads after replay: %v", gateway.ids)
+	}
+	if emailQueue.calls != 1 {
+		t.Fatalf("completion scheduled %d emails, want one", emailQueue.calls)
 	}
 	for _, orderID := range []uint{parent.ID, child.ID} {
 		var stored orderdomain.Order
