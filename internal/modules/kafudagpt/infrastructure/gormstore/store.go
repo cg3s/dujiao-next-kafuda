@@ -141,6 +141,17 @@ func (s *Store) DueCheckingAttempts(ctx context.Context, now time.Time, limit in
 	return result, err
 }
 
+func (s *Store) DueUnidentifiedSubmissions(ctx context.Context, now time.Time, limit int) ([]kafudadomain.Attempt, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	var result []kafudadomain.Attempt
+	err := s.db.WithContext(ctx).
+		Where("status = ? AND active_order_id IS NOT NULL AND upstream_order_id IS NULL AND next_poll_at <= ?", kafudadomain.AttemptSubmitting, now).
+		Order("next_poll_at ASC, id ASC").Limit(limit).Find(&result).Error
+	return result, err
+}
+
 func (s *Store) GetCatalog(ctx context.Context, profile string) (*kafudadomain.Catalog, error) {
 	return first[kafudadomain.Catalog](s.db.WithContext(ctx).Where("profile = ?", profile))
 }

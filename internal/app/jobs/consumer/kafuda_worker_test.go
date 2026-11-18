@@ -97,6 +97,16 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 	if _, err := records.Reserve(ctx, 1, past, past.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := records.Prepare(ctx, 2, snapshot, past); err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := records.Reserve(ctx, 2, past, past.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := records.MarkSubmitting(ctx, unknown.Attempt.ID, "unknown_quote", past, past.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	parent := orderdomain.Order{ID: 10, OrderNo: "poll-parent", UserID: 20, Status: constants.OrderStatusPaid, PaidAt: &past, Currency: "CNY"}
 	buyer := userdomain.User{ID: parent.UserID, Email: "completion@example.test", PasswordHash: "test"}
 	child := orderdomain.Order{ID: 11, ParentID: &parent.ID, OrderNo: "poll-child", UserID: parent.UserID, Status: parent.Status, PaidAt: &past, Currency: parent.Currency}
@@ -161,6 +171,15 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 	record, err := store.GetRecharge(ctx, 1)
 	if err != nil || record.Stage != kafudadomain.StageWaiting {
 		t.Fatalf("registered task did not recover check: %+v, %v", record, err)
+	}
+	record, err = store.GetRecharge(ctx, 2)
+	if err != nil || record == nil || record.Stage != kafudadomain.StageManualReview || record.ReasonCode != "outcome_unknown" {
+		t.Fatalf("overdue unidentified submission was not flagged: %+v, %v", record, err)
+	}
+	replay, err := records.Reserve(ctx, 2, time.Now(), time.Now().Add(time.Minute))
+	if err != nil || replay == nil || replay.Created || replay.Attempt == nil || replay.Attempt.ActiveOrderID == nil ||
+		replay.Attempt.Reference != unknown.Attempt.Reference || replay.Attempt.QuoteID != "unknown_quote" {
+		t.Fatalf("unknown submission lost its original attempt: %+v, %v", replay, err)
 	}
 	if err := mux.ProcessTask(ctx, task); err != nil {
 		t.Fatal(err)

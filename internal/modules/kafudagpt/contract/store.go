@@ -28,6 +28,7 @@ type Store interface {
 	DueAttempts(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
 	DueKnownOrderPolls(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
 	DueCheckingAttempts(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
+	DueUnidentifiedSubmissions(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
 	GetCatalog(context.Context, string) (*kafudadomain.Catalog, error)
 	SaveCatalog(context.Context, *kafudadomain.Catalog) error
 }

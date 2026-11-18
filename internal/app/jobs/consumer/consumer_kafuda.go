@@ -38,7 +38,11 @@ func (c *Consumer) handleKafudaRecoverChecks(ctx context.Context, _ *asynq.Task)
 		return nil
 	}
 	module := c.KafudaGPT
-	recoveryErr := module.Records.RecoverExpiredChecks(ctx, time.Now().UTC(), 100)
+	now := time.Now().UTC()
+	recoveryErr := errors.Join(
+		module.Records.RecoverExpiredChecks(ctx, now, 100),
+		module.Records.RecoverUnidentifiedSubmissions(ctx, now, 100),
+	)
 	if module.Store == nil || module.Gateway == nil || c.OrderStore == nil {
 		return recoveryErr
 	}
