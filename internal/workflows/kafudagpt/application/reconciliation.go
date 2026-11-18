@@ -17,8 +17,8 @@ var ErrReconciliationLookup = errors.New("kafuda reconciliation lookup failed")
 
 // ReconcileUnknownOrder verifies a supplier-provided numeric ID against the
 // original attempt before applying it through the regular order transaction.
-func ReconcileUnknownOrder(ctx context.Context, store ordercontract.Store, gateway kafudacontract.Gateway, childID, attemptID uint, upstreamID uint64) (bool, error) {
-	if gateway == nil || childID == 0 || attemptID == 0 || upstreamID == 0 {
+func ReconcileUnknownOrder(ctx context.Context, store ordercontract.Store, gateway kafudacontract.Gateway, childID, attemptID uint, upstreamID uint64, pollInterval time.Duration) (bool, error) {
+	if pollInterval <= 0 || gateway == nil || childID == 0 || attemptID == 0 || upstreamID == 0 {
 		return false, orderapp.ErrOrderStatusInvalid
 	}
 	err := withLockedDirectOrder(store, childID, func(tx ordercontract.Transaction, parent *orderdomain.Order) error {
@@ -54,7 +54,7 @@ func ReconcileUnknownOrder(ctx context.Context, store ordercontract.Store, gatew
 	}
 	// ApplyResult checks reference, product, plan and country again in the
 	// transaction, and prevents binding a different ID after a concurrent lookup.
-	completed, err := ApplyResult(store, childID, attemptID, *result, observedAt, observedAt.Add(time.Minute))
+	completed, err := ApplyResult(store, childID, attemptID, *result, observedAt, observedAt.Add(pollInterval))
 	if errors.Is(err, kafudadomain.ErrInvalidTransition) || errors.Is(err, kafudadomain.ErrConflict) {
 		return false, orderapp.ErrOrderStatusInvalid
 	}

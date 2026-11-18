@@ -16,6 +16,7 @@ import (
 	"github.com/dujiao-next/internal/app/container"
 	kafudawiring "github.com/dujiao-next/internal/bootstrap/kafudagpt"
 	orderwiring "github.com/dujiao-next/internal/bootstrap/order"
+	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/constants"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
@@ -506,12 +507,12 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 				}
 				return result, nil
 			}}
-			completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check)
+			completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check, 10*time.Second)
 			wantError := scenario.stage == kafudadomain.StageManualDelivery || scenario.stage == kafudadomain.StageManualReview
 			if completed != (scenario.stage == kafudadomain.StageCompleted) || (err != nil) != wantError {
 				t.Fatalf("unexpected outcome: completed=%v, err=%v", completed, err)
 			}
-			if _, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+			if _, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check, 10*time.Second); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
 				t.Fatalf("stale submission replay: %v", err)
 			}
 			if (scenario.wantCall && calls != 1) || (!scenario.wantCall && calls != 0) {
@@ -520,6 +521,13 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 			record, err := f.store.GetRecharge(ctx, childID)
 			if err != nil || record == nil || record.Stage != scenario.stage || record.ReasonCode != scenario.wantReason {
 				t.Fatalf("unexpected persisted recharge: %+v, %v", record, err)
+			}
+			if scenario.stage == kafudadomain.StageProcessing {
+				attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
+				if err != nil || attempt == nil || attempt.NextPollAt == nil ||
+					attempt.NextPollAt.Sub(attempt.UpdatedAt) != 10*time.Second {
+					t.Fatalf("first lookup did not use configured interval: %+v, %v", attempt, err)
+				}
 			}
 			if scenario.stage == kafudadomain.StageCompleted {
 				var completedOrders int64
@@ -562,7 +570,11 @@ func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, chil
 			ID: id, Reference: reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing",
 		}, nil
 	}}
-	handler := orderwiring.New(&container.Container{OrderStore: f.options.OrderStore, KafudaGPT: &kafudawiring.Module{Store: f.store, Gateway: gateway}}).Admin
+	handler := orderwiring.New(&container.Container{
+		Config:     &config.Config{KafudaGPT: config.KafudaGPTConfig{PollIntervalSeconds: 10}},
+		OrderStore: f.options.OrderStore,
+		KafudaGPT:  &kafudawiring.Module{Store: f.store, Gateway: gateway},
+	}).Admin
 	router := gin.New()
 	router.Use(func(c *gin.Context) { c.Set("admin_id", uint(9)) })
 	orderhttp.RegisterAdminRoutes(router.Group("/admin"), handler)
@@ -587,7 +599,8 @@ func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, chil
 	request(attempt.ID, false)
 	stored, err = f.store.GetAttempt(context.Background(), attempt.ID)
 	if err != nil || stored == nil || stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != upstreamID ||
-		stored.NextPollAt == nil || stored.Status != kafudadomain.AttemptProcessing || calls != 2 {
+		stored.NextPollAt == nil || stored.NextPollAt.Sub(stored.UpdatedAt) != 10*time.Second ||
+		stored.Status != kafudadomain.AttemptProcessing || calls != 2 {
 		t.Fatalf("verified ID did not restore scheduled lookups: %+v, %v, calls=%d", stored, err, calls)
 	}
 }

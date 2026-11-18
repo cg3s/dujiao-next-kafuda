@@ -50,7 +50,7 @@ func New(c *container.Container) Handlers {
 				if c.OrderStore == nil || c.KafudaGPT == nil || c.KafudaGPT.Gateway == nil {
 					return ordertransport.ErrOrderNotFound
 				}
-				completed, err := kafudaworkflow.ReconcileUnknownOrder(ctx, c.OrderStore, c.KafudaGPT.Gateway, childID, attemptID, upstreamID)
+				completed, err := kafudaworkflow.ReconcileUnknownOrder(ctx, c.OrderStore, c.KafudaGPT.Gateway, childID, attemptID, upstreamID, c.Config.KafudaPollInterval())
 				if err != nil {
 					return mapOrderTransportError(err)
 				}

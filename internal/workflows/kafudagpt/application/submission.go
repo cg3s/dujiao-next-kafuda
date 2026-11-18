@@ -15,8 +15,8 @@ var errCreateResultMissing = errors.New("kafuda create order result missing")
 
 // SubmitCheckedQuote consumes a server-side check result and a newly reserved
 // attempt. The caller should enqueue completion mail when completed is true.
-func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records *kafudaapp.Service, gateway kafudacontract.Gateway, reservation *kafudaapp.Reservation, check kafudacontract.CheckResult) (bool, error) {
-	if reservation == nil || !reservation.Created || reservation.Attempt == nil || reservation.Recharge == nil ||
+func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records *kafudaapp.Service, gateway kafudacontract.Gateway, reservation *kafudaapp.Reservation, check kafudacontract.CheckResult, pollInterval time.Duration) (bool, error) {
+	if pollInterval <= 0 || reservation == nil || !reservation.Created || reservation.Attempt == nil || reservation.Recharge == nil ||
 		reservation.Attempt.OrderID != reservation.Recharge.OrderID {
 		return false, kafudadomain.ErrInvalidTransition
 	}
@@ -31,8 +31,8 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 	}
 
 	// Persist the quote and reference before an upstream request can escape.
-	const firstPoll = time.Minute
-	if err := records.MarkSubmitting(ctx, attempt.ID, quote.QuoteID, now, now.Add(firstPoll)); err != nil {
+	const submissionLease = time.Minute
+	if err := records.MarkSubmitting(ctx, attempt.ID, quote.QuoteID, now, now.Add(submissionLease)); err != nil {
 		return false, err
 	}
 	submitCtx, cancelSubmit := context.WithDeadline(ctx, quote.ExpiresAt)
@@ -45,7 +45,7 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 	}
 	if err == nil {
 		observedAt := time.Now().UTC()
-		completed, applyErr := ApplyResult(orders, attempt.OrderID, attempt.ID, *result, observedAt, observedAt.Add(firstPoll))
+		completed, applyErr := ApplyResult(orders, attempt.OrderID, attempt.ID, *result, observedAt, observedAt.Add(pollInterval))
 		if applyErr == nil {
 			return completed, nil
 		}
@@ -57,5 +57,5 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 	recoveryCtx, cancelRecovery := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancelRecovery()
 	observedAt := time.Now().UTC()
-	return false, errors.Join(err, records.MarkUnknown(recoveryCtx, attempt.ID, observedAt, observedAt.Add(firstPoll)))
+	return false, errors.Join(err, records.MarkUnknown(recoveryCtx, attempt.ID, observedAt, observedAt.Add(pollInterval)))
 }
