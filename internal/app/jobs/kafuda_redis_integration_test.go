@@ -3,8 +3,14 @@
 package jobs
 
 import (
+	"bytes"
+	"io"
+	"net"
+	"net/mail"
+	"net/textproto"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,9 +21,11 @@ import (
 	"github.com/dujiao-next/internal/constants"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	userdomain "github.com/dujiao-next/internal/modules/identity/user/domain"
+	userstore "github.com/dujiao-next/internal/modules/identity/user/infrastructure/gormstore"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
+	notificationsmtp "github.com/dujiao-next/internal/modules/notification/infrastructure/smtp"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
 	orderqueue "github.com/dujiao-next/internal/modules/order/infrastructure/queueadapter"
@@ -173,7 +181,7 @@ func TestRedisKafudaCompletionReplayKeepsOneEmail(t *testing.T) {
 	now := time.Now().UTC()
 	parent := orderdomain.Order{ID: 10, OrderNo: "completed-parent", UserID: 20, Status: constants.OrderStatusCompleted, PaidAt: &now, Currency: "CNY"}
 	child := orderdomain.Order{ID: 11, ParentID: &parent.ID, OrderNo: "completed-child", UserID: parent.UserID, Status: parent.Status, PaidAt: &now, Currency: parent.Currency}
-	buyer := userdomain.User{ID: parent.UserID, Email: "completion@example.test", PasswordHash: "fixture"}
+	buyer := userdomain.User{ID: parent.UserID, Email: "completion@example.test", PasswordHash: "fixture", Locale: "en-US"}
 	recharge := kafudadomain.Recharge{OrderID: child.ID, Stage: kafudadomain.StageCompleted, CompletedAt: &now, CompletionEmailPending: true}
 	for _, row := range []any{&buyer, &parent, &child, &recharge} {
 		if err := db.Create(row).Error; err != nil {
@@ -186,10 +194,16 @@ func TestRedisKafudaCompletionReplayKeepsOneEmail(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := kafudastore.New(db)
+	port, received := startCompletionSMTPReceiver(t)
+	sender := notificationsmtp.New(&config.EmailConfig{
+		Enabled: true, Host: "127.0.0.1", Port: port, From: "shop@example.test",
+	})
 	worker := jobconsumer.New(&container.Container{
 		KafudaGPT:   &kafudawiring.Module{Store: store, Records: kafudaapp.New(store)},
 		OrderStore:  orderstore.New(db, "test-guest-credential-secret-with-32-bytes"),
 		QueueClient: client,
+		UserStore:   userstore.New(db),
+		EmailSender: sender,
 	})
 	mux := asynq.NewServeMux()
 	worker.Register(mux)
@@ -205,5 +219,97 @@ func TestRedisKafudaCompletionReplayKeepsOneEmail(t *testing.T) {
 	pending, err := store.PendingCompletionEmails(t.Context(), 100)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("replayed enqueue failed to clear the pending marker: %v, %v", pending, err)
+	}
+
+	opt, serverConfig := queue.BuildServerConfig(cfg)
+	server := asynq.NewServer(opt, serverConfig)
+	if err := server.Start(mux); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(server.Shutdown)
+	select {
+	case receipt := <-received:
+		if receipt.err != nil {
+			t.Fatal(receipt.err)
+		}
+		message, err := mail.ReadMessage(bytes.NewReader(receipt.message))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(message.Body)
+		if err != nil || !strings.Contains(string(body), parent.OrderNo) || strings.Contains(string(body), child.OrderNo) {
+			t.Fatalf("unexpected order in delivery email: %q, %v", body, err)
+		}
+		if receipt.recipient != "RCPT TO:<"+buyer.Email+">" || !strings.Contains(message.Header.Get("Content-Type"), "text/plain") {
+			t.Fatalf("unexpected delivery envelope or content type: %q, %q", receipt.recipient, message.Header.Get("Content-Type"))
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for local SMTP delivery")
+	}
+	awaitKafudaRedis(t, 10*time.Second, func() bool {
+		completed, err := inspector.ListCompletedTasks(queue.DefaultQueue)
+		return err == nil && len(completed) == 1 && completed[0].ID == "kafuda-completed:10"
+	})
+}
+
+type completionSMTPReceipt struct {
+	recipient string
+	message   []byte
+	err       error
+}
+
+func startCompletionSMTPReceiver(t *testing.T) (int, <-chan completionSMTPReceipt) {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	received := make(chan completionSMTPReceipt, 1)
+	go func() {
+		received <- receiveCompletionSMTP(listener)
+	}()
+	return listener.Addr().(*net.TCPAddr).Port, received
+}
+
+func receiveCompletionSMTP(listener net.Listener) (receipt completionSMTPReceipt) {
+	conn, err := listener.Accept()
+	if err != nil {
+		receipt.err = err
+		return
+	}
+	client := textproto.NewConn(conn)
+	defer client.Close()
+	if receipt.err = conn.SetDeadline(time.Now().Add(10 * time.Second)); receipt.err != nil {
+		return
+	}
+	if receipt.err = client.PrintfLine("220 localhost test SMTP"); receipt.err != nil {
+		return
+	}
+	for {
+		line, err := client.ReadLine()
+		if err != nil {
+			receipt.err = err
+			return
+		}
+		reply := "250 OK"
+		switch {
+		case strings.HasPrefix(line, "RCPT TO:"):
+			receipt.recipient = line
+		case line == "DATA":
+			if receipt.err = client.PrintfLine("354 End data with a dot"); receipt.err != nil {
+				return
+			}
+			receipt.message, receipt.err = client.ReadDotBytes()
+			if receipt.err != nil {
+				return
+			}
+		case line == "QUIT":
+			receipt.err = client.PrintfLine("221 bye")
+			return
+		}
+		if receipt.err = client.PrintfLine("%s", reply); receipt.err != nil {
+			return
+		}
 	}
 }
