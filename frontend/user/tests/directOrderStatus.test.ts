@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { directStatusOrderNo, parseDirectOrderStatus, startDirectOrderPolling } from '../src/utils/directOrderStatus.ts'
+import { directStatusOrderNo, parseDirectOrderStatus, startDirectOrderPolling, type DirectOrderStatus } from '../src/utils/directOrderStatus.ts'
 
 const order = {
   order_no: 'ORDER-1',
@@ -11,7 +11,8 @@ const order = {
 test('polling targets only an eligible direct checkout parent', () => {
   assert.equal(directStatusOrderNo(order), order.order_no)
   assert.equal(directStatusOrderNo({ ...order, status: 'completed' }), order.order_no)
-  for (const status of ['pending_payment', 'canceled', 'partially_refunded', 'refunded']) {
+  assert.equal(directStatusOrderNo({ ...order, status: 'refunded' }), order.order_no)
+  for (const status of ['pending_payment', 'canceled', 'partially_refunded', undefined]) {
     assert.equal(directStatusOrderNo({ ...order, status }), '')
   }
   assert.equal(directStatusOrderNo({ ...order, children: [] }), '')
@@ -132,6 +133,28 @@ test('a confirmed refund stops polls and visibility refreshes', async (t) => {
   t.mock.timers.tick(60_000)
   assert.deepEqual(stages, ['manual_review', 'refunded'])
   assert.equal(calls, 2)
+})
+
+test('opening a refunded direct order retries an unavailable status and stops after confirmation', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const page = testPage()
+  const number = directStatusOrderNo({ ...order, status: 'refunded' })
+  const refund: DirectOrderStatus = { stage: 'refunded', updated_at: '2026-11-18T08:00:00Z' }
+  const seen: (DirectOrderStatus | null)[] = []
+  let statusRequests = 0
+  assert.equal(number, order.order_no)
+  startDirectOrderPolling(async () => {
+    statusRequests++
+    if (statusRequests === 1) throw new Error('offline')
+    return refund
+  }, (status) => seen.push(status), page)
+  await Promise.resolve()
+  t.mock.timers.tick(10_000)
+  await Promise.resolve()
+  t.mock.timers.tick(60_000)
+  page.dispatchEvent(new Event('visibilitychange'))
+  assert.equal(statusRequests, 2)
+  assert.deepEqual(seen, [null, refund])
 })
 
 test('terminal progress retries order details without querying progress again', async (t) => {
