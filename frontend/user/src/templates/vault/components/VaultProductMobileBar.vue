@@ -23,7 +23,7 @@
         <!-- 操作 -->
         <Button v-if="requiresLogin" size="lg" class="flex-none rounded-full font-bold" @click="$emit('goLogin')">{{ t('productDetail.loginToBuy') }}</Button>
         <template v-else>
-          <Button variant="outline" size="lg" class="flex-none rounded-full font-bold" :disabled="!canPurchase" @click="$emit('addToCart')">
+          <Button v-if="showAddToCart" variant="outline" size="lg" class="flex-none rounded-full font-bold" :disabled="!canPurchase" @click="$emit('addToCart')">
             <ShoppingCart /> {{ t('productDetail.addToCart') }}
           </Button>
           <Button size="lg" class="flex-none rounded-full font-bold" :disabled="!canPurchase" @click="$emit('buyNow')">
@@ -46,6 +46,7 @@ defineProps<{
   visible: boolean
   requiresLogin: boolean
   canPurchase: boolean
+  showAddToCart: boolean
   showMemberPrice: boolean
   memberPriceDisplay: string
   showSkuPromotionPrice: boolean

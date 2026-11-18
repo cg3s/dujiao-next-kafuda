@@ -10,6 +10,7 @@ import { useBuyNowStore } from '../stores/buyNow'
 import { useUserAuthStore } from '../stores/userAuth'
 import { useUserProfileStore } from '../stores/userProfile'
 import { debounceAsync } from '../utils/debounce'
+import { isDirectSkuAvailable, KAFUDA_GPT_DIRECT } from '../utils/directPurchase'
 import { buildSkuDisplayText, normalizeSkuId } from '../utils/sku'
 import { resolveSkuAvailableStock, resolveSkuStockDisplay, type PublicStockDisplay } from '../utils/publicStock'
 import { useLocalized, useProductLabels } from './useProduct'
@@ -60,6 +61,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
 
   const loading = ref(true)
   const product = ref<any>(null)
+  const isDirect = computed(() => product.value?.fulfillment_type === KAFUDA_GPT_DIRECT)
   const relatedPosts = computed<any[]>(() => product.value?.related_posts || [])
   const formatRelatedPostDate = (dateString: string) => {
     if (!dateString) return ''
@@ -230,6 +232,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
 
   const skuAvailableStock = (sku: any) => {
     if (!sku) return 0
+    if (isDirect.value) return isDirectSkuAvailable(sku) ? null : 0
     if (!shouldEnforceSkuStock(sku) && !sku?.stock_quantity_hidden) return null
     return resolveSkuAvailableStock(product.value, sku)
   }
@@ -263,6 +266,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
   }
 
   const skuStockText = (sku: any) => {
+    if (isDirect.value) return t(isDirectSkuAvailable(sku) ? 'directPurchase.available' : 'directPurchase.unavailable')
     const display = resolveSkuStockDisplay(product.value, sku)
     return formatSkuStockDisplay(display)
   }
@@ -276,6 +280,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
   }
 
   const quantityEffectiveLimit = computed(() => {
+    if (isDirect.value) return 1
     const sku = selectedSku.value
     const available = skuAvailableStock(sku)
     const productLimit = normalizeOptionalLimitNumber(product.value?.max_purchase_quantity)
@@ -287,6 +292,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
   })
 
   const quantityEffectiveMin = computed(() => {
+    if (isDirect.value) return 1
     const productMin = normalizeOptionalLimitNumber(product.value?.min_purchase_quantity)
     return productMin && productMin > 0 ? productMin : 1
   })
@@ -303,7 +309,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
     }
   }
 
-  const purchaseType = computed(() => product.value?.purchase_type || 'member')
+  const purchaseType = computed(() => isDirect.value ? 'member' : (product.value?.purchase_type || 'member'))
   const requiresLogin = computed(() => purchaseType.value === 'member' && !userAuthStore.isAuthenticated)
   const requiresSKUSelection = computed(() => activeSkus.value.length > 1 && !selectedSku.value)
   const stockBelowMinPurchase = computed(() => {
@@ -313,6 +319,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
   })
   const canPurchase = computed(() => {
     if (!product.value) return false
+    if (isDirect.value && (appStore.isResellerTenant || !isDirectSkuAvailable(selectedSku.value))) return false
     if (activeSkus.value.length === 0) return false
     if (product.value.is_sold_out) return false
     if (requiresSKUSelection.value) return false
@@ -325,6 +332,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
     if (!product.value) return ''
     if (requiresLogin.value) return ''
     if (requiresSKUSelection.value) return t('productDetail.skuRequired')
+    if (isDirect.value) return canPurchase.value ? '' : t('directPurchase.unavailable')
     if (stockBelowMinPurchase.value) return t('productDetail.stockBelowMinPurchase', { count: quantityEffectiveMin.value })
     if (canPurchase.value) return ''
     return t('productDetail.stockUnavailable')
@@ -373,6 +381,9 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
   })
 
   const skuDisplayText = (sku: any) => {
+    if (isDirect.value && sku?.spec_values?.plan && sku?.spec_values?.country) {
+      return t('directPurchase.sku', { plan: sku.spec_values.plan, country: sku.spec_values.country })
+    }
     return buildSkuDisplayText({
       skuCode: sku?.sku_code,
       specValues: sku?.spec_values,
@@ -433,17 +444,17 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
     priceAmount: String(sku?.price_amount || product.value.price_amount || '0.00'),
     wholesalePrices: Array.isArray(product.value.wholesale_prices) ? product.value.wholesale_prices : undefined,
     image: images.value[0],
-    minPurchaseQuantity: normalizeOptionalLimitNumber(product.value.min_purchase_quantity) ?? undefined,
-    maxPurchaseQuantity: normalizeOptionalLimitNumber(product.value.max_purchase_quantity) ?? undefined,
-    purchaseType: product.value.purchase_type,
+    minPurchaseQuantity: isDirect.value ? 1 : (normalizeOptionalLimitNumber(product.value.min_purchase_quantity) ?? undefined),
+    maxPurchaseQuantity: isDirect.value ? 1 : (normalizeOptionalLimitNumber(product.value.max_purchase_quantity) ?? undefined),
+    purchaseType: isDirect.value ? 'member' : product.value.purchase_type,
     fulfillmentType: product.value.fulfillment_type,
-    manualFormSchema: product.value.manual_form_schema || {},
+    manualFormSchema: isDirect.value ? undefined : (product.value.manual_form_schema || {}),
     paymentChannelIds: Array.isArray(product.value.payment_channel_ids) && product.value.payment_channel_ids.length > 0 ? product.value.payment_channel_ids : undefined,
-    quantity: quantity.value,
+    quantity: isDirect.value ? 1 : quantity.value,
   })
 
   const addToCart = () => {
-    if (!product.value) return
+    if (!product.value || isDirect.value) return
     if (!canPurchase.value) return
     purchaseWarning.value = ''
     if (requiresLogin.value) {
@@ -488,11 +499,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
 
     const sku = selectedSku.value
     const available = skuAvailableStock(sku)
-    const productLimit = normalizeOptionalLimitNumber(product.value?.max_purchase_quantity)
-    let limit: number | null = productLimit
-    if (available !== null) {
-      limit = limit === null ? available : Math.min(limit, available)
-    }
+    const limit = quantityEffectiveLimit.value
     if (limit !== null && quantity.value > limit) {
       purchaseWarning.value = available !== null && limit === available
         ? (available > 0 ? t('productDetail.addCartStockExceeded', { count: available }) : t('productDetail.stockUnavailable'))
@@ -710,7 +717,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
     formatPromotionRule, formatWholesaleTier, formatRelatedPostDate,
     normalizeSkuId,
     // 状态
-    loading, product, relatedPosts, currentImage, selectedSkuId, quantity, purchaseWarning,
+    loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, quantity, purchaseWarning,
     activeSkus, selectedSku,
     // 价格计算
     selectedSkuMemberPrice, hasMemberPrice,

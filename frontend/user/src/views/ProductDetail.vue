@@ -256,7 +256,7 @@
               </div>
 
               <!-- Quantity Selector -->
-                <div class="mb-8">
+                <div v-if="!isDirect" class="mb-8">
                   <h2 class="mb-3 text-sm font-bold uppercase tracking-widest text-muted-foreground">
                     {{ t('productDetail.quantity') }}
                   </h2>
@@ -290,6 +290,7 @@
 
               <!-- Purchase Actions (Desktop + original position) -->
               <div ref="purchaseActionsRef" class="mt-auto space-y-6">
+                <p v-if="isDirect" class="text-sm leading-relaxed text-muted-foreground">{{ t('directPurchase.notice') }}</p>
                 <Alert v-if="cannotPurchaseReason" variant="destructive">
                   <AlertDescription class="font-semibold">{{ cannotPurchaseReason }}</AlertDescription>
                 </Alert>
@@ -301,8 +302,8 @@
                   <Button v-if="requiresLogin" class="w-full h-12 font-bold" @click="goLogin">
                     {{ t('productDetail.loginToBuy') }}
                   </Button>
-                  <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <Button variant="secondary" class="h-12 font-bold" :disabled="!canPurchase" @click="addToCart">
+                  <div v-else class="grid grid-cols-1 gap-4" :class="{ 'sm:grid-cols-2': !isDirect }">
+                    <Button v-if="!isDirect" variant="secondary" class="h-12 font-bold" :disabled="!canPurchase" @click="addToCart">
                       {{ t('productDetail.addToCart') }}
                     </Button>
                     <Button class="h-12 font-bold" :disabled="!canPurchase" @click="buyNow">
@@ -374,6 +375,7 @@
           :visible="showMobileBar && !!product && !loading"
           :requires-login="requiresLogin"
           :can-purchase="canPurchase"
+          :show-add-to-cart="!isDirect"
           :show-member-price="mobileBarShowMemberPrice"
           :member-price-display="mobileBarMemberPriceDisplay"
           :show-sku-promotion-price="mobileBarShowSkuPromotionPrice"
@@ -455,7 +457,7 @@ const {
   hasSkuPromotionPrice, getSkuPromotionSaveAmount,
   hasPromotionRules, getPromotionRules,
   formatPromotionRule, formatWholesaleTier, formatRelatedPostDate, normalizeSkuId,
-  loading, product, relatedPosts, currentImage, selectedSkuId, quantity, purchaseWarning,
+  loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, quantity, purchaseWarning,
   activeSkus, selectedSku,
   selectedSkuMemberPrice, hasMemberPrice,
   hasSelectedSkuWholesalePrice, selectedSkuWholesaleFinalIsMember, selectedSkuWholesaleFinalPrice,

@@ -200,7 +200,7 @@
             </div>
 
             <!-- SKU Selection -->
-            <div v-if="activeSkus.length > 1" class="mb-4">
+            <div v-if="!isDirect && activeSkus.length > 1" class="mb-4">
               <div class="mb-2 text-xs font-medium text-muted-foreground">
                 {{ t('quickBuy.selectSku') }}
               </div>
@@ -229,7 +229,7 @@
             </div>
 
             <!-- Selected SKU stock info -->
-            <div v-if="selectedSku" class="mb-4 flex items-center gap-2 text-xs">
+            <div v-if="!isDirect && selectedSku" class="mb-4 flex items-center gap-2 text-xs">
               <span class="text-muted-foreground">{{ t('quickBuy.stock') }}:</span>
               <span
                 class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium"
@@ -244,7 +244,7 @@
             </div>
 
             <!-- Quantity -->
-            <div class="mb-4 flex items-center gap-3">
+            <div v-if="!isDirect" class="mb-4 flex items-center gap-3">
               <span class="text-xs font-medium text-muted-foreground">{{ t('quickBuy.quantity') }}</span>
               <div class="flex items-center rounded-lg border overflow-hidden">
                 <button
@@ -275,7 +275,7 @@
             </div>
 
             <!-- Warning -->
-            <p v-if="stockBelowMinPurchase" class="mb-4 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs font-medium text-warning">
+            <p v-if="!isDirect && stockBelowMinPurchase" class="mb-4 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs font-medium text-warning">
               {{ t('productDetail.stockBelowMinPurchase', { count: effectiveMin }) }}
             </p>
             <p v-else-if="purchaseWarning" class="mb-4 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs font-medium text-warning">
@@ -286,13 +286,13 @@
           <!-- Actions (sticky bottom) -->
           <div class="shrink-0 px-4 md:px-5 pt-3 pb-3 md:pb-5 border-t theme-safe-bottom">
             <Button
-              v-if="requiresLogin"
+              v-if="requiresLogin && !isDirect"
               class="w-full py-3 h-auto min-h-[44px] rounded-xl text-sm font-semibold"
               @click="goLogin"
             >
               {{ t('quickBuy.loginToBuy') }}
             </Button>
-            <div v-else-if="isSoldOut(product)" class="flex gap-3">
+            <div v-else-if="isDirect || isSoldOut(product)" class="flex gap-3">
               <Button
                 variant="secondary"
                 class="flex-1 py-3 h-auto min-h-[44px] rounded-xl text-sm font-semibold"
@@ -338,6 +338,7 @@ import { useUserAuthStore } from '../stores/userAuth'
 import { useUserProfileStore } from '../stores/userProfile'
 import { getFirstImageUrl, getImageUrl } from '../utils/image'
 import { normalizeSkuId, buildSkuDisplayText } from '../utils/sku'
+import { KAFUDA_GPT_DIRECT } from '../utils/directPurchase'
 import { resolveSkuAvailableStock, resolveSkuStockDisplay, type PublicStockDisplay } from '../utils/publicStock'
 import { useLocalized, useProductLabels } from '../composables/useProduct'
 import { toast } from '../composables/useToast'
@@ -383,6 +384,7 @@ const {
 const selectedSkuId = ref(0)
 const quantity = ref(1)
 const purchaseWarning = ref('')
+const isDirect = computed(() => props.product?.fulfillment_type === KAFUDA_GPT_DIRECT)
 
 const productTitle = computed(() => getLocalizedText(props.product?.title))
 const productDescription = computed(() => getLocalizedText(props.product?.description))
@@ -666,6 +668,7 @@ const stockBelowMinPurchase = computed(() => {
   return limit < effectiveMin.value
 })
 const canPurchase = computed(() => {
+  if (isDirect.value) return false
   if (!props.product) return false
   if (activeSkus.value.length === 0) return false
   if (props.product.is_sold_out) return false

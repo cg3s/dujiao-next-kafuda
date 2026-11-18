@@ -1,4 +1,5 @@
 import { amountToCents, centsToAmount } from './money.ts'
+import { isDirectSkuAvailable, KAFUDA_GPT_DIRECT } from './directPurchase.ts'
 
 const normalizeSkuId = (value: unknown) => {
   const id = Math.trunc(Number(value || 0))
@@ -100,7 +101,11 @@ export const resolveCardDisplayPrice = (
   discountRate: any,
   userPrices?: any[],
 ): string | null => {
-  const skus = (Array.isArray(product?.skus) ? product.skus : []).filter((s: any) => s?.is_active !== false)
+  const direct = product?.fulfillment_type === KAFUDA_GPT_DIRECT
+  const skus = (Array.isArray(product?.skus) ? product.skus : []).filter((s: any) =>
+    direct ? isDirectSkuAvailable(s) : s?.is_active !== false,
+  )
+  if (direct && skus.length === 0) return null
   const candidates: Array<{ id: any; amount: any; promo: any }> = skus.length > 0
     ? skus.map((s: any) => ({ id: s.id, amount: s.price_amount, promo: s.promotion_price_amount }))
     : [{ id: 0, amount: product?.price_amount, promo: product?.promotion_price_amount }]

@@ -1744,6 +1744,15 @@
     "soldOut": "已售罄",
     "viewDetail": "查看详情"
   },
+  "directPurchase": {
+    "label": "Kafuda GPT 直充",
+    "sku": "套餐 {plan} · 地区 {country}",
+    "available": "可购买",
+    "unavailable": "暂不可购买",
+    "notice": "每单限购一个规格，数量为 1。付款后在订单详情提交 ChatGPT Session。地区限制、现有订阅以及半价和点数资格以账号检查结果为准。",
+    "loginRequired": "请先登录，再继续直充结算。",
+    "checkoutRestricted": "请在主站商品详情选择单一直充规格，通过立即购买结算。"
+  },
   "productPurchase": {
     "label": "购买身份",
     "member": "会员购买",

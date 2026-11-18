@@ -32,7 +32,7 @@
           {{ t('productDetail.loginToBuy') }}
         </Button>
         <template v-else>
-          <Button variant="secondary" size="lg" class="rounded-xl font-bold" :disabled="!canPurchase" @click="$emit('addToCart')">
+          <Button v-if="showAddToCart" variant="secondary" size="lg" class="rounded-xl font-bold" :disabled="!canPurchase" @click="$emit('addToCart')">
             {{ t('productDetail.addToCart') }}
           </Button>
           <Button size="lg" class="rounded-xl font-bold" :disabled="!canPurchase" @click="$emit('buyNow')">
@@ -54,6 +54,7 @@ defineProps<{
   visible: boolean
   requiresLogin: boolean
   canPurchase: boolean
+  showAddToCart: boolean
   showMemberPrice: boolean
   memberPriceDisplay: string
   showSkuPromotionPrice: boolean

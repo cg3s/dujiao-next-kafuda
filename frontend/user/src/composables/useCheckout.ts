@@ -3,6 +3,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useCartStore, type CartItem } from '../stores/cart'
 import { useBuyNowStore } from '../stores/buyNow'
+import { directCheckoutRestriction, KAFUDA_GPT_DIRECT } from '../utils/directPurchase'
 import { useAppStore } from '../stores/app'
 import { useUserAuthStore } from '../stores/userAuth'
 import { guestOrderAPI, userOrderAPI, walletAPI, type CaptchaPayload } from '../api'
@@ -62,6 +63,13 @@ export function useCheckout() {
     }
     return cartStore.items
   })
+  const hasDirectItems = computed(() => cartItems.value.some((item) => item.fulfillmentType === KAFUDA_GPT_DIRECT))
+  const checkoutLoginTo = computed(() => hasDirectItems.value
+    ? { path: '/auth/login', query: { redirect: route.fullPath } }
+    : '/auth/login')
+  const directCheckoutError = computed(() => directCheckoutRestriction(
+    cartItems.value, isBuyNowMode.value, userAuthStore.isAuthenticated, appStore.isResellerTenant,
+  ))
   const totalItems = computed(() => cartItems.value.reduce((sum, item) => sum + item.quantity, 0))
   const couponCode = ref('')
   const normalizedCouponCode = computed(() => couponCode.value.trim())
@@ -375,6 +383,7 @@ export function useCheckout() {
   const manualFormProducts = computed<ManualFormProduct[]>(() => {
     const grouped = new Map<number, ManualFormProduct>()
     cartItems.value.forEach((item) => {
+      if (item.fulfillmentType === KAFUDA_GPT_DIRECT) return
       // 按 schema 而非交付类型判断：对接商品对外展示为 auto 时也可能需要交付资料
       const fields = normalizeManualFormSchema(item.manualFormSchema)
       if (fields.length === 0) {
@@ -551,7 +560,7 @@ export function useCheckout() {
 
   const manualFormFingerprint = computed(() => JSON.stringify(manualFormData.value))
 
-  const isGuestCheckout = computed(() => !userAuthStore.isAuthenticated && checkoutMode.value === 'guest')
+  const isGuestCheckout = computed(() => !hasDirectItems.value && !userAuthStore.isAuthenticated && checkoutMode.value === 'guest')
   const guestEmailValid = computed(() => {
     if (!isGuestCheckout.value) return true
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guestEmail.value.trim())
@@ -588,6 +597,7 @@ export function useCheckout() {
   }
 
   const canSubmit = computed(() => {
+    if (directCheckoutError.value) return false
     if (syncingStock.value) return false
     if (submitting.value) return false
     if (cartItems.value.length === 0) return false
@@ -611,6 +621,7 @@ export function useCheckout() {
   })
 
   const submitBlockedReason = computed(() => {
+    if (directCheckoutError.value) return t(directCheckoutError.value)
     if (syncingStock.value) return t('checkout.stockSyncing')
     if (cartItems.value.length === 0) return t('checkout.errors.emptyCart')
     if (!manualFormValidation.value.valid) {
@@ -676,7 +687,7 @@ export function useCheckout() {
   })
 
   const loadOrderPaymentChannels = async () => {
-    if (!userAuthStore.isAuthenticated) {
+    if (!userAuthStore.isAuthenticated || directCheckoutError.value) {
       orderPaymentChannels.value = []
       return
     }
@@ -718,8 +729,11 @@ export function useCheckout() {
   }
 
   const loadPreview = async () => {
-    if (syncingStock.value) {
+    if (directCheckoutError.value || syncingStock.value) {
+      previewRequestId.value++
+      orderPaymentChannelsRequestId.value++
       preview.value = null
+      previewLoading.value = false
       orderPaymentChannels.value = []
       previewError.value = ''
       couponRefreshing.value = false
@@ -825,6 +839,10 @@ export function useCheckout() {
         error.value = previewError.value
         return
       }
+      if (directCheckoutError.value || (hasDirectItems.value && !preview.value)) {
+        error.value = directCheckoutError.value ? t(directCheckoutError.value) : t('checkout.previewFailed')
+        return
+      }
 
       const payload = {
         ...buildOrderPayload(),
@@ -877,7 +895,7 @@ export function useCheckout() {
   }
 
   watch(
-    () => [cartItems.value, manualFormFingerprint.value, normalizedCouponCode.value, checkoutMode.value, guestEmail.value, guestPassword.value, userAuthStore.isAuthenticated],
+    () => [cartItems.value, manualFormFingerprint.value, normalizedCouponCode.value, checkoutMode.value, guestEmail.value, guestPassword.value, userAuthStore.isAuthenticated, directCheckoutError.value],
     () => {
       debouncedLoadPreview()
     },
@@ -943,12 +961,17 @@ export function useCheckout() {
 
   const cartItemKey = (item: CartItem) => `${item.productId}:${normalizeSkuId(item.skuId)}`
 
-  const itemSkuDisplay = (item: CartItem) => buildSkuDisplayText({
-    skuCode: item.skuCode,
-    specValues: item.skuSpecValues,
-    fallback: t('productDetail.skuFallback'),
-    locale: appStore.locale,
-  })
+  const itemSkuDisplay = (item: CartItem) => {
+    if (item.fulfillmentType === KAFUDA_GPT_DIRECT && item.skuSpecValues?.plan && item.skuSpecValues?.country) {
+      return t('directPurchase.sku', { plan: item.skuSpecValues.plan, country: item.skuSpecValues.country })
+    }
+    return buildSkuDisplayText({
+      skuCode: item.skuCode,
+      specValues: item.skuSpecValues,
+      fallback: t('productDetail.skuFallback'),
+      locale: appStore.locale,
+    })
+  }
 
   const checkoutItemImage = (item: CartItem) => {
     const rawImage = String(item.image || '').trim()
@@ -1121,6 +1144,8 @@ export function useCheckout() {
     getImageUrl,
     // mode / items
     isBuyNowMode,
+    hasDirectItems,
+    checkoutLoginTo,
     cartItems,
     totalItems,
     cartItemKey,
@@ -1144,6 +1169,7 @@ export function useCheckout() {
     isResellerTenant,
     // mode select / guest
     checkoutMode,
+    isGuestCheckout,
     guestEmail,
     guestPassword,
     guestEmailValid,

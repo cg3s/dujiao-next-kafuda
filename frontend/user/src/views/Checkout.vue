@@ -112,19 +112,20 @@
             <h2 class="text-lg font-bold text-foreground">{{ t('checkout.modeTitle') }}</h2>
             <div class="flex flex-wrap gap-3">
               <Button
+                v-if="!hasDirectItems"
                 :variant="checkoutMode === 'guest' ? 'default' : 'secondary'"
                 @click="checkoutMode = 'guest'"
               >
                 {{ t('checkout.guestPurchase') }}
               </Button>
               <Button as-child variant="secondary">
-                <router-link to="/auth/login">
+                <router-link :to="checkoutLoginTo">
                   {{ t('checkout.memberPurchase') }}
                 </router-link>
               </Button>
             </div>
 
-            <div v-if="checkoutMode === 'guest'" class="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div v-if="isGuestCheckout" class="grid grid-cols-1 gap-4 md:grid-cols-2">
               <Input
                 v-model="guestEmail"
                 type="email"
@@ -139,7 +140,7 @@
               />
             </div>
 
-            <div v-if="checkoutMode === 'guest' && guestCaptchaEnabled" class="space-y-2">
+            <div v-if="guestCaptchaEnabled" class="space-y-2">
               <p class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">{{ t('auth.common.captchaLabel') }}</p>
               <ImageCaptcha
                 v-if="captchaProvider === 'image'"
@@ -156,14 +157,14 @@
               />
             </div>
 
-            <div v-if="checkoutMode === 'guest'" class="mb-3 rounded-xl border border-success/40 bg-success/10 p-3 text-sm text-success">
+            <div v-if="isGuestCheckout" class="mb-3 rounded-xl border border-success/40 bg-success/10 p-3 text-sm text-success">
               <p class="font-semibold">{{ t('checkout.guestInstructions.title') }}</p>
               <ul class="mt-2 space-y-1 list-disc pl-5">
                 <li>{{ t('checkout.guestInstructions.email') }}</li>
                 <li>{{ t('checkout.guestInstructions.password') }}</li>
               </ul>
             </div>
-            <p v-if="checkoutMode === 'guest' && guestEmail && !guestEmailValid" class="text-xs text-destructive">
+            <p v-if="isGuestCheckout && guestEmail && !guestEmailValid" class="text-xs text-destructive">
               {{ t('error.email_invalid') }}
             </p>
           </div>
@@ -328,12 +329,12 @@ const { t } = useI18n()
 
 const {
   userAuthStore, getLocalizedText, formatPrice, getImageUrl,
-  isBuyNowMode, cartItems, totalItems, cartItemKey, checkoutItemImage, itemSkuDisplay,
+  isBuyNowMode, hasDirectItems, checkoutLoginTo, cartItems, totalItems, cartItemKey, checkoutItemImage, itemSkuDisplay,
   itemStockExceeded, itemStockHint,
   checkoutItemCurrency, checkoutItemPriceParts, checkoutItemOriginalPriceParts, checkoutItemHasPriceDiscount,
   manualFormProducts, manualFormData, submitAttempted, getManualFieldLabel, getManualFieldPlaceholder, manualFieldError,
   couponCode, isResellerTenant,
-  checkoutMode, guestEmail, guestPassword, guestEmailValid,
+  checkoutMode, isGuestCheckout, guestEmail, guestPassword, guestEmailValid,
   guestCaptchaEnabled, captchaProvider, guestCaptchaPayload, guestTurnstileToken, guestTurnstileSiteKey,
   guestImageCaptchaRef, guestTurnstileRef, handleGuestCaptchaConfigStale,
   previewCurrency, previewOriginal, previewCoupon, previewPromotion, previewWholesale, previewMemberDiscount, previewTotal,
