@@ -25,7 +25,8 @@ type Store interface {
 	WithinTransaction(context.Context, func(Transaction) error) error
 	GetRecharge(context.Context, uint) (*kafudadomain.Recharge, error)
 	GetAttempt(context.Context, uint) (*kafudadomain.Attempt, error)
-	PendingCompletionEmails(context.Context, int) ([]uint, error)
+	PendingCompletionEmails(context.Context, time.Time, int) ([]uint, error)
+	ClaimCompletionEmail(context.Context, uint, time.Time, time.Time) (bool, error)
 	ClearCompletionEmail(context.Context, uint) error
 	DueAttempts(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
 	DueKnownOrderPolls(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)

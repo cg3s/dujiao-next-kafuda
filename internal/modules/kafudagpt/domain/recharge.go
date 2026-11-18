@@ -76,6 +76,7 @@ type Recharge struct {
 	UpdatedAt              time.Time  `json:"-"`
 	CompletedAt            *time.Time `json:"-"`
 	CompletionEmailPending bool       `gorm:"not null;default:false;index" json:"-"`
+	CompletionEmailRetryAt *time.Time `json:"-"`
 }
 
 func (Recharge) TableName() string { return "kafuda_gpt_recharges" }

@@ -23,12 +23,13 @@ func EnqueueCompletionEmail(ctx context.Context, store ordercontract.Store, reco
 	if records == nil || queue == nil || !queue.Enabled() {
 		return
 	}
-	record, err := records.GetRecharge(ctx, childID)
+	now := time.Now().UTC()
+	claimed, err := records.ClaimCompletionEmail(ctx, childID, now, now.Add(time.Minute))
 	if err != nil {
 		logger.Warnw("kafuda_completion_email_state_unavailable", "child_order_id", childID)
 		return
 	}
-	if record == nil || !record.CompletionEmailPending {
+	if !claimed {
 		return
 	}
 	child, err := store.GetByID(childID)

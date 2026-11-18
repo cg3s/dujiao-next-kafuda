@@ -328,3 +328,31 @@ func TestRecoveryContinuesAfterOneRechargeWriteFails(t *testing.T) {
 		t.Fatalf("retry did not recover failed recharge: %+v, %v", record, err)
 	}
 }
+
+func TestCompletionEmailClaimDoesNotBlockOtherDueOrders(t *testing.T) {
+	db, store, service := database(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	for _, orderID := range []uint{10, 20} {
+		prepare(t, service, orderID, now)
+		if err := db.Model(&kafudadomain.Recharge{}).Where("order_id = ?", orderID).
+			UpdateColumns(map[string]any{"stage": kafudadomain.StageCompleted, "completion_email_pending": true}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	retryAt := now.Add(time.Minute)
+	if claimed, err := store.ClaimCompletionEmail(ctx, 10, now, retryAt); err != nil || !claimed {
+		t.Fatalf("first claim: %v, %v", claimed, err)
+	}
+	if claimed, err := store.ClaimCompletionEmail(ctx, 10, now, retryAt); err != nil || claimed {
+		t.Fatalf("duplicate claim: %v, %v", claimed, err)
+	}
+	due, err := store.PendingCompletionEmails(ctx, now, 1)
+	if err != nil || len(due) != 1 || due[0] != 20 {
+		t.Fatalf("older held task blocked due order: %v, %v", due, err)
+	}
+	due, err = store.PendingCompletionEmails(ctx, retryAt, 2)
+	if err != nil || len(due) != 2 || due[0] != 20 || due[1] != 10 {
+		t.Fatalf("unacknowledged claim was not retried after expiry: %v, %v", due, err)
+	}
+}

@@ -185,18 +185,25 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 		replay.Attempt.Reference != unknown.Attempt.Reference || replay.Attempt.QuoteID != "unknown_quote" {
 		t.Fatalf("unknown submission lost its original attempt: %+v, %v", replay, err)
 	}
-	pending, err := store.PendingCompletionEmails(ctx, 100)
+	pending, err := store.PendingCompletionEmails(ctx, time.Now().Add(time.Hour), 100)
 	if err != nil || len(pending) != 1 || pending[0] != child.ID || emailQueue.calls != 1 {
 		t.Fatalf("queue failure lost completion notice: %v, %v, calls=%d", pending, err, emailQueue.calls)
 	}
 	emailQueue.err = nil
 	c.KafudaGPT.Gateway = nil
+	if err := mux.ProcessTask(ctx, task); err != nil || emailQueue.calls != 1 {
+		t.Fatalf("retried before scheduled time: %v, calls=%d", err, emailQueue.calls)
+	}
+	if err := db.Model(&kafudadomain.Recharge{}).Where("order_id = ?", child.ID).
+		UpdateColumn("completion_email_retry_at", past).Error; err != nil {
+		t.Fatal(err)
+	}
 	for range 2 {
 		if err := mux.ProcessTask(ctx, task); err != nil {
 			t.Fatal(err)
 		}
 	}
-	pending, err = store.PendingCompletionEmails(ctx, 100)
+	pending, err = store.PendingCompletionEmails(ctx, time.Now().Add(time.Hour), 100)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("successful retry did not clear completion notice: %v, %v", pending, err)
 	}

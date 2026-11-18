@@ -43,7 +43,7 @@ func (c *Consumer) handleKafudaRecoverChecks(ctx context.Context, _ *asynq.Task)
 		return recoveryErr
 	}
 	if c.orderStatusQueue != nil && c.orderStatusQueue.Enabled() {
-		pending, err := module.Store.PendingCompletionEmails(ctx, 100)
+		pending, err := module.Store.PendingCompletionEmails(ctx, now, 100)
 		recoveryErr = errors.Join(recoveryErr, err)
 		for _, childID := range pending {
 			kafudaworkflow.EnqueueCompletionEmail(ctx, c.OrderStore, module.Store, c.orderStatusQueue, c.SettingService, c.Config, childID)

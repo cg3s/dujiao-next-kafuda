@@ -216,7 +216,7 @@ func TestRedisKafudaCompletionReplayKeepsOneEmail(t *testing.T) {
 	if err != nil || len(tasks) != 1 || tasks[0].Type != queue.TaskOrderStatusEmail || tasks[0].ID != "kafuda-completed:10" {
 		t.Fatalf("expected exactly one parent-order email task: %v, %v", tasks, err)
 	}
-	pending, err := store.PendingCompletionEmails(t.Context(), 100)
+	pending, err := store.PendingCompletionEmails(t.Context(), time.Now().Add(time.Hour), 100)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("replayed enqueue failed to clear the pending marker: %v, %v", pending, err)
 	}

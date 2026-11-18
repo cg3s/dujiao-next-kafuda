@@ -71,18 +71,30 @@ func (s *Store) SaveRecharge(record *kafudadomain.Recharge) error {
 	return nil
 }
 
-func (s *Store) PendingCompletionEmails(ctx context.Context, limit int) ([]uint, error) {
+func (s *Store) PendingCompletionEmails(ctx context.Context, now time.Time, limit int) ([]uint, error) {
 	var ids []uint
 	err := s.db.WithContext(ctx).Model(&kafudadomain.Recharge{}).
 		Where("completion_email_pending = ? AND stage = ?", true, kafudadomain.StageCompleted).
-		Order("order_id").Limit(limit).Pluck("order_id", &ids).Error
+		Where("(completion_email_retry_at IS NULL OR completion_email_retry_at <= ?)", now).
+		Order("CASE WHEN completion_email_retry_at IS NULL THEN 0 ELSE 1 END").
+		Order("completion_email_retry_at, order_id").Limit(limit).Pluck("order_id", &ids).Error
 	return ids, err
+}
+
+// ClaimCompletionEmail defers the next attempt before contacting Redis. It
+// also keeps concurrent scans from delivering the same notice simultaneously.
+func (s *Store) ClaimCompletionEmail(ctx context.Context, childID uint, now, retryAt time.Time) (bool, error) {
+	result := s.db.WithContext(ctx).Model(&kafudadomain.Recharge{}).
+		Where("order_id = ? AND completion_email_pending = ? AND stage = ?", childID, true, kafudadomain.StageCompleted).
+		Where("(completion_email_retry_at IS NULL OR completion_email_retry_at <= ?)", now).
+		UpdateColumn("completion_email_retry_at", retryAt)
+	return result.RowsAffected == 1, result.Error
 }
 
 func (s *Store) ClearCompletionEmail(ctx context.Context, childID uint) error {
 	return s.db.WithContext(ctx).Model(&kafudadomain.Recharge{}).
 		Where("order_id = ? AND completion_email_pending = ? AND stage = ?", childID, true, kafudadomain.StageCompleted).
-		UpdateColumn("completion_email_pending", false).Error
+		UpdateColumns(map[string]any{"completion_email_pending": false, "completion_email_retry_at": nil}).Error
 }
 
 func (s *Store) GetAttempt(ctx context.Context, id uint) (*kafudadomain.Attempt, error) {
