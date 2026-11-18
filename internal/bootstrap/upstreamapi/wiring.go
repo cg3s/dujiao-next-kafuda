@@ -122,7 +122,7 @@ func mapOrderError(err error) error {
 		{[]error{orderapp.ErrOrderCancelNotAllowed}, upstreamtransport.ErrOrderCancelNotAllowed},
 		{[]error{walletcontract.ErrInsufficientBalance}, upstreamtransport.ErrWalletInsufficient},
 		{[]error{orderapp.ErrCardSecretInsufficient, orderapp.ErrManualStockInsufficient}, upstreamtransport.ErrStockInsufficient},
-		{[]error{orderapp.ErrProductNotAvailable, productcontract.ErrNotFound}, upstreamtransport.ErrProductUnavailable},
+		{[]error{orderapp.ErrProductNotAvailable, orderapp.ErrProductPurchaseNotAllowed, productcontract.ErrNotFound}, upstreamtransport.ErrProductUnavailable},
 		{[]error{orderapp.ErrProductSKUInvalid, orderapp.ErrProductSKURequired}, upstreamtransport.ErrSKUUnavailable},
 		{[]error{orderapp.ErrInvalidOrderItem}, upstreamtransport.ErrInvalidOrderItem},
 		{[]error{manualform.ErrRequiredMissing, manualform.ErrFieldInvalid, manualform.ErrTypeInvalid, manualform.ErrOptionInvalid}, upstreamtransport.ErrManualFormInvalid},

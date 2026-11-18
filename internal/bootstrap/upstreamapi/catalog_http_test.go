@@ -1,12 +1,14 @@
 package upstreamwiring
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,18 +21,32 @@ import (
 	productapplication "github.com/dujiao-next/internal/modules/catalog/product/application"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
+	downstreamcallbackdomain "github.com/dujiao-next/internal/modules/downstreamcallback/domain"
 	userdomain "github.com/dujiao-next/internal/modules/identity/user/domain"
 	userstore "github.com/dujiao-next/internal/modules/identity/user/infrastructure/gormstore"
+	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
+	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
+	orderapp "github.com/dujiao-next/internal/modules/order/application"
+	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
+	orderstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
+	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
+	promotiondomain "github.com/dujiao-next/internal/modules/promotion/domain"
+	promotionstore "github.com/dujiao-next/internal/modules/promotion/infrastructure/gormstore"
+	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
 	upstreamhttp "github.com/dujiao-next/internal/modules/upstreamapi/transport/http"
 	"github.com/dujiao-next/internal/shared/jsonmap"
+	"github.com/dujiao-next/internal/shared/money"
 	"github.com/dujiao-next/internal/upstream"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
-func TestAuthenticatedDownstreamCatalogExcludesDirectProducts(t *testing.T) {
+func TestAuthenticatedDownstreamExcludesDirectProducts(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "catalog.sqlite")), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -85,12 +101,13 @@ func TestAuthenticatedDownstreamCatalogExcludesDirectProducts(t *testing.T) {
 	router := gin.New()
 	routes := router.Group("/api/v1/upstream", middleware.UpstreamAPIAuthMiddleware(credentials))
 	upstreamhttp.RegisterAuthenticatedRoutes(routes, handler)
-	get := func(path string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodGet, path, nil)
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
 		timestamp := time.Now().Unix()
+		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set(upstream.HeaderApiKey, credential.ApiKey)
 		request.Header.Set(upstream.HeaderTimestamp, strconv.FormatInt(timestamp, 10))
-		request.Header.Set(upstream.HeaderSignature, upstream.Sign(credential.ApiSecret, request.Method, request.URL.Path, timestamp, nil))
+		request.Header.Set(upstream.HeaderSignature, upstream.Sign(credential.ApiSecret, request.Method, request.URL.Path, timestamp, []byte(body)))
 		recorder := httptest.NewRecorder()
 		router.ServeHTTP(recorder, request)
 		return recorder
@@ -109,7 +126,7 @@ func TestAuthenticatedDownstreamCatalogExcludesDirectProducts(t *testing.T) {
 		{"incremental", "?include_inactive=true&page_size=1&updated_after=" + now.Add(-time.Hour).UTC().Format(time.RFC3339), "manual-active", 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response := get(base + test.query)
+			response := request(http.MethodGet, base+test.query, "")
 			var body struct {
 				OK    bool `json:"ok"`
 				Total int  `json:"total"`
@@ -128,7 +145,7 @@ func TestAuthenticatedDownstreamCatalogExcludesDirectProducts(t *testing.T) {
 	}
 	for _, product := range products {
 		t.Run(product.Slug, func(t *testing.T) {
-			response := get(fmt.Sprintf("%s/%d", base, product.ID))
+			response := request(http.MethodGet, fmt.Sprintf("%s/%d", base, product.ID), "")
 			var body struct {
 				OK        bool   `json:"ok"`
 				ErrorCode string `json:"error_code"`
@@ -150,4 +167,87 @@ func TestAuthenticatedDownstreamCatalogExcludesDirectProducts(t *testing.T) {
 			}
 		})
 	}
+	t.Run("order", func(t *testing.T) {
+		writeModels := []any{
+			&orderdomain.Order{}, &orderdomain.OrderItem{}, &kafudadomain.Recharge{},
+			&downstreamcallbackdomain.OrderRef{}, &paymentdomain.Payment{},
+		}
+		if err := db.AutoMigrate(append([]any{&kafudadomain.Catalog{}, &promotiondomain.Promotion{}}, writeModels...)...); err != nil {
+			t.Fatal(err)
+		}
+		sku := productdomain.ProductSKU{
+			ProductID: products[0].ID, SKUCode: kafudacontract.SKUCode("plus", "PH"),
+			PriceAmount: money.FromDecimal(decimal.NewFromInt(20)), DirectCostConfigured: true, IsActive: true,
+			SpecValuesJSON: jsonmap.JSON{"plan": "plus", "country": "PH"},
+		}
+		if err := db.Create(&sku).Error; err != nil {
+			t.Fatal(err)
+		}
+		catalog := kafudastore.New(db)
+		if err := catalog.SaveCatalog(t.Context(), &kafudadomain.Catalog{
+			Profile: "checkout", Enabled: true, SyncedAt: now, ExpiresAt: now.Add(time.Hour),
+			Options: []kafudadomain.CatalogOption{{Plan: "plus", Country: "PH", Product: "gpt", Available: true}},
+			Cards:   []kafudadomain.CardProduct{{ProductCode: "test-card"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		skuRepo := productstore.NewSKUStore(db)
+		queue := &downstreamTestQueue{}
+		orders := orderapp.NewOrderService(orderapp.OrderServiceOptions{
+			OrderStore:   orderstore.New(db, "test-guest-credential-secret-with-32-bytes"),
+			ProductStore: repo, ProductSKUStore: skuRepo,
+			PromotionRepo: promotionstore.New(db),
+			Queue:         queue,
+			DirectCatalog: kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+				Catalog:                 kafudaapp.NewCatalogService(catalog, nil, "checkout", time.Hour),
+				SalesEnabled:            true,
+				ReferenceLookupVerified: true,
+				ProductCode:             "test-card",
+				MaxCostCents:            1500,
+				AllowedKinds:            []string{"new"},
+				WorkerReady:             func(context.Context) bool { return true },
+			}),
+		})
+		if _, err := orders.PreviewOrder(orderapp.CreateOrderInput{
+			StorefrontRequest: true, UserID: user.ID, Tenant: resellercontract.MainTenantContext("shop.example.test"),
+			Items: []orderapp.CreateOrderItem{{ProductID: sku.ProductID, SKUID: sku.ID, Quantity: 1}},
+		}); err != nil {
+			t.Fatalf("main storefront preview should accept this SKU: %v", err)
+		}
+		handler.Orders = orderServiceAdapter{orders: orders}
+		handler.ProductRepository = repo
+		handler.SKUs = skuRepo
+		result := request(http.MethodPost, "/api/v1/upstream/orders", fmt.Sprintf(`{"sku_id":%d,"quantity":1,"storefront_request":true}`, sku.ID))
+		var response struct {
+			OK        bool   `json:"ok"`
+			ErrorCode string `json:"error_code"`
+		}
+		if err := json.Unmarshal(result.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if result.Code != http.StatusBadRequest || response.OK || response.ErrorCode != "product_unavailable" {
+			t.Fatalf("unexpected Direct checkout response: %d %s", result.Code, result.Body.String())
+		}
+		if queue.enqueued != 0 {
+			t.Fatalf("rejected Direct checkout enqueued %d tasks", queue.enqueued)
+		}
+		for _, model := range writeModels {
+			var count int64
+			if err := db.Model(model).Count(&count).Error; err != nil || count != 0 {
+				t.Fatalf("rejected Direct checkout wrote %T: count=%d, error=%v", model, count, err)
+			}
+		}
+	})
+}
+
+type downstreamTestQueue struct{ enqueued int }
+
+func (*downstreamTestQueue) Enabled() bool { return true }
+func (q *downstreamTestQueue) EnqueueTimeoutCancel(uint, time.Duration) error {
+	q.enqueued++
+	return nil
+}
+func (q *downstreamTestQueue) EnqueueStatusEmail(uint, string) error {
+	q.enqueued++
+	return nil
 }
