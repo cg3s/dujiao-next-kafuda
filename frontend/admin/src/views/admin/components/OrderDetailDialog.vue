@@ -448,8 +448,14 @@ const refundableAmountValue = (order: AdminOrder | null) => {
 
 const refundableAmountDisplay = (order: AdminOrder | null) => formatMoney(refundableAmountValue(order).toFixed(2), order?.currency)
 
+const canRefundDirect = (order: AdminOrder, permission: string) => {
+  const recharge = order.direct_recharge
+  return !recharge || (!order.parent_id && order.status === 'paid' && recharge.stage === 'manual_delivery'
+    && !!recharge.attempt && !recharge.attempt.active && auth.hasPermission(permission))
+}
+
 const canRefundToWallet = (order: AdminOrder | null) => {
-  if (!order) return false
+  if (!order || !canRefundDirect(order, 'POST:/admin/orders/:id/direct-refund-to-wallet')) return false
   if (!order.user_id) return false
   if (!isPaidOrder(order)) return false
   if (isOrderRefundWindowExpired(order)) return false
@@ -457,7 +463,7 @@ const canRefundToWallet = (order: AdminOrder | null) => {
 }
 
 const canManualRefund = (order: AdminOrder | null) => {
-  if (!order) return false
+  if (!order || !canRefundDirect(order, 'POST:/admin/orders/:id/direct-manual-refund')) return false
   if (!isPaidOrder(order)) return false
   if (isOrderRefundWindowExpired(order)) return false
   return refundableAmountValue(order) > 0
@@ -467,11 +473,12 @@ const shouldShowRefundCard = (order: AdminOrder | null) => {
   if (!order) return false
   if (!isPaidOrder(order)) return false
   if (order.status === 'canceled') return false
+  if (order.direct_recharge && !canRefundToWallet(order) && !canManualRefund(order)) return false
   if (isOrderRefundWindowExpired(order)) return false
   return true
 }
 
-const canSelectWalletRefundTab = (order: AdminOrder | null) => Boolean(order?.user_id)
+const canSelectWalletRefundTab = (order: AdminOrder | null) => Boolean(order?.user_id && (!order.direct_recharge || canRefundToWallet(order)))
 
 const defaultRefundTab = (order: AdminOrder | null): 'manual' | 'wallet' => (canSelectWalletRefundTab(order) ? 'wallet' : 'manual')
 
@@ -584,6 +591,7 @@ const fetchOrderDetail = async (orderId: number) => {
   try {
     const response = await adminAPI.getOrder(orderId)
     selectedOrder.value = response.data.data
+    if (selectedOrder.value?.direct_recharge) manualRefundForm.paymentFeeRefunded = false
     ensureRefundTabAvailable(selectedOrder.value)
     try {
       const procRes = await adminAPI.getProcurementOrders({ order_no: selectedOrder.value?.order_no, page_size: 1 })
@@ -602,34 +610,47 @@ const fetchOrderDetail = async (orderId: number) => {
 }
 
 const submitRefundToWallet = async () => {
-  if (!selectedOrder.value) return
+  const order = selectedOrder.value
+  if (!order || refundSubmitting.value) return
   refundError.value = ''
   refundSuccess.value = ''
-  if (!canRefundToWallet(selectedOrder.value)) {
+  if (!canRefundToWallet(order)) {
     refundError.value = t('admin.orders.refundNoRemaining')
     return
   }
-  const amount = refundForm.amount.trim()
+  const attempt = order.direct_recharge?.attempt
+  const amount = attempt ? refundableAmountValue(order).toFixed(2) : refundForm.amount.trim()
   const value = Number(amount)
   if (!amount || Number.isNaN(value) || value <= 0) {
     refundError.value = t('admin.orders.refundInvalidAmount')
     return
   }
-  if (value > refundableAmountValue(selectedOrder.value)) {
+  if (value > refundableAmountValue(order)) {
     refundError.value = t('admin.orders.refundExceeded')
     return
   }
 
   refundSubmitting.value = true
   try {
-    await adminAPI.refundOrderToWallet(Number(selectedOrder.value.id), {
+    const data = {
       amount,
       remark: refundForm.remark.trim() || undefined,
-    })
+    }
+    if (attempt) {
+      const confirmed = await confirmAction({
+        title: t('admin.orders.refundSubmit'),
+        description: t('admin.orders.directReview.walletRefundPrompt', { amount: refundableAmountDisplay(order) }),
+        variant: 'destructive',
+      })
+      if (!confirmed || selectedOrder.value !== order) return
+      await adminAPI.refundDirectOrderToWallet(order.id, { ...data, attempt_id: attempt.id, confirmed: true })
+    } else {
+      await adminAPI.refundOrderToWallet(order.id, data)
+    }
     refundSuccess.value = t('admin.orders.refundSuccess')
     refundForm.amount = ''
     refundForm.remark = ''
-    await fetchOrderDetail(Number(selectedOrder.value.id))
+    if (selectedOrder.value === order) await fetchOrderDetail(order.id)
     emit('refresh')
   } catch (err: any) {
     refundError.value = err?.message || t('admin.orders.refundFailed')
@@ -639,36 +660,49 @@ const submitRefundToWallet = async () => {
 }
 
 const submitManualRefund = async () => {
-  if (!selectedOrder.value) return
+  const order = selectedOrder.value
+  if (!order || manualRefundSubmitting.value) return
   manualRefundError.value = ''
   manualRefundSuccess.value = ''
-  if (!canManualRefund(selectedOrder.value)) {
+  if (!canManualRefund(order)) {
     manualRefundError.value = t('admin.orders.refundNoRemaining')
     return
   }
-  const amount = manualRefundForm.amount.trim()
+  const attempt = order.direct_recharge?.attempt
+  const amount = attempt ? refundableAmountValue(order).toFixed(2) : manualRefundForm.amount.trim()
   const value = Number(amount)
   if (!amount || Number.isNaN(value) || value <= 0) {
     manualRefundError.value = t('admin.orders.refundInvalidAmount')
     return
   }
-  if (value > refundableAmountValue(selectedOrder.value)) {
+  if (value > refundableAmountValue(order)) {
     manualRefundError.value = t('admin.orders.refundExceeded')
     return
   }
 
   manualRefundSubmitting.value = true
   try {
-    await adminAPI.manualRefundOrder(Number(selectedOrder.value.id), {
+    const data = {
       amount,
       remark: manualRefundForm.reason.trim() || undefined,
       payment_fee_refunded: manualRefundForm.paymentFeeRefunded,
-    })
+    }
+    if (attempt) {
+      const confirmed = await confirmAction({
+        title: t('admin.orders.manualRefundSubmit'),
+        description: t('admin.orders.directReview.manualRefundPrompt', { amount: refundableAmountDisplay(order) }),
+        variant: 'destructive',
+      })
+      if (!confirmed || selectedOrder.value !== order) return
+      await adminAPI.manualRefundDirectOrder(order.id, { ...data, attempt_id: attempt.id, confirmed: true })
+    } else {
+      await adminAPI.manualRefundOrder(order.id, data)
+    }
     manualRefundSuccess.value = t('admin.orders.manualRefundSuccess')
     manualRefundForm.amount = ''
     manualRefundForm.reason = ''
     manualRefundForm.paymentFeeRefunded = true
-    await fetchOrderDetail(Number(selectedOrder.value.id))
+    if (selectedOrder.value === order) await fetchOrderDetail(order.id)
     emit('refresh')
   } catch (err: any) {
     manualRefundError.value = err?.message || t('admin.orders.refundFailed')
@@ -797,11 +831,11 @@ watch(
                 <div v-if="selectedOrder.direct_recharge.attempt.masked_email"><dt class="text-muted-foreground">{{ t('admin.orders.directReview.account') }}</dt><dd>{{ selectedOrder.direct_recharge.attempt.masked_email }}</dd></div>
               </template>
             </dl>
-            <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-complete') && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
+            <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-complete') && selectedOrder.status === 'paid' && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
               class="mt-4" size="sm" :disabled="directCompleting" @click="handleDirectManualAction('complete')">
               {{ t('admin.orders.directReview.complete') }}
             </Button>
-            <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-release') && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
+            <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-release') && selectedOrder.status === 'paid' && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
               class="mt-4 ms-2" size="sm" variant="outline" :disabled="directCompleting" @click="handleDirectManualAction('release')">
               {{ t('admin.orders.directReview.release') }}
             </Button>
@@ -1337,10 +1371,12 @@ watch(
             >
               <Input
                 class="min-w-0"
+                v-if="!selectedOrder.direct_recharge"
                 v-model="refundForm.amount"
                 :placeholder="t('admin.orders.refundAmountPlaceholder')"
                 :disabled="refundSubmitting || !canRefundToWallet(selectedOrder)"
               />
+                <Input v-else class="min-w-0" :model-value="refundableAmountValue(selectedOrder).toFixed(2)" readonly />
               <Input
                 class="min-w-0"
                 v-model="refundForm.remark"
@@ -1363,10 +1399,12 @@ watch(
               <div class="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
                 <Input
                   class="min-w-0"
+                  v-if="!selectedOrder.direct_recharge"
                   v-model="manualRefundForm.amount"
                   :placeholder="t('admin.orders.refundAmountPlaceholder')"
                   :disabled="manualRefundSubmitting || !canManualRefund(selectedOrder)"
                 />
+                  <Input v-else class="min-w-0" :model-value="refundableAmountValue(selectedOrder).toFixed(2)" readonly />
                 <Input
                   class="min-w-0"
                   v-model="manualRefundForm.reason"

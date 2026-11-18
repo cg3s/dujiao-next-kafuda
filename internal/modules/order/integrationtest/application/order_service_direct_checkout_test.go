@@ -154,6 +154,12 @@ func TestAdminDirectReviewFilterAndProjection(t *testing.T) {
 }
 
 func TestDirectCheckoutGenericAfterSalesCannotBypassReview(t *testing.T) {
+	for _, method := range []string{"wallet", "manual"} {
+		t.Run(method, func(t *testing.T) { testDirectCheckoutRefund(t, method) })
+	}
+}
+
+func testDirectCheckoutRefund(t *testing.T, method string) {
 	f := newDirectCheckoutFixture(t)
 	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &orderdomain.OrderRefundRecord{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
 		t.Fatal(err)
@@ -216,6 +222,78 @@ func TestDirectCheckoutGenericAfterSalesCannotBypassReview(t *testing.T) {
 	attempt, err := f.store.GetAttempt(ctx, id)
 	if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptReview || attempt.ActiveOrderID == nil {
 		t.Fatalf("after-sales changed the unknown attempt: %+v, %v", attempt, err)
+	}
+	apply := func(orderID, confirmedAttemptID uint, amount money.Amount) error {
+		if method == "wallet" {
+			_, _, _, err := refunds.AdminRefundToWallet(orderrefund.AdminRefundToWalletInput{OrderID: orderID, Amount: amount, DirectAttemptID: confirmedAttemptID})
+			return err
+		}
+		_, _, err := refunds.AdminManualRefund(orderrefund.AdminManualRefundInput{OrderID: orderID, Amount: amount, DirectAttemptID: confirmedAttemptID})
+		return err
+	}
+	if err := apply(order.ID, id, order.TotalAmount); !errors.Is(err, orderrefund.ErrOrderStatusInvalid) {
+		t.Fatalf("confirmed unknown refund: %v", err)
+	}
+	result := kafudacontract.OrderResult{ID: 101, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "failed"}
+	if _, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, now, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []struct{ orderID, attemptID uint }{{childID, id}, {order.ID, id + 1}, {order.ID, 0}} {
+		if err := apply(input.orderID, input.attemptID, order.TotalAmount); !errors.Is(err, orderrefund.ErrOrderStatusInvalid) {
+			t.Fatalf("invalid refund target accepted: %+v, %v", input, err)
+		}
+	}
+	if err := apply(order.ID, id, amount); !errors.Is(err, orderrefund.ErrOrderStatusInvalid) {
+		t.Fatalf("partial direct refund accepted: %v", err)
+	}
+	handler := orderwiring.NewAdminRefundHandler(&container.Container{OrderStore: f.options.OrderStore, OrderRefundService: refunds})
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("admin_id", uint(9)) })
+	orderhttp.RegisterAdminRefundWriteRoutes(router.Group("/admin"), handler)
+	path := "manual-refund"
+	if method == "wallet" {
+		path = "refund-to-wallet"
+	}
+	request := func(path string, confirmed bool) string {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/orders/%d/%s", order.ID, path),
+			strings.NewReader(fmt.Sprintf(`{"amount":%q,"attempt_id":%d,"confirmed":%t}`, order.TotalAmount.Decimal.StringFixed(2), id, confirmed)))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(rec, req)
+		return rec.Body.String()
+	}
+	if body := request(path, true); strings.Contains(body, `"status_code":0`) {
+		t.Fatalf("generic endpoint accepted direct refund: %s", body)
+	}
+	if body := request("direct-"+path, false); strings.Contains(body, `"status_code":0`) {
+		t.Fatalf("unconfirmed direct refund accepted: %s", body)
+	}
+	if body := request("direct-"+path, true); !strings.Contains(body, `"status_code":0`) {
+		t.Fatalf("direct refund failed: %s", body)
+	}
+	if err := apply(order.ID, id, order.TotalAmount); !errors.Is(err, orderrefund.ErrOrderStatusInvalid) {
+		t.Fatalf("refund replay: %v", err)
+	}
+	for _, orderID := range ids {
+		var stored orderdomain.Order
+		if err := f.db.First(&stored, orderID).Error; err != nil || stored.Status != constants.OrderStatusRefunded {
+			t.Fatalf("refunded order %d: %+v, %v", orderID, stored, err)
+		}
+	}
+	if err := kafudaworkflow.ReleaseManual(f.options.OrderStore, childID, id, 9, true, time.Now().UTC()); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("release after refund: %v", err)
+	}
+	result.Status = "completed"
+	if completed, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, time.Now().UTC(), time.Time{}); completed || !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("supplier completion after refund: completed=%v err=%v", completed, err)
+	}
+	var refund orderdomain.OrderRefundRecord
+	if err := f.db.Where("order_id = ?", order.ID).First(&refund).Error; err != nil || !refund.Amount.Decimal.Equal(order.TotalAmount.Decimal) {
+		t.Fatalf("refund record: %+v, %v", refund, err)
+	}
+	var credits int64
+	if err := f.db.Model(&walletdomain.Transaction{}).Count(&credits).Error; err != nil || (method == "wallet" && credits != 1) || (method == "manual" && credits != 0) {
+		t.Fatalf("wallet credits: %d, %v", credits, err)
 	}
 }
 

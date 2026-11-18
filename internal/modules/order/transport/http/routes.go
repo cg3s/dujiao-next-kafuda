@@ -30,6 +30,8 @@ func RegisterAdminRefundWriteRoutes(authorized gin.IRoutes, handler *AdminRefund
 	}
 	authorized.POST("/orders/:id/refund-to-wallet", handler.AdminRefundOrderToWallet)
 	authorized.POST("/orders/:id/manual-refund", handler.AdminManualRefundOrder)
+	authorized.POST("/orders/:id/direct-refund-to-wallet", handler.AdminRefundOrderToWalletDirect)
+	authorized.POST("/orders/:id/direct-manual-refund", handler.AdminManualRefundOrderDirect)
 	authorized.PATCH("/order-refunds/:id/payment-fee", handler.UpdateAdminOrderRefundPaymentFee)
 }
 

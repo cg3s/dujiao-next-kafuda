@@ -107,7 +107,7 @@ func withConfirmedManualAttempt(store ordercontract.Store, childID, attemptID, a
 		if err != nil {
 			return err
 		}
-		if record == nil || record.Stage != kafudadomain.StageManualDelivery || record.CompletedAt != nil ||
+		if record == nil || record.OrderID != childID ||
 			record.CurrentAttemptID == nil || *record.CurrentAttemptID != attemptID {
 			return orderapp.ErrOrderStatusInvalid
 		}
@@ -115,8 +115,7 @@ func withConfirmedManualAttempt(store ordercontract.Store, childID, attemptID, a
 		if err != nil {
 			return err
 		}
-		if attempt == nil || attempt.OrderID != childID || attempt.ActiveOrderID != nil ||
-			(attempt.Status != kafudadomain.AttemptFailed && attempt.Status != kafudadomain.AttemptCancelled) ||
+		if !kafudacontract.CanResolveManualAttempt(record, attempt) ||
 			now.Before(attempt.UpdatedAt) || now.Before(record.UpdatedAt) {
 			return orderapp.ErrOrderStatusInvalid
 		}

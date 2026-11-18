@@ -25,6 +25,7 @@ import (
 
 // AdminManualRefundInput 管理员手动退款输入（不处理钱包/支付渠道）
 type AdminManualRefundInput struct {
+	DirectAttemptID    uint
 	OrderID            uint
 	Amount             money.Amount
 	Remark             string
@@ -297,8 +298,11 @@ func (s *Service) AdminManualRefund(input AdminManualRefundInput) (*orderdomain.
 			return ErrOrderNotFound
 		}
 		order := *locked
-		if order.PaidAt == nil || order.HasDirectRecharge() {
+		if order.PaidAt == nil {
 			return ErrOrderStatusInvalid
+		}
+		if err := validateDirectRefund(tx, &order, input.DirectAttemptID); err != nil {
+			return err
 		}
 		if settingsapp.IsOrderRefundWindowExpired(order.CreatedAt, order.PaidAt, cfg.MaxRefundDays, time.Now()) {
 			return ErrOrderRefundExpired
@@ -308,6 +312,9 @@ func (s *Service) AdminManualRefund(input AdminManualRefundInput) (*orderdomain.
 		}
 		refundedBefore := order.RefundedAmount.Decimal.Round(2)
 		refundable := order.TotalAmount.Decimal.Sub(refundedBefore).Round(2)
+		if input.DirectAttemptID != 0 && !amount.Equal(refundable) {
+			return ErrOrderStatusInvalid
+		}
 		if amount.GreaterThan(refundable) {
 			return walletcontract.ErrRefundExceeded
 		}

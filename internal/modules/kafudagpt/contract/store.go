@@ -43,3 +43,12 @@ type Transaction interface {
 	CreateAttempt(*kafudadomain.Attempt) error
 	SaveAttempt(*kafudadomain.Attempt) error
 }
+
+// CanResolveManualAttempt reports whether the current supplier attempt has
+// definitively ended without delivery and is eligible for manual resolution.
+func CanResolveManualAttempt(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) bool {
+	return record != nil && record.Stage == kafudadomain.StageManualDelivery && record.CompletedAt == nil &&
+		record.CurrentAttemptID != nil && attempt != nil && *record.CurrentAttemptID == attempt.ID &&
+		attempt.OrderID == record.OrderID && attempt.ActiveOrderID == nil &&
+		(attempt.Status == kafudadomain.AttemptFailed || attempt.Status == kafudadomain.AttemptCancelled)
+}

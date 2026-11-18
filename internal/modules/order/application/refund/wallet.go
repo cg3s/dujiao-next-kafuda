@@ -22,9 +22,10 @@ import (
 // AdminRefundToWalletInput describes an order refund whose settlement target
 // is the registered user's wallet.
 type AdminRefundToWalletInput struct {
-	OrderID uint
-	Amount  money.Amount
-	Remark  string
+	DirectAttemptID uint
+	OrderID         uint
+	Amount          money.Amount
+	Remark          string
 }
 
 // AdminRefundToWallet executes the order refund workflow and delegates only
@@ -77,8 +78,11 @@ func (s *Service) AdminRefundToWallet(
 		if order.UserID == 0 {
 			return walletcontract.ErrNotSupportedForGuest
 		}
-		if order.PaidAt == nil || order.HasDirectRecharge() {
+		if order.PaidAt == nil {
 			return ErrOrderStatusInvalid
+		}
+		if err := validateDirectRefund(tx, &order, input.DirectAttemptID); err != nil {
+			return err
 		}
 		now := time.Now()
 		if settingsapp.IsOrderRefundWindowExpired(order.CreatedAt, order.PaidAt, config.MaxRefundDays, now) {
@@ -89,6 +93,9 @@ func (s *Service) AdminRefundToWallet(
 		}
 		refundedBefore := order.RefundedAmount.Decimal.Round(2)
 		refundable := order.TotalAmount.Decimal.Sub(refundedBefore).Round(2)
+		if input.DirectAttemptID != 0 && !amount.Equal(refundable) {
+			return ErrOrderStatusInvalid
+		}
 		if amount.GreaterThan(refundable) {
 			return walletcontract.ErrRefundExceeded
 		}

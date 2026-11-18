@@ -542,6 +542,10 @@ export const adminAPI = {
     api.post(`/admin/orders/${id}/refund-to-wallet`, data),
   manualRefundOrder: (id: number, data: AdminManualRefundPayload) =>
     api.post(`/admin/orders/${id}/manual-refund`, data),
+  refundDirectOrderToWallet: (id: number, data: AdminRefundToWalletPayload & { attempt_id: number; confirmed: true }) =>
+    api.post(`/admin/orders/${id}/direct-refund-to-wallet`, data),
+  manualRefundDirectOrder: (id: number, data: AdminManualRefundPayload & { attempt_id: number; confirmed: true }) =>
+    api.post(`/admin/orders/${id}/direct-manual-refund`, data),
   manualConfirmOrderPayment: (id: number, data: AdminManualConfirmPaymentPayload) =>
     api.post(`/admin/orders/${id}/manual-confirm-payment`, data),
   getOrderRefunds: (params?: Record<string, unknown>) => api.get('/admin/order-refunds', { params }),

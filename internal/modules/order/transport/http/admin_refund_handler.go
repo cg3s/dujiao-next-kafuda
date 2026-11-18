@@ -51,13 +51,15 @@ type AdminRefundItem struct {
 
 // AdminRefundToWalletInput 管理端退款到余额输入。
 type AdminRefundToWalletInput struct {
-	OrderID uint
-	Amount  money.Amount
-	Remark  string
+	DirectAttemptID uint
+	OrderID         uint
+	Amount          money.Amount
+	Remark          string
 }
 
 // AdminManualRefundInput 管理端手动退款输入。
 type AdminManualRefundInput struct {
+	DirectAttemptID    uint
 	OrderID            uint
 	Amount             money.Amount
 	Remark             string
@@ -127,12 +129,16 @@ func NewAdminRefundHandler(
 
 // AdminRefundOrderToWalletRequest 管理端订单退款到余额请求
 type AdminRefundOrderToWalletRequest struct {
-	Amount string `json:"amount" binding:"required"`
-	Remark string `json:"remark"`
+	AttemptID uint   `json:"attempt_id"`
+	Confirmed bool   `json:"confirmed"`
+	Amount    string `json:"amount" binding:"required"`
+	Remark    string `json:"remark"`
 }
 
 // AdminManualRefundOrderRequest 管理端手动退款请求（不处理钱包/支付渠道）
 type AdminManualRefundOrderRequest struct {
+	AttemptID          uint   `json:"attempt_id"`
+	Confirmed          bool   `json:"confirmed"`
 	Amount             string `json:"amount" binding:"required"`
 	Remark             string `json:"remark"`
 	PaymentFeeRefunded bool   `json:"payment_fee_refunded"`
@@ -195,6 +201,14 @@ func (h *AdminRefundHandler) GetAdminOrderRefund(c *gin.Context) {
 
 // AdminRefundOrderToWallet 管理端订单退款到余额
 func (h *AdminRefundHandler) AdminRefundOrderToWallet(c *gin.Context) {
+	h.adminRefundOrderToWallet(c, false)
+}
+
+func (h *AdminRefundHandler) AdminRefundOrderToWalletDirect(c *gin.Context) {
+	h.adminRefundOrderToWallet(c, true)
+}
+
+func (h *AdminRefundHandler) adminRefundOrderToWallet(c *gin.Context, direct bool) {
 	if h.writes == nil || h.wallet == nil {
 		ginutil.RespondError(c, response.CodeInternal, "error.order_update_failed", nil)
 		return
@@ -209,15 +223,30 @@ func (h *AdminRefundHandler) AdminRefundOrderToWallet(c *gin.Context) {
 		ginutil.RespondBindError(c, err)
 		return
 	}
+	var adminID uint
+	if direct {
+		var ok bool
+		adminID, ok = ginutil.GetAdminID(c)
+		if !ok {
+			return
+		}
+		if req.AttemptID == 0 || !req.Confirmed {
+			ginutil.RespondError(c, response.CodeBadRequest, "error.order_status_invalid", nil)
+			return
+		}
+	} else {
+		req.AttemptID = 0
+	}
 	amount, err := h.writes.ParseRefundAmount(req.Amount)
 	if err != nil {
 		ginutil.RespondError(c, response.CodeBadRequest, "error.bad_request", err)
 		return
 	}
 	order, txn, refundRecord, err := h.wallet.AdminRefundToWallet(AdminRefundToWalletInput{
-		OrderID: orderID,
-		Amount:  amount,
-		Remark:  req.Remark,
+		DirectAttemptID: req.AttemptID,
+		OrderID:         orderID,
+		Amount:          amount,
+		Remark:          req.Remark,
 	})
 	if err != nil {
 		switch {
@@ -234,6 +263,10 @@ func (h *AdminRefundHandler) AdminRefundOrderToWallet(c *gin.Context) {
 		}
 		return
 	}
+	if direct {
+		logger.Infow("kafuda_direct_refund_recorded", "method", "wallet", "order_id", orderID,
+			"attempt_id", req.AttemptID, "admin_id", adminID, "refund_id", resolveRefundRecordID(refundRecord))
+	}
 	h.enqueueOrderRefundStatusEmail(order, refundRecord)
 
 	response.Success(c, gin.H{
@@ -244,6 +277,14 @@ func (h *AdminRefundHandler) AdminRefundOrderToWallet(c *gin.Context) {
 
 // AdminManualRefundOrder 管理端手动退款（不处理钱包/支付渠道）
 func (h *AdminRefundHandler) AdminManualRefundOrder(c *gin.Context) {
+	h.adminManualRefundOrder(c, false)
+}
+
+func (h *AdminRefundHandler) AdminManualRefundOrderDirect(c *gin.Context) {
+	h.adminManualRefundOrder(c, true)
+}
+
+func (h *AdminRefundHandler) adminManualRefundOrder(c *gin.Context, direct bool) {
 	if h.writes == nil {
 		ginutil.RespondError(c, response.CodeInternal, "error.order_update_failed", nil)
 		return
@@ -258,12 +299,27 @@ func (h *AdminRefundHandler) AdminManualRefundOrder(c *gin.Context) {
 		ginutil.RespondBindError(c, err)
 		return
 	}
+	var adminID uint
+	if direct {
+		var ok bool
+		adminID, ok = ginutil.GetAdminID(c)
+		if !ok {
+			return
+		}
+		if req.AttemptID == 0 || !req.Confirmed {
+			ginutil.RespondError(c, response.CodeBadRequest, "error.order_status_invalid", nil)
+			return
+		}
+	} else {
+		req.AttemptID = 0
+	}
 	amount, err := h.writes.ParseRefundAmount(req.Amount)
 	if err != nil {
 		ginutil.RespondError(c, response.CodeBadRequest, "error.bad_request", err)
 		return
 	}
 	order, refundRecord, err := h.writes.AdminManualRefund(AdminManualRefundInput{
+		DirectAttemptID:    req.AttemptID,
 		OrderID:            orderID,
 		Amount:             amount,
 		Remark:             req.Remark,
@@ -283,6 +339,10 @@ func (h *AdminRefundHandler) AdminManualRefundOrder(c *gin.Context) {
 			ginutil.RespondError(c, response.CodeInternal, "error.order_update_failed", err)
 		}
 		return
+	}
+	if direct {
+		logger.Infow("kafuda_direct_refund_recorded", "method", "manual", "order_id", orderID,
+			"attempt_id", req.AttemptID, "admin_id", adminID, "refund_id", resolveRefundRecordID(refundRecord))
 	}
 	h.enqueueOrderRefundStatusEmail(order, refundRecord)
 
