@@ -109,14 +109,14 @@ func TestOrderFailureIsNotRetriedAndDoesNotExposePII(t *testing.T) {
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.WriteHeader(http.StatusBadGateway)
-		fmt.Fprint(w, `{"error":{"code":"service_unavailable","message":"buyer@example.com test-only-session","details":{"session":"test-only-session"}}}`)
+		fmt.Fprint(w, `{"error":{"code":"opaque_secret_that_looks_like_a_code","message":"buyer@example.com test-only-session","details":{"session":"test-only-session"}}}`)
 	})
 	_, err := c.CreateOrder(context.Background(), kafudacontract.CreateOrderRequest{QuoteID: "quo_1", Reference: "order-1"})
 	var apiErr *kafudacontract.APIError
 	if !errors.As(err, &apiErr) || apiErr.Code != "service_unavailable" || calls != 1 {
 		t.Fatalf("unexpected error or retry: %v, calls=%d", err, calls)
 	}
-	if strings.Contains(err.Error(), "buyer") || strings.Contains(err.Error(), "session") {
+	if strings.Contains(err.Error(), "buyer") || strings.Contains(err.Error(), "session") || strings.Contains(err.Error(), "opaque_secret") {
 		t.Fatal("upstream PII escaped through error")
 	}
 }

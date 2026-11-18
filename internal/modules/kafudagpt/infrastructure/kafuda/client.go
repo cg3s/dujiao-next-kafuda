@@ -19,7 +19,6 @@ import (
 const maxResponseBytes = 2 << 20
 
 var safeKey = regexp.MustCompile(`^[a-zA-Z0-9._:-]{1,80}$`)
-var safeCode = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 
 type Client struct {
 	baseURL string
@@ -151,18 +150,17 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 		return apiError(0, "transport_error")
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil || len(data) > maxResponseBytes {
-		return apiError(resp.StatusCode, "invalid_response")
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var envelope struct {
-			Error struct {
-				Code string `json:"code"`
-			} `json:"error"`
+		// The error body is upstream-controlled, including fields named code.
+		// Classify from HTTP status so no part of the body reaches diagnostics.
+		code := "upstream_error"
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests:
+			code = "rate_limited"
+		case resp.StatusCode >= 500:
+			code = "service_unavailable"
 		}
-		_ = json.Unmarshal(data, &envelope)
-		e := apiError(resp.StatusCode, envelope.Error.Code)
+		e := apiError(resp.StatusCode, code)
 		// Kafuda documents x-ratelimit-reset as Unix seconds.
 		if reset, parseErr := strconv.ParseInt(resp.Header.Get("x-ratelimit-reset"), 10, 64); parseErr == nil {
 			if delay := time.Until(time.Unix(reset, 0)); delay > 0 && delay <= time.Hour {
@@ -170,6 +168,10 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 			}
 		}
 		return e
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil || len(data) > maxResponseBytes {
+		return apiError(resp.StatusCode, "invalid_response")
 	}
 	var envelope struct {
 		Data json.RawMessage `json:"data"`
@@ -181,9 +183,6 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 }
 
 func apiError(status int, code string) *kafudacontract.APIError {
-	if !safeCode.MatchString(code) {
-		code = "upstream_error"
-	}
 	return &kafudacontract.APIError{HTTPStatus: status, Code: code}
 }
 

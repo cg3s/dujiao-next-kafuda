@@ -77,8 +77,8 @@ type OrderResult struct {
 	CompletedAt      *time.Time
 }
 
-// APIError intentionally excludes upstream messages, response bodies, request
-// URLs and transport errors, all of which could contain credentials or PII.
+// APIError carries a local classification. It excludes upstream bodies,
+// upstream error codes, request URLs and transport errors.
 type APIError struct {
 	HTTPStatus int
 	Code       string
