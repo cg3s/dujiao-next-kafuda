@@ -681,6 +681,10 @@ func productBatchFailureFromError(locale string, id uint, err error) batchProduc
 	switch {
 	case errors.Is(err, productcontract.ErrProductCategoryInvalid):
 		errorCode = "product_category_invalid"
+	case errors.Is(err, productcontract.ErrProductPurchaseInvalid):
+		errorCode = "product_purchase_invalid"
+	case errors.Is(err, productcontract.ErrProductStockDisplayInvalid):
+		errorCode = "bad_request"
 	case errors.Is(err, productcontract.ErrNotFound):
 		errorCode = "product_not_found"
 	}

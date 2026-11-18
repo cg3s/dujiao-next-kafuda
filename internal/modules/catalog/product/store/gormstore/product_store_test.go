@@ -1,6 +1,7 @@
 package gormstore
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"testing"
@@ -73,6 +74,39 @@ func createManualProduct(t *testing.T, repo *ProductStore, slug string, total in
 		t.Fatalf("create product failed: %v", err)
 	}
 	return product
+}
+
+func TestQuickUpdateRechecksDirectTypeAndDeletion(t *testing.T) {
+	repo, db := setupProductStoreTest(t)
+	product := createManualProduct(t, repo, "concurrent-direct-conversion", 0, 0, 0)
+	id := strconv.FormatUint(uint64(product.ID), 10)
+	before, err := repo.GetByID(id)
+	if err != nil || before == nil || before.FulfillmentType != constants.FulfillmentTypeManual {
+		t.Fatalf("unexpected preflight product: %+v, %v", before, err)
+	}
+	if err := db.Model(product).Updates(map[string]interface{}{
+		"fulfillment_type":   constants.FulfillmentTypeKafudaGPT,
+		"stock_display_mode": constants.ProductStockDisplayHidden,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]interface{}{"purchase_type": constants.ProductPurchaseGuest}
+	if err := repo.QuickUpdate(id, fields); !errors.Is(err, productcontract.ErrProductPurchaseInvalid) {
+		t.Fatalf("stale guest update: got %v, want invalid purchase type", err)
+	}
+	if err := repo.QuickUpdate(id, map[string]interface{}{"stock_display_mode": constants.ProductStockDisplayRange}); !errors.Is(err, productcontract.ErrProductStockDisplayInvalid) {
+		t.Fatalf("stale stock display update: got %v, want invalid stock display", err)
+	}
+	stored, err := repo.GetByID(id)
+	if err != nil || stored == nil || stored.PurchaseType != constants.ProductPurchaseMember || stored.StockDisplayMode != constants.ProductStockDisplayHidden {
+		t.Fatalf("stale update changed Direct settings: %+v, %v", stored, err)
+	}
+	if err := repo.Delete(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.QuickUpdate(id, fields); !errors.Is(err, productcontract.ErrNotFound) {
+		t.Fatalf("deleted product: got %v, want not found", err)
+	}
 }
 
 func createManualSKU(t *testing.T, db *gorm.DB, productID uint, code string, total int, locked int, sold int, isActive bool) *productdomain.ProductSKU {

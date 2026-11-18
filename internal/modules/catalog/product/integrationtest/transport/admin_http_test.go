@@ -245,94 +245,85 @@ func TestBatchUpdateProductStatusReturnsFailureReasons(t *testing.T) {
 	}
 }
 
-func TestBatchUpdateProductStockDisplay(t *testing.T) {
-	h, db := setupAdminProductHandlerTest(t)
-
-	product := productdomain.Product{
-		Slug:            "batch-stock-display-product",
-		TitleJSON:       jsonmap.JSON{"zh-CN": "batch-stock-display-product"},
-		PriceAmount:     money.FromDecimal(decimal.NewFromInt(10)),
-		FulfillmentType: constants.FulfillmentTypeUpstream,
-		IsMapped:        true,
-	}
-	if err := db.Create(&product).Error; err != nil {
-		t.Fatalf("create product failed: %v", err)
-	}
-
-	post := func(body string) int {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/products/batch-stock-display", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = req
-		h.BatchUpdateProductStockDisplay(c)
-		var resp struct {
-			StatusCode int `json:"status_code"`
-		}
-		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("decode response failed: %v body=%s", err, w.Body.String())
-		}
-		return resp.StatusCode
-	}
-
-	if code := post(fmt.Sprintf(`{"ids":[%d],"stock_display_mode":"bogus"}`, product.ID)); code == 0 {
-		t.Fatal("expected invalid mode to be rejected")
-	}
-	if code := post(fmt.Sprintf(`{"ids":[%d],"stock_display_mode":"range"}`, product.ID)); code != 0 {
-		t.Fatalf("expected success, got status_code %d", code)
-	}
-	var reloaded productdomain.Product
-	if err := db.First(&reloaded, product.ID).Error; err != nil {
-		t.Fatalf("reload product failed: %v", err)
-	}
-	if reloaded.StockDisplayMode != constants.ProductStockDisplayRange {
-		t.Fatalf("expected range, got %q", reloaded.StockDisplayMode)
-	}
-}
-
-func TestBatchUpdateProductPurchaseType(t *testing.T) {
-	h, db := setupAdminProductHandlerTest(t)
-
-	product := productdomain.Product{
-		Slug:            "batch-purchase-type-product",
-		TitleJSON:       jsonmap.JSON{"zh-CN": "batch-purchase-type-product"},
-		PriceAmount:     money.FromDecimal(decimal.NewFromInt(10)),
-		FulfillmentType: constants.FulfillmentTypeUpstream,
-		IsMapped:        true,
-		PurchaseType:    constants.ProductPurchaseMember,
-	}
-	if err := db.Create(&product).Error; err != nil {
-		t.Fatalf("create product failed: %v", err)
-	}
-
-	post := func(body string) int {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/products/batch-purchase-type", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = req
-		h.BatchUpdateProductPurchaseType(c)
-		var resp struct {
-			StatusCode int `json:"status_code"`
-		}
-		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("decode response failed: %v body=%s", err, w.Body.String())
-		}
-		return resp.StatusCode
-	}
-
-	if code := post(fmt.Sprintf(`{"ids":[%d],"purchase_type":"bogus"}`, product.ID)); code == 0 {
-		t.Fatal("expected invalid purchase type to be rejected")
-	}
-	if code := post(fmt.Sprintf(`{"ids":[%d],"purchase_type":"guest"}`, product.ID)); code != 0 {
-		t.Fatalf("expected success, got status_code %d", code)
-	}
-	var reloaded productdomain.Product
-	if err := db.First(&reloaded, product.ID).Error; err != nil {
-		t.Fatalf("reload product failed: %v", err)
-	}
-	if reloaded.PurchaseType != constants.ProductPurchaseGuest {
-		t.Fatalf("expected guest, got %q", reloaded.PurchaseType)
+func TestBatchUpdateProductRespectsDirectSettings(t *testing.T) {
+	for _, tc := range []struct {
+		field         string
+		path          string
+		handler       func(*producthttp.AdminProductHandler, *gin.Context)
+		ordinaryValue string
+		directValue   string
+		directError   string
+		getValue      func(productdomain.Product) string
+	}{
+		{
+			"stock_display_mode", "batch-stock-display", (*producthttp.AdminProductHandler).BatchUpdateProductStockDisplay,
+			constants.ProductStockDisplayRange, constants.ProductStockDisplayHidden, "bad_request",
+			func(product productdomain.Product) string { return product.StockDisplayMode },
+		},
+		{
+			"purchase_type", "batch-purchase-type", (*producthttp.AdminProductHandler).BatchUpdateProductPurchaseType,
+			constants.ProductPurchaseGuest, constants.ProductPurchaseMember, "product_purchase_invalid",
+			func(product productdomain.Product) string { return product.PurchaseType },
+		},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			h, db := setupAdminProductHandlerTest(t)
+			products := []productdomain.Product{
+				{Slug: "mapped", TitleJSON: jsonmap.JSON{"zh-CN": "mapped"}, FulfillmentType: constants.FulfillmentTypeUpstream, IsMapped: true},
+				{Slug: "direct", TitleJSON: jsonmap.JSON{"zh-CN": "direct"}, FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+					PurchaseType: constants.ProductPurchaseMember, StockDisplayMode: constants.ProductStockDisplayHidden},
+			}
+			if err := db.Create(&products).Error; err != nil {
+				t.Fatal(err)
+			}
+			type batchResponse struct {
+				StatusCode int `json:"status_code"`
+				Data       struct {
+					Total        int `json:"total"`
+					SuccessCount int `json:"success_count"`
+					FailedItems  []struct {
+						ID        uint   `json:"id"`
+						ErrorCode string `json:"error_code"`
+					} `json:"failed_items"`
+				} `json:"data"`
+			}
+			post := func(value string) batchResponse {
+				t.Helper()
+				body := fmt.Sprintf(`{"ids":[%d,%d],%q:%q}`, products[0].ID, products[1].ID, tc.field, value)
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/products/"+tc.path, strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				c.Request = req
+				tc.handler(h, c)
+				var response batchResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+					t.Fatalf("decode batch response: %v, body=%s", err, rec.Body.String())
+				}
+				return response
+			}
+			if response := post("bogus"); response.StatusCode == 0 {
+				t.Fatal("invalid value accepted")
+			}
+			response := post(tc.ordinaryValue)
+			failed := response.Data.FailedItems
+			if response.StatusCode != 0 || response.Data.Total != 2 || response.Data.SuccessCount != 1 ||
+				len(failed) != 1 || failed[0].ID != products[1].ID || failed[0].ErrorCode != tc.directError {
+				t.Fatalf("unexpected mixed batch result: %+v", response)
+			}
+			for i, want := range []string{tc.ordinaryValue, tc.directValue} {
+				var stored productdomain.Product
+				if err := db.First(&stored, products[i].ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if got := tc.getValue(stored); got != want {
+					t.Fatalf("product %d %s: got %q, want %q", stored.ID, tc.field, got, want)
+				}
+			}
+			if response := post(tc.directValue); response.StatusCode != 0 || response.Data.SuccessCount != 2 || len(response.Data.FailedItems) != 0 {
+				t.Fatalf("compatible batch failed: %+v", response)
+			}
+		})
 	}
 }
 

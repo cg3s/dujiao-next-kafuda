@@ -181,6 +181,7 @@ func TestPublicDirectProductAvailability(t *testing.T) {
 			otherSKU.ManualStockTotal, otherSKU.ManualStockSold, otherSKU.AutoStockAvailable, otherSKU.UpstreamStock = -1, 5, 6, 7
 			product := productdomain.Product{
 				ID: 1, Slug: "direct", IsActive: true, FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+				PurchaseType: constants.ProductPurchaseGuest, StockDisplayMode: constants.ProductStockDisplayExact,
 				ManualFormSchemaJSON: jsonmap.JSON{"legacy": "private-value"},
 			}
 			switch scenario {
@@ -248,7 +249,8 @@ func TestPublicDirectProductAvailability(t *testing.T) {
 					}
 				}
 				wantSoldOut := scenario != "available" && scenario != "zero_revision"
-				if len(result.SKUs) != 2 || result.IsSoldOut != wantSoldOut || !result.StockQuantityHidden || result.ManualFormSchema != nil {
+				if len(result.SKUs) != 2 || result.IsSoldOut != wantSoldOut || !result.StockQuantityHidden ||
+					result.PurchaseType != constants.ProductPurchaseMember || result.ManualFormSchema != nil {
 					t.Fatalf("%s: invalid product availability: %+v", path, result)
 				}
 				if !result.SKUs[0].IsSoldOut || result.SKUs[1].IsSoldOut != wantSoldOut || (!wantSoldOut && !result.PriceAmount.Equal(sku.PriceAmount.Decimal)) {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dujiao-next/internal/constants"
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 
@@ -297,7 +298,29 @@ func (r *ProductStore) Update(product *productdomain.Product) error {
 
 // QuickUpdate 快速更新商品指定字段
 func (r *ProductStore) QuickUpdate(id string, fields map[string]interface{}) error {
-	return r.db.Model(&productdomain.Product{}).Where("id = ? AND deleted_at IS NULL", id).Updates(fields).Error
+	query := r.db.Model(&productdomain.Product{}).Where("id = ? AND deleted_at IS NULL", id)
+	var directUpdateErr error
+	if value, ok := fields["purchase_type"]; ok && value != constants.ProductPurchaseMember {
+		directUpdateErr = productcontract.ErrProductPurchaseInvalid
+	} else if value, ok := fields["stock_display_mode"]; ok && value != constants.ProductStockDisplayHidden {
+		directUpdateErr = productcontract.ErrProductStockDisplayInvalid
+	}
+	if directUpdateErr != nil {
+		// A product can switch to Direct after the caller's preflight read.
+		query = query.Where("(fulfillment_type <> ? OR fulfillment_type IS NULL)", constants.FulfillmentTypeKafudaGPT)
+	}
+	result := query.Updates(fields)
+	if result.Error != nil || result.RowsAffected > 0 || directUpdateErr == nil {
+		return result.Error
+	}
+	var count int64
+	if err := r.db.Model(&productdomain.Product{}).Where("id = ? AND deleted_at IS NULL", id).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return productcontract.ErrNotFound
+	}
+	return directUpdateErr
 }
 
 // Delete 删除商品
