@@ -3,10 +3,18 @@ package selfupdate
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/dujiao-next/internal/version"
 )
+
+func requireSelfUpdatePlatform(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("self-update file locking and deployment are supported on Linux and macOS")
+	}
+}
 
 // TestDetectBlocksSourceBuild 本地构建（BuildType=source）必须被阻断，
 // 否则 go run 起来的开发进程会把自己的二进制换成线上发行版。
@@ -22,6 +30,12 @@ func TestDetectBlocksSourceBuild(t *testing.T) {
 	if c.BlockReason == BlockNone {
 		t.Error("blocked capability must carry a reason code")
 	}
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		if c.BlockReason != BlockUnsupportedOS && c.BlockReason != BlockContainer {
+			t.Errorf("BlockReason = %q, want unsupported_os (or container in CI)", c.BlockReason)
+		}
+		return
+	}
 	// 容器内跑测试时会先命中容器判定，两种原因码都算正确
 	if c.BlockReason != BlockSourceBuild && c.BlockReason != BlockContainer {
 		t.Errorf("BlockReason = %q, want source_build (or container in CI)", c.BlockReason)
@@ -31,6 +45,7 @@ func TestDetectBlocksSourceBuild(t *testing.T) {
 // TestDetectReleaseBuild release 产物在非容器环境下应当放行，
 // 并带上平台归档名与可执行文件路径。
 func TestDetectReleaseBuild(t *testing.T) {
+	requireSelfUpdatePlatform(t)
 	if InContainer() {
 		t.Skip("running inside a container; self-update is intentionally blocked there")
 	}
@@ -149,6 +164,7 @@ func TestDirWritable(t *testing.T) {
 		t.Error("temp dir should be writable")
 	}
 
+	requireSelfUpdatePlatform(t)
 	if os.Geteuid() == 0 {
 		t.Skip("running as root; permission bits do not restrict access")
 	}

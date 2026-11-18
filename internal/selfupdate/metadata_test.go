@@ -335,6 +335,7 @@ func makeInstallDirReadOnly(t *testing.T, dir string) {
 // 仍存在一个尚未记录迁移的 backup 状态，就不能把 MarkMigrationStarted 降级成
 // 成功的空操作。否则 main 会继续 AutoMigrate，旧元数据却仍会放行普通回滚。
 func TestStartupGuardReadOnlyStateFailsClosedBeforeMigration(t *testing.T) {
+	requireSelfUpdatePlatform(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root 会无视目录权限位，无法在此模拟只读安装目录")
 	}
@@ -561,6 +562,7 @@ func TestMigrationFailureStateRemainsUnsafe(t *testing.T) {
 
 // TestStartupGuardBlocksConcurrentRollback 迁移期间 CLI 回滚只能立即失败，不能等待后交错执行。
 func TestStartupGuardBlocksConcurrentRollback(t *testing.T) {
+	requireSelfUpdatePlatform(t)
 	exec := seedUpgraded(t, BackupInfo{
 		PreviousVersion: "v1.4.0",
 		TargetVersion:   "v1.5.0",

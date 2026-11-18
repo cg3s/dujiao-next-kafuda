@@ -69,6 +69,7 @@ func TestManagerReportUpdatesProgress(t *testing.T) {
 // TestManagerStartHoldsBinaryLockDuringReleaseFetch 复现 HTTP 检查更新与 CLI 回滚并发。
 // 跨进程锁必须在网络请求之前取得，否则 CLI 会先消耗 backup，随后 HTTP 升级又继续替换。
 func TestManagerStartHoldsBinaryLockDuringReleaseFetch(t *testing.T) {
+	requireSelfUpdatePlatform(t)
 	exec := seedUpgraded(t, BackupInfo{
 		PreviousVersion: "v0.9.0",
 		TargetVersion:   version.Version,
