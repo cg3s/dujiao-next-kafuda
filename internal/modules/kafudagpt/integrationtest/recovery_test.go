@@ -84,6 +84,33 @@ func TestRecoveryDoesNotReleaseSubmittedOrUnknownAttempts(t *testing.T) {
 	}
 	prepare(t, service, 10, now)
 	reserve(t, service, 10, now)
+	// A due unknown submission sorts before the known IDs but must not
+	// consume the numeric polling budget, and checking stays separate.
+	polls, err := store.DueKnownOrderPolls(ctx, now.Add(time.Second), 1)
+	if err != nil || len(polls) != 1 || polls[0].OrderID != 2 || polls[0].UpstreamOrderID == nil || *polls[0].UpstreamOrderID != 101 {
+		t.Fatalf("numeric polling did not select the first due known order: %+v, %v", polls, err)
+	}
+	polls, err = store.DueKnownOrderPolls(ctx, now.Add(time.Second), 100)
+	if err != nil || len(polls) != 2 || polls[1].OrderID != 3 {
+		t.Fatalf("numeric polling did not retain known review attempts: %+v, %v", polls, err)
+	}
+	review := polls[1]
+	due, retry := now.Add(time.Second), now.Add(2*time.Minute)
+	if err := service.RescheduleKnownOrderPoll(ctx, review.ID, due, due, retry); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RescheduleKnownOrderPoll(ctx, review.ID, due, due, retry.Add(time.Minute)); !errors.Is(err, kafudadomain.ErrConflict) {
+		t.Fatalf("duplicate lookup failure overwrote the new schedule: %v", err)
+	}
+	updated, err := store.GetAttempt(ctx, review.ID)
+	if err != nil || updated == nil || updated.Status != kafudadomain.AttemptReview || updated.ActiveOrderID == nil ||
+		updated.NextPollAt == nil || !updated.NextPollAt.Equal(retry) {
+		t.Fatalf("failed lookup changed review state or lost the schedule: %+v, %v", updated, err)
+	}
+	polls, err = store.DueKnownOrderPolls(ctx, now, 100)
+	if err != nil || len(polls) != 0 {
+		t.Fatalf("numeric polling selected a future attempt: %+v, %v", polls, err)
+	}
 	// The earlier submitted attempts must not consume the checking scan's limit.
 	if err := service.RecoverExpiredChecks(ctx, now.Add(time.Minute), 1); err != nil {
 		t.Fatal(err)

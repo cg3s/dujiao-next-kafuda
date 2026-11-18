@@ -8,6 +8,26 @@ import (
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 )
 
+// RescheduleKnownOrderPoll defers a failed numeric lookup. A worker that read
+// an older schedule cannot delay a lookup already rescheduled by another worker.
+func (s *Service) RescheduleKnownOrderPoll(ctx context.Context, attemptID uint, scheduledAt, now, nextPoll time.Time) error {
+	if scheduledAt.IsZero() || now.Before(scheduledAt) || !nextPoll.After(now) {
+		return kafudadomain.ErrInvalidTransition
+	}
+	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
+		if !attempt.Status.Active() || attempt.Status == kafudadomain.AttemptChecking ||
+			attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID == 0 {
+			return kafudadomain.ErrInvalidTransition
+		}
+		if attempt.NextPollAt == nil || !attempt.NextPollAt.Equal(scheduledAt) || now.Before(attempt.UpdatedAt) {
+			return kafudadomain.ErrConflict
+		}
+		attempt.NextPollAt, attempt.UpdatedAt = &nextPoll, now
+		record.UpdatedAt = now
+		return nil
+	})
+}
+
 // RecoverExpiredChecks releases attempts interrupted before a potentially
 // chargeable request. The buyer must submit fresh credentials to try again.
 // Submitting and unknown attempts retain their reference and active slot.

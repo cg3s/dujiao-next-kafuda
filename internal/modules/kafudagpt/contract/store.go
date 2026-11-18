@@ -26,6 +26,7 @@ type Store interface {
 	GetRecharge(context.Context, uint) (*kafudadomain.Recharge, error)
 	GetAttempt(context.Context, uint) (*kafudadomain.Attempt, error)
 	DueAttempts(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
+	DueKnownOrderPolls(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
 	DueCheckingAttempts(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
 	GetCatalog(context.Context, string) (*kafudadomain.Catalog, error)
 	SaveCatalog(context.Context, *kafudadomain.Catalog) error

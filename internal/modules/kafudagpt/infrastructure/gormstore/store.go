@@ -115,6 +115,20 @@ func (s *Store) DueAttempts(ctx context.Context, now time.Time, limit int) ([]ka
 	return result, err
 }
 
+// DueKnownOrderPolls selects only attempts that can be queried by numeric ID.
+// Unknown submissions remain active but belong to reference reconciliation.
+func (s *Store) DueKnownOrderPolls(ctx context.Context, now time.Time, limit int) ([]kafudadomain.Attempt, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	var result []kafudadomain.Attempt
+	err := s.db.WithContext(ctx).
+		Where("active_order_id IS NOT NULL AND upstream_order_id > 0 AND next_poll_at <= ?", now).
+		Where("status IN ?", []kafudadomain.AttemptStatus{kafudadomain.AttemptSubmitting, kafudadomain.AttemptProcessing, kafudadomain.AttemptReview}).
+		Order("next_poll_at ASC, id ASC").Limit(limit).Find(&result).Error
+	return result, err
+}
+
 // Keep checking leases separate from upstream polling so a backlog of unknown
 // submissions cannot starve recovery of interrupted credential checks.
 func (s *Store) DueCheckingAttempts(ctx context.Context, now time.Time, limit int) ([]kafudadomain.Attempt, error) {
