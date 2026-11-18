@@ -67,8 +67,12 @@ type directCheckoutFixture struct {
 }
 
 func TestAdminDirectReviewFilterAndProjection(t *testing.T) {
+	testAdminDirectReviewFilterAndProjection(t, newDirectCheckoutFixture(t))
+}
+
+func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixture) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
-	f := newDirectCheckoutFixture(t)
 	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &paymentdomain.Payment{}); err != nil {
 		t.Fatal(err)
 	}
