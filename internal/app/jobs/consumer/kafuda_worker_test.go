@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -28,11 +29,22 @@ type kafudaPollTestGateway struct {
 	kafudacontract.Gateway
 	result kafudacontract.OrderResult
 	ids    []uint64
+	err    error
 }
 
 func (g *kafudaPollTestGateway) GetOrder(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
 	g.ids = append(g.ids, id)
-	return &g.result, nil
+	return &g.result, g.err
+}
+
+func TestKafudaRetryDelayIsBounded(t *testing.T) {
+	now := time.Now()
+	for _, pair := range [][2]time.Duration{{-time.Minute, time.Minute}, {time.Minute, 2 * time.Minute}, {4 * time.Minute, 8 * time.Minute}, {8 * time.Minute, 15 * time.Minute}, {time.Hour, 15 * time.Minute}} {
+		next := now.Add(pair[0])
+		if got := kafudaRetryDelay(kafudadomain.Attempt{UpdatedAt: now, NextPollAt: &next}); got != pair[1] {
+			t.Errorf("delay after %s = %s, want %s", pair[0], got, pair[1])
+		}
+	}
 }
 
 func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
@@ -87,8 +99,7 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 	if err := records.RecordResult(ctx, id, result, past, due); err != nil {
 		t.Fatal(err)
 	}
-	result.Status = "completed"
-	gateway := &kafudaPollTestGateway{result: result}
+	gateway := &kafudaPollTestGateway{result: result, err: context.DeadlineExceeded}
 	c := New(&container.Container{
 		KafudaGPT:  &kafudawiring.Module{Records: records, Store: store, Gateway: gateway},
 		OrderStore: orderstore.New(db, "test-guest-credential-secret-with-32-bytes"),
@@ -99,6 +110,26 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 	if len(task.Payload()) != 0 {
 		t.Fatal("recovery scan must carry no credentials")
 	}
+	for _, delay := range []time.Duration{2 * time.Minute, 4 * time.Minute, time.Minute} {
+		err := mux.ProcessTask(ctx, task)
+		if gateway.err != nil && !errors.Is(err, kafudaapp.ErrKnownOrderLookupFailed) || gateway.err == nil && err != nil {
+			t.Fatalf("unexpected task result: %v", err)
+		}
+		stored, err := store.GetAttempt(ctx, id)
+		if err != nil || stored == nil || stored.NextPollAt == nil ||
+			stored.NextPollAt.Sub(stored.UpdatedAt) != delay || stored.Status != kafudadomain.AttemptProcessing {
+			t.Fatalf("unexpected retry schedule, expected %s: %+v, %v", delay, stored, err)
+		}
+		// Advance the test clock for this attempt without sleeping.
+		if err := db.Model(&kafudadomain.Attempt{}).Where("id = ?", id).
+			Updates(map[string]any{"updated_at": past, "next_poll_at": past.Add(delay)}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if delay == 4*time.Minute {
+			gateway.err = nil
+		}
+	}
+	gateway.result.Status = "completed"
 	if err := mux.ProcessTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +140,7 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 	if err := mux.ProcessTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if len(gateway.ids) != 1 || gateway.ids[0] != 101 {
+	if len(gateway.ids) != 4 || gateway.ids[0] != 101 || gateway.ids[3] != 101 {
 		t.Fatalf("unexpected upstream reads after replay: %v", gateway.ids)
 	}
 	for _, orderID := range []uint{parent.ID, child.ID} {
