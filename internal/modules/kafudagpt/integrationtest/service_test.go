@@ -140,12 +140,13 @@ func TestUnknownOutcomeRetainsSlotAndLateSuccessConverges(t *testing.T) {
 		t.Fatalf("late success did not converge: %+v, %v", record, err)
 	}
 	firstCompleted := *record.CompletedAt
+	firstVersion, firstUpdated := record.Version, record.UpdatedAt
 	if err := service.RecordResult(ctx, id, result, now.Add(time.Minute), now.Add(2*time.Minute)); err != nil {
 		t.Fatalf("duplicate success: %v", err)
 	}
 	record, _ = store.GetRecharge(ctx, 10)
-	if !record.CompletedAt.Equal(firstCompleted) {
-		t.Fatal("duplicate success rewrote completion time")
+	if !record.CompletedAt.Equal(firstCompleted) || record.Version != firstVersion || !record.UpdatedAt.Equal(firstUpdated) {
+		t.Fatal("duplicate success rewrote the completed recharge")
 	}
 	attempt, _ := store.GetAttempt(ctx, id)
 	if attempt.ActiveOrderID != nil || attempt.NextPollAt != nil || attempt.MaskedEmail != "" {

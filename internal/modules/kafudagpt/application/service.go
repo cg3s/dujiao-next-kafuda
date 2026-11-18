@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 type Service struct{ store kafudacontract.Store }
 
 const costLimitExceeded = "cost_limit_exceeded"
+
+var errNoRecordChange = errors.New("kafuda recharge unchanged")
 
 func New(store kafudacontract.Store) *Service { return &Service{store: store} }
 
@@ -173,7 +176,7 @@ func (s *Service) RecordResult(ctx context.Context, attemptID uint, result kafud
 			return kafudadomain.ErrInvalidTransition
 		}
 		if !attempt.Status.Active() {
-			return nil
+			return errNoRecordChange
 		}
 		if result.ChargedUSDCents != nil && *result.ChargedUSDCents < 0 {
 			return kafudadomain.ErrInvalidTransition
@@ -249,7 +252,9 @@ func (s *Service) change(ctx context.Context, attemptID uint, update func(*kafud
 		if attempt == nil {
 			return kafudadomain.ErrNotFound
 		}
-		if err := update(record, attempt); err != nil {
+		if err := update(record, attempt); err == errNoRecordChange {
+			return nil
+		} else if err != nil {
 			return err
 		}
 		if err := tx.SaveAttempt(attempt); err != nil {
