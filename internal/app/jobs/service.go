@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"time"
 
 	jobconsumer "github.com/dujiao-next/internal/app/jobs/consumer"
 	"github.com/dujiao-next/internal/config"
@@ -54,7 +55,8 @@ func registerPeriodicTasks(scheduler *asynq.Scheduler, consumer *jobconsumer.Con
 	}
 	if consumer.Container != nil && consumer.KafudaGPT != nil && consumer.KafudaGPT.Records != nil {
 		task := queue.NewKafudaRecoverChecksTask()
-		entryID, err := scheduler.Register("@every 1m", task, asynq.Queue(queue.DefaultQueue))
+		interval := consumer.Config.KafudaPollInterval()
+		entryID, err := scheduler.Register("@every "+interval.String(), task, asynq.Queue(queue.DefaultQueue), asynq.Unique(time.Minute))
 		if err != nil {
 			logger.Warnw("scheduler_register_kafuda_recover_checks_failed", "error", err)
 		} else {

@@ -71,7 +71,10 @@ func TestRedisKafudaScheduledRecoveryAfterWorkerRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	consumer := jobconsumer.New(&container.Container{KafudaGPT: &kafudawiring.Module{Records: records, Store: store}})
+	consumer := jobconsumer.New(&container.Container{
+		Config:    &config.Config{KafudaGPT: config.KafudaGPTConfig{PollIntervalSeconds: 5}},
+		KafudaGPT: &kafudawiring.Module{Records: records, Store: store},
+	})
 	beforeRestart, err := NewService(cfg, consumer)
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +88,7 @@ func TestRedisKafudaScheduledRecoveryAfterWorkerRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(beforeRestart.scheduler.Shutdown)
-	awaitKafudaRedis(t, 80*time.Second, func() bool {
+	awaitKafudaRedis(t, 20*time.Second, func() bool {
 		tasks, err := inspector.ListPendingTasks(queue.DefaultQueue)
 		if err != nil {
 			return false

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/dujiao-next/internal/constants"
 	"github.com/dujiao-next/internal/logger"
@@ -50,6 +51,15 @@ type KafudaGPTConfig struct {
 	PollReviewAfterSeconds  int      `mapstructure:"poll_review_after_seconds"`
 	PollIntervalSeconds     int      `mapstructure:"poll_interval_seconds"`
 	ReviewAfterSeconds      int      `mapstructure:"review_after_seconds"`
+}
+
+// KafudaPollInterval is the minimum delay between normal supplier lookups.
+func (c *Config) KafudaPollInterval() time.Duration {
+	if c == nil || c.KafudaGPT.PollIntervalSeconds <= 0 {
+		return time.Minute
+	}
+	seconds := max(5, min(900, c.KafudaGPT.PollIntervalSeconds))
+	return time.Duration(seconds) * time.Second
 }
 
 // AppConfig 应用级配置

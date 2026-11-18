@@ -11,22 +11,21 @@ import (
 )
 
 const (
-	kafudaPollInterval  = time.Minute
 	kafudaMaxRetryDelay = 15 * time.Minute
 )
 
-func kafudaRetryDelay(attempt kafudadomain.Attempt) time.Duration {
+func kafudaRetryDelay(attempt kafudadomain.Attempt, baseInterval time.Duration) time.Duration {
 	if attempt.NextPollAt == nil {
-		return kafudaPollInterval
+		return baseInterval
 	}
 	lastDelay := attempt.NextPollAt.Sub(attempt.UpdatedAt)
 	if lastDelay <= 0 {
-		return kafudaPollInterval
+		return baseInterval
 	}
 	if lastDelay >= kafudaMaxRetryDelay/2 {
 		return kafudaMaxRetryDelay
 	}
-	return max(kafudaPollInterval, 2*lastDelay)
+	return max(baseInterval, 2*lastDelay)
 }
 
 func (c *Consumer) handleKafudaRecoverChecks(ctx context.Context, _ *asynq.Task) error {
@@ -54,6 +53,7 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 		return err
 	}
 	var failures []error
+	interval := c.Config.KafudaPollInterval()
 	var reviewAfter time.Duration
 	if c.Config != nil {
 		seconds := c.Config.KafudaGPT.PollReviewAfterSeconds
@@ -66,7 +66,7 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 			return errors.Join(append(failures, err)...)
 		}
 		observedAt := time.Now().UTC()
-		retryDelay := kafudaRetryDelay(attempt)
+		retryDelay := kafudaRetryDelay(attempt, interval)
 		result, err := module.Records.PollKnownOrder(ctx, module.Gateway, attempt.ID, observedAt, observedAt.Add(retryDelay), reviewAfter)
 		if err != nil {
 			if !errors.Is(err, kafudadomain.ErrConflict) && !errors.Is(err, kafudadomain.ErrNotFound) {
@@ -74,7 +74,7 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 			}
 			continue
 		}
-		completed, err := kafudaworkflow.ApplyResult(c.OrderStore, attempt.OrderID, attempt.ID, *result, observedAt, observedAt.Add(kafudaPollInterval))
+		completed, err := kafudaworkflow.ApplyResult(c.OrderStore, attempt.OrderID, attempt.ID, *result, observedAt, observedAt.Add(interval))
 		if completed {
 			kafudaworkflow.EnqueueCompletionEmail(c.OrderStore, c.orderStatusQueue, c.SettingService, c.Config, attempt.OrderID)
 		}
