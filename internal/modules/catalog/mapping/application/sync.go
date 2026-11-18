@@ -231,7 +231,9 @@ func (s *Service) SyncProduct(mappingID uint) error {
 				UpstreamStock:    upSKU.StockQuantity,
 				StockSyncedAt:    &now,
 			}
-			_ = s.skuMappings.Create(newMapping)
+			if err := s.skuMappings.Create(newMapping); err != nil {
+				return fmt.Errorf("create mapping for upstream SKU %d: %w", upSKU.ID, err)
+			}
 		}
 
 		// ── 2c. 如果启用了自动同步价格，更新 Product.PriceAmount 为最低 SKU 价格 ──
@@ -626,6 +628,7 @@ func (s *Service) SyncConnectionStock(connectionID uint, connMappings []mappingd
 	if !parentsOK {
 		logger.Warnw("sync_skip_price_recalc_category_tree_unavailable", "connection_id", connectionID)
 	}
+	var writeErrors []error
 	for i := range connMappings {
 		mapping := &connMappings[i]
 		upProduct, ok := upstreamProducts[mapping.UpstreamProductID]
@@ -656,7 +659,13 @@ func (s *Service) SyncConnectionStock(connectionID uint, connMappings []mappingd
 			_ = s.markUpstreamUnavailable(mapping, mappingdomain.UpstreamStatusInactive, now)
 			continue
 		}
-		s.syncProductFromData(mapping, conn, &upProduct, &now, categoryParents, parentsOK)
+		if err := s.syncProductFromData(mapping, conn, &upProduct, &now, categoryParents, parentsOK); err != nil && !errors.Is(err, mappingcontract.ErrMappingNotFound) {
+			writeErrors = append(writeErrors, fmt.Errorf("sync product mapping %d: %w", mapping.ID, err))
+		}
+	}
+	if err := errors.Join(writeErrors...); err != nil {
+		// Keep the previous incremental cursor so the failed product is fetched again.
+		return err
 	}
 
 	// 记录本次同步时间
@@ -680,8 +689,8 @@ func (s *Service) SyncConnectionStock(connectionID uint, connMappings []mappingd
 // 调用方应保证 upProduct.IsActive == true（下架/删除分支由 caller 处理）
 // applyPrice=false 表示这一轮不能安全改价（例如配置了分类加价但分类树拉取失败）：
 // SKU 的库存、上下架、规格照常同步，只有价格保持原样。
-func (s *Service) syncProductFromData(mapping *mappingdomain.Mapping, conn *siteconnectiondomain.Connection, upProduct *upstream.UpstreamProduct, now *time.Time, categoryParents map[uint]uint, applyPrice bool) {
-	_ = s.withMappingWrite(mapping, func(s *Service, mapping *mappingdomain.Mapping) error {
+func (s *Service) syncProductFromData(mapping *mappingdomain.Mapping, conn *siteconnectiondomain.Connection, upProduct *upstream.UpstreamProduct, now *time.Time, categoryParents map[uint]uint, applyPrice bool) error {
+	return s.withMappingWrite(mapping, func(s *Service, mapping *mappingdomain.Mapping) error {
 		// 记录上游分类并按分类解析加价（分类自身 → 父分类 → 连接默认）
 		mapping.UpstreamCategoryID = upProduct.CategoryID
 		markupPercent := ResolveCategoryMarkup(conn.PriceMarkupPercent, conn.CategoryMarkups, upProduct.CategoryID, categoryParents)
@@ -801,7 +810,9 @@ func (s *Service) syncProductFromData(mapping *mappingdomain.Mapping, conn *site
 					UpstreamStock:    upSKU.StockQuantity,
 					StockSyncedAt:    now,
 				}
-				_ = s.skuMappings.Create(newSKUMapping)
+				if err := s.skuMappings.Create(newSKUMapping); err != nil {
+					return fmt.Errorf("create mapping for upstream SKU %d: %w", upSKU.ID, err)
+				}
 			}
 		}
 
