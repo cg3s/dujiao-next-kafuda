@@ -759,6 +759,21 @@ watch(
             </Card>
           </div>
 
+          <section v-if="selectedOrder.direct_recharge" class="rounded-xl border border-border bg-muted/20 p-4">
+            <h3 class="mb-3 text-sm font-semibold">{{ t('admin.orders.directReview.title') }}</h3>
+            <dl class="grid gap-3 text-sm sm:grid-cols-2">
+              <div><dt class="text-muted-foreground">{{ t('admin.orders.directReview.stage') }}</dt><dd>{{ t(`admin.orders.directReview.stages.${selectedOrder.direct_recharge.stage}`) }}</dd></div>
+              <div><dt class="text-muted-foreground">{{ t('admin.orders.directReview.updatedAt') }}</dt><dd>{{ formatDate(selectedOrder.direct_recharge.updated_at) }}</dd></div>
+              <div v-if="selectedOrder.direct_recharge.reason"><dt class="text-muted-foreground">{{ t('admin.orders.directReview.reason') }}</dt><dd>{{ t(`admin.orders.directReview.reasons.${selectedOrder.direct_recharge.reason}`) }}</dd></div>
+              <template v-if="selectedOrder.direct_recharge.attempt">
+                <div><dt class="text-muted-foreground">{{ t('admin.orders.directReview.sequence') }}</dt><dd>{{ selectedOrder.direct_recharge.attempt.sequence }} · {{ t(selectedOrder.direct_recharge.attempt.active ? 'admin.orders.directReview.active' : 'admin.orders.directReview.inactive') }}</dd></div>
+                <div v-if="selectedOrder.direct_recharge.attempt.reference"><dt class="text-muted-foreground">{{ t('admin.orders.directReview.reference') }}</dt><dd class="break-all font-mono">{{ selectedOrder.direct_recharge.attempt.reference }}</dd></div>
+                <div v-if="selectedOrder.direct_recharge.attempt.upstream_order_id"><dt class="text-muted-foreground">{{ t('admin.orders.directReview.upstreamId') }}</dt><dd class="break-all font-mono">{{ selectedOrder.direct_recharge.attempt.upstream_order_id }}</dd></div>
+                <div v-if="selectedOrder.direct_recharge.attempt.masked_email"><dt class="text-muted-foreground">{{ t('admin.orders.directReview.account') }}</dt><dd>{{ selectedOrder.direct_recharge.attempt.masked_email }}</dd></div>
+              </template>
+            </dl>
+          </section>
+
           <div class="rounded-xl border border-border bg-muted/20 p-4">
             <h3 class="text-sm font-semibold text-foreground mb-3">{{ t('orderDetail.amountTitle') }}</h3>
             <div class="grid grid-cols-1 gap-4 text-sm md:grid-cols-3 [&>*]:min-w-0">

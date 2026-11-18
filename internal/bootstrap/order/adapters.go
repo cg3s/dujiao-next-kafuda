@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/dujiao-next/internal/app/container"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
@@ -102,7 +103,65 @@ func (a orderAdminQueryAdapter) ListOrdersForAdmin(filter ordertransport.OrderLi
 		CreatedTo:      filter.CreatedTo,
 		SortBy:         filter.SortBy,
 		SortOrder:      filter.SortOrder,
+		DirectReview:   filter.DirectReview,
 	})
+}
+
+func newAdminDirectStatusReader(c *container.Container) ordertransport.AdminDirectStatusReader {
+	if c.KafudaGPT == nil || c.KafudaGPT.Store == nil {
+		return nil
+	}
+	store := c.KafudaGPT.Store
+	return func(ctx context.Context, order *orderdomain.Order) (*ordertransport.AdminDirectStatus, error) {
+		child := order
+		if order.ParentID == nil {
+			if len(order.Children) != 1 || order.Children[0].ParentID == nil || *order.Children[0].ParentID != order.ID {
+				return nil, nil
+			}
+			child = &order.Children[0]
+		}
+		if len(child.Items) != 1 || !child.HasDirectRecharge() {
+			return nil, nil
+		}
+		record, err := store.GetRecharge(ctx, child.ID)
+		if err != nil || record == nil {
+			return nil, err
+		}
+		switch record.Stage {
+		case kafudadomain.StageWaiting, kafudadomain.StageChecking, kafudadomain.StageSubmitting, kafudadomain.StageProcessing,
+			kafudadomain.StageManualReview, kafudadomain.StageManualDelivery, kafudadomain.StageCompleted:
+		default:
+			return nil, nil
+		}
+		status := &ordertransport.AdminDirectStatus{Stage: string(record.Stage), UpdatedAt: record.UpdatedAt}
+		switch record.ReasonCode {
+		case "check_rejected", "session_invalid", "outcome_unknown", "upstream_review", "upstream_failed", "upstream_cancelled",
+			"cost_limit_exceeded", "lookup_deadline_exceeded", "check_interrupted":
+			status.Reason = record.ReasonCode
+		}
+		if record.CurrentAttemptID == nil {
+			return status, nil
+		}
+		attempt, err := store.GetAttempt(ctx, *record.CurrentAttemptID)
+		if err != nil {
+			return nil, err
+		}
+		if attempt == nil || attempt.OrderID != child.ID {
+			return status, nil
+		}
+		info := &ordertransport.AdminDirectAttempt{Sequence: attempt.Sequence, Active: attempt.Status.Active()}
+		if attempt.Validate() == nil {
+			info.Reference = attempt.Reference
+		}
+		if attempt.UpstreamOrderID != nil && *attempt.UpstreamOrderID > 0 {
+			info.UpstreamOrderID = strconv.FormatUint(*attempt.UpstreamOrderID, 10)
+		}
+		if runes := []rune(attempt.MaskedEmail); len(runes) == 8 && string(runes[1:]) == "***@***" {
+			info.MaskedEmail = attempt.MaskedEmail
+		}
+		status.Attempt = info
+		return status, nil
+	}
 }
 
 func (a orderAdminQueryAdapter) GetOrderForAdmin(orderID uint) (*orderdomain.Order, error) {

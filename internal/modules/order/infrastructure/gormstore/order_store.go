@@ -426,6 +426,12 @@ func (r *Store) ListChildren(parentID uint) ([]orderdomain.Order, error) {
 func (r *Store) ListAdmin(filter ordercontract.ListFilter) ([]orderdomain.Order, int64, error) {
 	var orders []orderdomain.Order
 	query := r.db.Model(&orderdomain.Order{}).Where("orders.deleted_at IS NULL AND parent_id IS NULL")
+	if filter.DirectReview {
+		query = query.Where(`EXISTS (SELECT 1 FROM orders AS child
+			JOIN kafuda_gpt_recharges AS recharge ON recharge.order_id = child.id
+			WHERE child.parent_id = orders.id AND child.deleted_at IS NULL AND recharge.stage IN ?)`,
+			[]string{"manual_review", "manual_delivery"})
+	}
 
 	if filter.UserID != 0 {
 		query = query.Where("user_id = ?", filter.UserID)

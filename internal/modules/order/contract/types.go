@@ -16,6 +16,7 @@ type ListFilter struct {
 	CreatedTo      *time.Time
 	SortBy         string
 	SortOrder      string
+	DirectReview   bool
 }
 
 // TenantScope 表示前台订单查询的分销租户范围。

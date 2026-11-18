@@ -37,6 +37,8 @@ import (
 	orderhttp "github.com/dujiao-next/internal/modules/order/transport/http"
 	orderpresenter "github.com/dujiao-next/internal/modules/order/transport/presenter"
 	paymentapp "github.com/dujiao-next/internal/modules/payment/application"
+	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
+	paymentstore "github.com/dujiao-next/internal/modules/payment/infrastructure/gormstore"
 	promotiondomain "github.com/dujiao-next/internal/modules/promotion/domain"
 	promotionstore "github.com/dujiao-next/internal/modules/promotion/infrastructure/gormstore"
 	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
@@ -58,6 +60,96 @@ type directCheckoutFixture struct {
 	input   orderapp.CreateOrderInput
 	catalog *kafudadomain.Catalog
 	store   *kafudastore.Store
+}
+
+func TestAdminDirectReviewFilterAndProjection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	f := newDirectCheckoutFixture(t)
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &paymentdomain.Payment{}); err != nil {
+		t.Fatal(err)
+	}
+	service := orderapp.NewOrderService(f.options)
+	records := kafudaapp.New(f.store)
+	ctx, now := context.Background(), time.Now().UTC()
+	var parentID, childID uint
+	for _, stage := range []kafudadomain.Stage{kafudadomain.StageManualReview, kafudadomain.StageManualDelivery, kafudadomain.StageWaiting} {
+		order, err := service.CreateOrder(f.input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		child := order.Children[0].ID
+		if stage == kafudadomain.StageManualReview {
+			parentID, childID = order.ID, child
+			reserved, err := records.Reserve(ctx, child, now, now.Add(time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.Model(&kafudadomain.Attempt{}).Where("id = ?", reserved.Attempt.ID).Updates(map[string]any{
+				"status": kafudadomain.AttemptReview, "upstream_order_id": uint64(9007199254740993), "masked_email": "private@example.test", "quote_id": "private-quote",
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := f.db.Model(&kafudadomain.Recharge{}).Where("order_id = ?", child).
+			Updates(map[string]any{"stage": stage, "reason_code": "outcome_unknown"}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	ordinary := orderdomain.Order{OrderNo: "ORDINARY-REVIEW-TEST", UserID: f.users[0].ID, Currency: "CNY", Status: constants.OrderStatusPaid}
+	if err := f.db.Create(&ordinary).Error; err != nil {
+		t.Fatal(err)
+	}
+	handler := orderwiring.New(&container.Container{
+		OrderService: service, OrderStore: f.options.OrderStore, UserStore: userstore.New(f.db),
+		PaymentStore: paymentstore.New(f.db, "test-guest-credential-secret-with-32-bytes"),
+		KafudaGPT:    &kafudawiring.Module{Store: f.store},
+	}).Admin
+	router := gin.New()
+	orderhttp.RegisterAdminRoutes(router.Group("/admin"), handler)
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		return rec
+	}
+	for _, id := range []uint{parentID, childID} {
+		raw := get(fmt.Sprintf("/admin/orders/%d", id)).Body.String()
+		if !strings.Contains(raw, `"upstream_order_id":"9007199254740993"`) || !strings.Contains(raw, `"reason":"outcome_unknown"`) ||
+			!strings.Contains(raw, `"active":true`) || strings.Contains(raw, "private@example.test") || strings.Contains(raw, "private-quote") {
+			t.Fatalf("unexpected projection: %s", raw)
+		}
+	}
+	if err := f.db.Model(&kafudadomain.Attempt{}).Where("order_id = ?", childID).Update("masked_email", "b***@***").Error; err != nil {
+		t.Fatal(err)
+	}
+	if raw := get(fmt.Sprintf("/admin/orders/%d", childID)).Body.String(); !strings.Contains(raw, `"masked_email":"b***@***"`) {
+		t.Fatalf("valid masked account was omitted: %s", raw)
+	}
+	if raw := get(fmt.Sprintf("/admin/orders/%d", ordinary.ID)).Body.String(); strings.Contains(raw, "direct_recharge") || !strings.Contains(raw, `"status_code":0`) {
+		t.Fatalf("ordinary order response: %s", raw)
+	}
+	seen := make(map[uint]bool)
+	for page := 1; page <= 2; page++ {
+		raw := get(fmt.Sprintf("/admin/orders?direct_review=true&page=%d&page_size=1", page)).Body.Bytes()
+		var result struct {
+			Code int `json:"status_code"`
+			Data []struct {
+				ID uint `json:"id"`
+			} `json:"data"`
+			Pagination struct {
+				Total int `json:"total"`
+			} `json:"pagination"`
+		}
+		if err := json.Unmarshal(raw, &result); err != nil || result.Code != 0 || result.Pagination.Total != 2 || len(result.Data) != 1 {
+			t.Fatalf("filtered page %d: %s, %v", page, raw, err)
+		}
+		seen[result.Data[0].ID] = true
+	}
+	if len(seen) != 2 || !seen[parentID] || seen[ordinary.ID] {
+		t.Fatalf("filtered pages did not return unique review orders: %v", seen)
+	}
+	if raw := get("/admin/orders?direct_review=invalid").Body.String(); !strings.Contains(raw, `"status_code":400`) {
+		t.Fatalf("invalid filter response: %s", raw)
+	}
 }
 
 func TestDirectCheckoutGenericAfterSalesCannotBypassReview(t *testing.T) {

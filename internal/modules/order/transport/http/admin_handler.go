@@ -1,6 +1,7 @@
 package orderhttp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -43,6 +44,7 @@ type OrderListFilter struct {
 	CreatedTo      *time.Time
 	SortBy         string
 	SortOrder      string
+	DirectReview   bool
 }
 
 // OrderQuery 管理端订单查询与状态更新端口。
@@ -93,6 +95,7 @@ type AdminHandler struct {
 	payments   PaymentDirectory
 	channels   PaymentChannelDirectory
 	accounting AccountingPolicy
+	direct     AdminDirectStatusReader
 }
 
 func NewAdminHandler(
@@ -103,6 +106,7 @@ func NewAdminHandler(
 	payments PaymentDirectory,
 	channels PaymentChannelDirectory,
 	accounting AccountingPolicy,
+	direct AdminDirectStatusReader,
 ) *AdminHandler {
 	if orders == nil || users == nil || coupons == nil || promotions == nil || payments == nil || channels == nil || accounting == nil {
 		panic("order admin handler: required dependency is nil")
@@ -115,6 +119,7 @@ func NewAdminHandler(
 		payments:   payments,
 		channels:   channels,
 		accounting: accounting,
+		direct:     direct,
 	}
 }
 
@@ -141,12 +146,35 @@ type AdminOrderDetail struct {
 	PromotionName   string                  `json:"promotion_name,omitempty"`
 	Payments        []AdminOrderPaymentItem `json:"payments,omitempty"`
 	// RefundReversesCost 为 true 时，订单详情利润在退款时按比例冲回成本。
-	RefundReversesCost bool `json:"refund_reverses_cost"`
+	RefundReversesCost bool               `json:"refund_reverses_cost"`
+	DirectRecharge     *AdminDirectStatus `json:"direct_recharge,omitempty"`
 }
+
+type AdminDirectStatus struct {
+	Stage     string              `json:"stage"`
+	UpdatedAt time.Time           `json:"updated_at"`
+	Reason    string              `json:"reason,omitempty"`
+	Attempt   *AdminDirectAttempt `json:"attempt,omitempty"`
+}
+
+type AdminDirectAttempt struct {
+	Sequence        uint   `json:"sequence"`
+	Active          bool   `json:"active"`
+	Reference       string `json:"reference,omitempty"`
+	UpstreamOrderID string `json:"upstream_order_id,omitempty"`
+	MaskedEmail     string `json:"masked_email,omitempty"`
+}
+
+type AdminDirectStatusReader func(context.Context, *orderdomain.Order) (*AdminDirectStatus, error)
 
 // AdminListOrders 管理端订单列表
 func (h *AdminHandler) AdminListOrders(c *gin.Context) {
 	page, pageSize := ginutil.ParsePagination(c)
+	directReview, supplied := c.GetQueryArray("direct_review")
+	if supplied && (len(directReview) != 1 || (directReview[0] != "true" && directReview[0] != "false")) {
+		ginutil.RespondError(c, response.CodeBadRequest, "error.bad_request", nil)
+		return
+	}
 
 	status := strings.TrimSpace(c.Query("status"))
 	userIDRaw := c.Query("user_id")
@@ -179,6 +207,7 @@ func (h *AdminHandler) AdminListOrders(c *gin.Context) {
 		CreatedTo:      createdTo,
 		SortBy:         sortBy,
 		SortOrder:      sortOrder,
+		DirectReview:   supplied && directReview[0] == "true",
 	})
 	if err != nil {
 		ginutil.RespondError(c, response.CodeInternal, "error.order_fetch_failed", err)
@@ -360,6 +389,14 @@ func (h *AdminHandler) AdminGetOrder(c *gin.Context) {
 		})
 	}
 
+	var direct *AdminDirectStatus
+	if h.direct != nil {
+		direct, err = h.direct(c.Request.Context(), order)
+		if err != nil {
+			ginutil.RespondError(c, response.CodeInternal, "error.order_fetch_failed", nil)
+			return
+		}
+	}
 	order.TruncateFulfillmentPayload()
 	response.Success(c, AdminOrderDetail{
 		Order:           *order,
@@ -370,6 +407,7 @@ func (h *AdminHandler) AdminGetOrder(c *gin.Context) {
 		Payments:        paymentItems,
 
 		RefundReversesCost: h.accounting.RefundReversesCost(),
+		DirectRecharge:     direct,
 	})
 }
 

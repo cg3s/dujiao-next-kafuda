@@ -45,6 +45,7 @@ const filters = reactive({
   productKeyword: '',
   sortBy: '',
   sortOrder: '',
+  directReview: false,
 })
 
 const handleCopyOrderNo = async (orderNo: string) => {
@@ -97,6 +98,7 @@ const fetchOrders = async (page = 1, options: ListFetchOptions = {}) => {
       page,
       page_size: pagination.value.page_size,
       status: normalizeFilterValue(filters.status) || undefined,
+      direct_review: filters.directReview ? 'true' : undefined,
       user_id: filters.userId || undefined,
       user_keyword: filters.userKeyword || undefined,
       order_no: filters.orderNo || undefined,
@@ -283,6 +285,10 @@ watch(
         <div class="w-full md:w-56">
           <Input v-model="filters.userKeyword" :placeholder="t('admin.orders.filterUserKeyword')" @update:modelValue="debouncedSearch" />
         </div>
+        <label class="flex items-center gap-2 text-sm">
+          <input v-model="filters.directReview" type="checkbox" @change="handleSearch" />
+          {{ t('admin.orders.directReview.filter') }}
+        </label>
         <div class="w-full md:w-48">
           <Input v-model="filters.orderNo" :placeholder="t('admin.orders.filterOrderNo')" @update:modelValue="debouncedSearch" />
         </div>

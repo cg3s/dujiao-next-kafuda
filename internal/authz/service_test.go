@@ -195,6 +195,24 @@ func TestBootstrapBuiltinRoles(t *testing.T) {
 	}
 }
 
+func TestDirectReviewUsesExistingOrderReadPermissions(t *testing.T) {
+	svc := setupAuthzServiceTest(t)
+	if err := svc.BootstrapBuiltinRoles(); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"support", "readonly_auditor"} {
+		if err := svc.SetAdminRoles(42, []string{role}); err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{"/admin/orders", "/admin/orders/101"} {
+			allowed, err := svc.EnforceAdmin(42, path, "GET")
+			if err != nil || allowed != (role == "support") {
+				t.Fatalf("%s GET %s allowed=%t, err=%v", role, path, allowed, err)
+			}
+		}
+	}
+}
+
 func TestBootstrapBuiltinRolesRemovesStaleImmutableWildcard(t *testing.T) {
 	svc := setupAuthzServiceTest(t)
 	if _, err := svc.EnsureRole("readonly_auditor"); err != nil {
