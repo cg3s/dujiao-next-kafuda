@@ -12,9 +12,15 @@ import (
 	jobconsumer "github.com/dujiao-next/internal/app/jobs/consumer"
 	kafudawiring "github.com/dujiao-next/internal/bootstrap/kafudagpt"
 	"github.com/dujiao-next/internal/config"
+	"github.com/dujiao-next/internal/constants"
+	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
+	userdomain "github.com/dujiao-next/internal/modules/identity/user/domain"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
+	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
+	orderstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
+	orderqueue "github.com/dujiao-next/internal/modules/order/infrastructure/queueadapter"
 	"github.com/dujiao-next/internal/queue"
 	"github.com/dujiao-next/internal/shared/money"
 	"github.com/glebarez/sqlite"
@@ -23,7 +29,8 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestRedisKafudaScheduledRecoveryAfterWorkerRestart(t *testing.T) {
+func kafudaRedisFixture(t *testing.T, dbIndex int) (*config.QueueConfig, *asynq.Inspector) {
+	t.Helper()
 	rawPort := os.Getenv("TEST_KAFUDA_REDIS_PORT")
 	if rawPort == "" {
 		t.Skip("TEST_KAFUDA_REDIS_PORT is empty")
@@ -32,7 +39,7 @@ func TestRedisKafudaScheduledRecoveryAfterWorkerRestart(t *testing.T) {
 	if err != nil || port == 0 {
 		t.Fatal("invalid test Redis port")
 	}
-	cfg := &config.QueueConfig{Enabled: true, Host: "127.0.0.1", Port: int(port), DB: 15, Concurrency: 1}
+	cfg := &config.QueueConfig{Enabled: true, Host: "127.0.0.1", Port: int(port), DB: dbIndex, Concurrency: 1}
 	opt, _ := queue.BuildServerConfig(cfg)
 	inspector := asynq.NewInspector(opt)
 	t.Cleanup(func() { _ = inspector.Close() })
@@ -40,6 +47,12 @@ func TestRedisKafudaScheduledRecoveryAfterWorkerRestart(t *testing.T) {
 	if err != nil || len(queues) != 0 {
 		t.Fatalf("an isolated, empty Redis test database is required: queues=%d, error=%v", len(queues), err)
 	}
+
+	return cfg, inspector
+}
+
+func TestRedisKafudaScheduledRecoveryAfterWorkerRestart(t *testing.T) {
+	cfg, inspector := kafudaRedisFixture(t, 15)
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -134,4 +147,63 @@ func awaitKafudaRedis(t *testing.T, timeout time.Duration, ready func() bool) {
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for Redis recovery")
+}
+
+func TestRedisKafudaCompletionReplayKeepsOneEmail(t *testing.T) {
+	cfg, inspector := kafudaRedisFixture(t, 14)
+	client, err := queue.NewClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = pool.Close() })
+	if err := db.AutoMigrate(&kafudadomain.Recharge{}, &kafudadomain.Attempt{}, &orderdomain.Order{}, &orderdomain.OrderItem{}, &fulfillmentdomain.Fulfillment{}, &userdomain.User{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	parent := orderdomain.Order{ID: 10, OrderNo: "completed-parent", UserID: 20, Status: constants.OrderStatusCompleted, PaidAt: &now, Currency: "CNY"}
+	child := orderdomain.Order{ID: 11, ParentID: &parent.ID, OrderNo: "completed-child", UserID: parent.UserID, Status: parent.Status, PaidAt: &now, Currency: parent.Currency}
+	buyer := userdomain.User{ID: parent.UserID, Email: "completion@example.test", PasswordHash: "fixture"}
+	recharge := kafudadomain.Recharge{OrderID: child.ID, Stage: kafudadomain.StageCompleted, CompletedAt: &now, CompletionEmailPending: true}
+	for _, row := range []any{&buyer, &parent, &child, &recharge} {
+		if err := db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Redis accepted the email before the previous process acknowledged it.
+	if err := orderqueue.NewDirectCompletion(client).EnqueueStatusEmail(parent.ID, parent.Status); err != nil {
+		t.Fatal(err)
+	}
+	store := kafudastore.New(db)
+	worker := jobconsumer.New(&container.Container{
+		KafudaGPT:   &kafudawiring.Module{Store: store, Records: kafudaapp.New(store)},
+		OrderStore:  orderstore.New(db, "test-guest-credential-secret-with-32-bytes"),
+		QueueClient: client,
+	})
+	mux := asynq.NewServeMux()
+	worker.Register(mux)
+	for range 2 {
+		if err := mux.ProcessTask(t.Context(), queue.NewKafudaRecoverChecksTask()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tasks, err := inspector.ListPendingTasks(queue.DefaultQueue)
+	if err != nil || len(tasks) != 1 || tasks[0].Type != queue.TaskOrderStatusEmail || tasks[0].ID != "kafuda-completed:10" {
+		t.Fatalf("expected exactly one parent-order email task: %v, %v", tasks, err)
+	}
+	pending, err := store.PendingCompletionEmails(t.Context(), 100)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("replayed enqueue failed to clear the pending marker: %v, %v", pending, err)
+	}
 }
