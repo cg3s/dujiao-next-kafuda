@@ -242,6 +242,9 @@ func hasManualFulfillmentItems(order *orderdomain.Order) bool {
 		return false
 	}
 	for _, item := range order.Items {
+		if strings.EqualFold(strings.TrimSpace(item.FulfillmentType), constants.FulfillmentTypeKafudaGPT) {
+			continue
+		}
 		if notificationformat.NormalizeFulfillmentType(item.FulfillmentType) == constants.FulfillmentTypeManual {
 			return true
 		}

@@ -59,6 +59,10 @@ func TestHasManualFulfillmentItems(t *testing.T) {
 	if hasManualFulfillmentItems(autoOnly) {
 		t.Fatalf("auto-only order should not have manual items")
 	}
+	directOnly := &orderdomain.Order{Items: []orderdomain.OrderItem{{FulfillmentType: constants.FulfillmentTypeKafudaGPT}}}
+	if hasManualFulfillmentItems(directOnly) {
+		t.Fatal("direct recharge must not trigger pending manual fulfillment")
+	}
 	manualOnly := &orderdomain.Order{Items: []orderdomain.OrderItem{{FulfillmentType: constants.FulfillmentTypeManual}}}
 	if !hasManualFulfillmentItems(manualOnly) {
 		t.Fatalf("manual order should have manual items")

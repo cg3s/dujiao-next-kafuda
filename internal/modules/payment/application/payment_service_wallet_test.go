@@ -39,6 +39,7 @@ import (
 
 	userdomain "github.com/dujiao-next/internal/modules/identity/user/domain"
 	userstore "github.com/dujiao-next/internal/modules/identity/user/infrastructure/gormstore"
+	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	settingsapp "github.com/dujiao-next/internal/modules/settings/application"
 	settingsstore "github.com/dujiao-next/internal/modules/settings/infrastructure/gormstore"
 	walletapp "github.com/dujiao-next/internal/modules/wallet/application"
@@ -123,6 +124,103 @@ func setupPaymentServiceWalletTest(t *testing.T) (*PaymentService, *gorm.DB) {
 	})
 
 	return paymentSvc, db
+}
+
+func TestDirectOrderPaymentKeepsRechargeWaiting(t *testing.T) {
+	for _, path := range []string{"wallet", "online_callback"} {
+		t.Run(path, func(t *testing.T) {
+			svc, db := setupPaymentServiceWalletTest(t)
+			sqlDB, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			sqlDB.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = sqlDB.Close() })
+			if err := db.AutoMigrate(&kafudadomain.Recharge{}, &kafudadomain.Attempt{}); err != nil {
+				t.Fatal(err)
+			}
+			queue := &directPaymentQueue{}
+			svc.queue = queue
+			amount := money.FromDecimal(decimal.NewFromInt(50))
+			user := userdomain.User{Email: "direct-pay@example.test", PasswordHash: "hash", Status: constants.UserStatusActive}
+			if err := db.Create(&user).Error; err != nil {
+				t.Fatal(err)
+			}
+			parent := orderdomain.Order{OrderNo: "DIRECT-PARENT", UserID: user.ID, Status: constants.OrderStatusPendingPayment, Currency: "CNY", OriginalAmount: amount, TotalAmount: amount, OnlinePaidAmount: amount}
+			if err := db.Create(&parent).Error; err != nil {
+				t.Fatal(err)
+			}
+			child := orderdomain.Order{OrderNo: "DIRECT-CHILD", ParentID: &parent.ID, UserID: user.ID, Status: parent.Status, Currency: parent.Currency, OriginalAmount: amount, TotalAmount: amount}
+			if err := db.Create(&child).Error; err != nil {
+				t.Fatal(err)
+			}
+			item := orderdomain.OrderItem{
+				OrderID: child.ID, ProductID: 91, SKUID: 92, Quantity: 1, FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+				TitleJSON: jsonmap.JSON{"en-US": "Direct recharge"}, UnitPrice: amount, TotalPrice: amount,
+			}
+			if err := db.Create(&item).Error; err != nil {
+				t.Fatal(err)
+			}
+			recharge := kafudadomain.Recharge{
+				OrderID: child.ID, Stage: kafudadomain.StageWaiting,
+				Snapshot: kafudadomain.Snapshot{ProductID: 91, SKUID: 92, Plan: "plus", Country: "PH", Product: "gpt", PayMode: "auto_card", ProductCode: "test-card", PaymentProfile: "test-profile", Currency: "CNY", SellPrice: amount, MaxCostCents: 2500},
+			}
+			if err := db.Create(&recharge).Error; err != nil {
+				t.Fatal(err)
+			}
+			if path == "wallet" {
+				if err := db.Create(&walletdomain.Account{UserID: user.ID, Balance: amount}).Error; err != nil {
+					t.Fatal(err)
+				}
+				result, err := svc.CreatePayment(CreatePaymentInput{OrderID: parent.ID, UseBalance: true})
+				if err != nil || result == nil || !result.OrderPaid {
+					t.Fatalf("wallet payment failed: %+v, %v", result, err)
+				}
+			} else {
+				payment := paymentdomain.Payment{OrderID: parent.ID, Amount: amount, Currency: parent.Currency, Status: constants.PaymentStatusPending}
+				if err := db.Create(&payment).Error; err != nil {
+					t.Fatal(err)
+				}
+				input := PaymentCallbackInput{PaymentID: payment.ID, OrderNo: parent.OrderNo, Amount: amount, Currency: parent.Currency, Status: constants.PaymentStatusSuccess}
+				for range 2 {
+					result, err := svc.HandleCallback(input)
+					if err != nil || result == nil || result.Status != constants.PaymentStatusSuccess {
+						t.Fatalf("online callback failed: %+v, %v", result, err)
+					}
+				}
+			}
+			for _, id := range []uint{parent.ID, child.ID} {
+				var order orderdomain.Order
+				if err := db.First(&order, id).Error; err != nil || order.Status != constants.OrderStatusPaid || order.PaidAt == nil {
+					t.Fatalf("order %d must be paid: %+v, %v", id, order, err)
+				}
+			}
+			var stored kafudadomain.Recharge
+			if err := db.First(&stored, "order_id = ?", child.ID).Error; err != nil || stored.Stage != kafudadomain.StageWaiting ||
+				stored.Version != recharge.Version || !stored.Snapshot.SellPrice.Equal(amount.Decimal) || stored.CurrentAttemptID != nil {
+				t.Fatalf("payment changed recharge state: %+v, %v", stored, err)
+			}
+			for _, model := range []any{&kafudadomain.Attempt{}, &fulfillmentdomain.Fulfillment{}} {
+				var count int64
+				if err := db.Model(model).Count(&count).Error; err != nil || count != 0 {
+					t.Fatalf("unexpected %T rows: %d, %v", model, count, err)
+				}
+			}
+			if queue.autoFulfill != 0 {
+				t.Fatal("direct payment queued automatic delivery")
+			}
+		})
+	}
+}
+
+type directPaymentQueue struct {
+	affiliateRetryQueue
+	autoFulfill int
+}
+
+func (q *directPaymentQueue) EnqueueOrderAutoFulfill(uint) error {
+	q.autoFulfill++
+	return nil
 }
 
 func TestCreatePaymentWalletFullAmountCreatesPaymentRecord(t *testing.T) {
