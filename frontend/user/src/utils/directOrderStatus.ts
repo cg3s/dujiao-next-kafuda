@@ -7,6 +7,7 @@ export type DirectOrderStage = typeof DIRECT_ORDER_STAGES[number]
 export interface DirectOrderStatus {
   stage: DirectOrderStage
   updated_at: string
+  renewal_cancelled?: boolean
 }
 
 type DirectOrderCandidate = {
@@ -24,10 +25,13 @@ export function directStatusOrderNo(order: DirectOrderCandidate | null): string 
 
 export function parseDirectOrderStatus(input: unknown): DirectOrderStatus | null {
   if (!input || typeof input !== 'object') return null
-  const { stage: rawStage, updated_at } = input as Partial<DirectOrderStatus>
+  const { stage: rawStage, updated_at, renewal_cancelled } = input as Partial<DirectOrderStatus>
   const stage = DIRECT_ORDER_STAGES.find((candidate) => candidate === rawStage)
   if (!stage) return null
   if (typeof updated_at !== 'string' || !Number.isFinite(Date.parse(updated_at))) return null
+  if (stage === 'completed' && typeof renewal_cancelled === 'boolean') {
+    return { stage, updated_at, renewal_cancelled }
+  }
   return { stage, updated_at }
 }
 

@@ -243,6 +243,8 @@
       "manual_review": "人工核對中",
       "completed": "充值完成",
       "refunded": "已退款",
+      "renewalCancelled": "自動續費已取消",
+      "renewalNotCancelled": "自動續費未取消",
       "updated": "更新於 {time}",
       "retrying": "暫時無法更新，稍後會自動重試。"
     },

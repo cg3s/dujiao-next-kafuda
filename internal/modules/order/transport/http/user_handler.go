@@ -80,8 +80,9 @@ type UserHandler struct {
 }
 
 type DirectStatus struct {
-	Stage     string    `json:"stage"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Stage            string    `json:"stage"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	RenewalCancelled *bool     `json:"renewal_cancelled,omitempty"`
 }
 
 type DirectStatusReader func(context.Context, string, uint) (*DirectStatus, error)

@@ -1754,6 +1754,8 @@
       "manual_review": "人工核对中",
       "completed": "充值完成",
       "refunded": "已退款",
+      "renewalCancelled": "自动续费已取消",
+      "renewalNotCancelled": "自动续费未取消",
       "updated": "更新于 {time}",
       "retrying": "暂时无法刷新，稍后会自动重试。"
     },

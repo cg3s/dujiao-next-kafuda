@@ -542,7 +542,7 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 		}
 	})
 	orderhttp.RegisterUserReadRoutes(router, handler)
-	request := func(orderNo string, uid uint, tenant resellercontract.TenantContext, wantCode int, wantStage string) {
+	request := func(orderNo string, uid uint, tenant resellercontract.TenantContext, wantCode int, wantStage, wantRenewal string) {
 		t.Helper()
 		userID = uid
 		ctx := resellercontract.WithTenantContext(context.Background(), tenant)
@@ -556,21 +556,26 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 			t.Fatalf("status response: %s, %v; expected %d", recorder.Body.String(), err, wantCode)
 		}
 		if wantStage != "" {
-			if len(responseBody.Data) != 2 || string(responseBody.Data["stage"]) != fmt.Sprintf("%q", wantStage) || len(responseBody.Data["updated_at"]) == 0 {
+			wantFields := 2
+			if wantRenewal != "" {
+				wantFields++
+			}
+			if len(responseBody.Data) != wantFields || string(responseBody.Data["stage"]) != fmt.Sprintf("%q", wantStage) ||
+				len(responseBody.Data["updated_at"]) == 0 || string(responseBody.Data["renewal_cancelled"]) != wantRenewal {
 				t.Fatalf("unexpected buyer projection: %s", recorder.Body.String())
 			}
 		}
 	}
 	main := resellercontract.MainTenantContext("shop.example")
-	request(order.OrderNo, order.UserID, main, response.CodeNotFound, "")
+	request(order.OrderNo, order.UserID, main, response.CodeNotFound, "", "")
 	now := time.Now().UTC()
 	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).Updates(map[string]any{"paid_at": now, "status": constants.OrderStatusPaid}).Error; err != nil {
 		t.Fatal(err)
 	}
-	request(order.OrderNo, 0, main, response.CodeUnauthorized, "")
-	request(order.OrderNo, order.UserID+100, main, response.CodeNotFound, "")
-	request(order.OrderNo, order.UserID, resellercontract.ResellerTenantContext("reseller.example", 1, 1, ""), response.CodeNotFound, "")
-	request(order.Children[0].OrderNo, order.UserID, main, response.CodeNotFound, "")
+	request(order.OrderNo, 0, main, response.CodeUnauthorized, "", "")
+	request(order.OrderNo, order.UserID+100, main, response.CodeNotFound, "", "")
+	request(order.OrderNo, order.UserID, resellercontract.ResellerTenantContext("reseller.example", 1, 1, ""), response.CodeNotFound, "", "")
+	request(order.Children[0].OrderNo, order.UserID, main, response.CodeNotFound, "", "")
 	for _, stage := range []kafudadomain.Stage{
 		kafudadomain.StageWaiting, kafudadomain.StageChecking, kafudadomain.StageSubmitting, kafudadomain.StageProcessing,
 		kafudadomain.StageManualReview, kafudadomain.StageManualDelivery, kafudadomain.StageCompleted,
@@ -588,12 +593,50 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 		if stage == kafudadomain.StageManualDelivery {
 			wantStage = kafudadomain.StageManualReview
 		}
-		request(order.OrderNo, order.UserID, main, 0, string(wantStage))
+		request(order.OrderNo, order.UserID, main, 0, string(wantStage), "")
 		record, err := f.store.GetRecharge(context.Background(), childID)
 		if err != nil || record == nil || record.Version != 5 {
 			t.Fatalf("status read changed the recharge: %+v, %v", record, err)
 		}
 	}
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+		t.Fatal(err)
+	}
+	upstreamID := uint64(123)
+	renewalCancelled := false
+	attempt := kafudadomain.Attempt{
+		OrderID: childID, Sequence: 1, Reference: "kgpt-renewal-test", Status: kafudadomain.AttemptCompleted,
+		UpstreamOrderID: &upstreamID, RenewalCancelled: &renewalCancelled,
+		MaskedEmail: "m***@example.com",
+	}
+	if err := f.db.Create(&attempt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&kafudadomain.Recharge{}).Where("order_id = ?", childID).Update("current_attempt_id", attempt.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	request(order.OrderNo, order.UserID, main, 0, "completed", "false")
+	if err := f.db.Model(&attempt).Update("renewal_cancelled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	request(order.OrderNo, order.UserID, main, 0, "completed", "true")
+	if err := f.db.Model(&attempt).Update("renewal_cancelled", nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	request(order.OrderNo, order.UserID, main, 0, "completed", "")
+	if err := f.db.Model(&attempt).Update("renewal_cancelled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	record, err := f.store.GetRecharge(context.Background(), childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Snapshot.Product = "gpt_credits"
+	if err := f.db.Model(&kafudadomain.Recharge{}).Where("order_id = ?", childID).
+		Select("snapshot").Updates(record).Error; err != nil {
+		t.Fatal(err)
+	}
+	request(order.OrderNo, order.UserID, main, 0, "completed", "")
 	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
 		Update("status", constants.OrderStatusRefunded).Error; err != nil {
 		t.Fatal(err)
@@ -602,8 +645,8 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 		Update("refunded_amount", order.TotalAmount).Error; err != nil {
 		t.Fatal(err)
 	}
-	request(order.OrderNo, order.UserID, main, 0, "refunded")
-	request(order.OrderNo, order.UserID+100, main, response.CodeNotFound, "")
+	request(order.OrderNo, order.UserID, main, 0, "refunded", "")
+	request(order.OrderNo, order.UserID+100, main, response.CodeNotFound, "", "")
 }
 
 func TestControlledDirectManualCompletionRequiresTerminalAttempt(t *testing.T) {

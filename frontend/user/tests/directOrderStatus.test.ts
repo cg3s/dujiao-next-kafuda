@@ -29,6 +29,17 @@ test('buyer progress accepts only the public stages and a valid timestamp', () =
   }
 })
 
+test('only a completed recharge displays a boolean renewal result', () => {
+  const updated_at = '2026-11-18T08:00:00Z'
+  for (const renewal_cancelled of [true, false]) {
+    assert.deepEqual(parseDirectOrderStatus({ stage: 'completed', updated_at, renewal_cancelled }), {
+      stage: 'completed', updated_at, renewal_cancelled,
+    })
+  }
+  assert.deepEqual(parseDirectOrderStatus({ stage: 'completed', updated_at, renewal_cancelled: 'false' }), { stage: 'completed', updated_at })
+  assert.deepEqual(parseDirectOrderStatus({ stage: 'processing', updated_at, renewal_cancelled: true }), { stage: 'processing', updated_at })
+})
+
 function testPage() {
   return Object.assign(new EventTarget(), { visibilityState: 'visible' as DocumentVisibilityState })
 }

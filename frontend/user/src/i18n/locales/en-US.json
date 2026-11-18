@@ -243,6 +243,8 @@
       "manual_review": "Under manual review",
       "completed": "Recharge complete",
       "refunded": "Refunded",
+      "renewalCancelled": "Auto-renewal was cancelled",
+      "renewalNotCancelled": "Auto-renewal was not cancelled",
       "updated": "Updated {time}",
       "retrying": "Progress is temporarily unavailable. Retrying automatically."
     },

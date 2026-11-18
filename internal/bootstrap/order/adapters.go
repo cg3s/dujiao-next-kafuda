@@ -83,7 +83,18 @@ func newDirectStatusReader(c *container.Container) ordertransport.DirectStatusRe
 		default:
 			return nil, nil
 		}
-		return &ordertransport.DirectStatus{Stage: string(stage), UpdatedAt: record.UpdatedAt}, nil
+		status := &ordertransport.DirectStatus{Stage: string(stage), UpdatedAt: record.UpdatedAt}
+		if stage == kafudadomain.StageCompleted && order.Status == constants.OrderStatusCompleted &&
+			record.Snapshot.Product == "gpt" && record.CurrentAttemptID != nil {
+			attempt, err := c.KafudaGPT.Store.GetAttempt(ctx, *record.CurrentAttemptID)
+			if err != nil {
+				return nil, err
+			}
+			if attempt != nil && attempt.OrderID == child.ID && attempt.Status == kafudadomain.AttemptCompleted && attempt.UpstreamOrderID != nil {
+				status.RenewalCancelled = attempt.RenewalCancelled
+			}
+		}
+		return status, nil
 	}
 }
 

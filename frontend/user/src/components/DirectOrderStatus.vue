@@ -5,6 +5,9 @@
     <p v-if="status" class="mt-1 text-xs text-muted-foreground">
       {{ t('directPurchase.progress.updated', { time: formatDate(status.updated_at) }) }}
     </p>
+    <p v-if="status?.renewal_cancelled !== undefined" class="mt-1 text-xs text-muted-foreground">
+      {{ t(status.renewal_cancelled ? 'directPurchase.progress.renewalCancelled' : 'directPurchase.progress.renewalNotCancelled') }}
+    </p>
     <p v-if="unavailable" class="mt-2 text-sm text-muted-foreground">{{ t('directPurchase.progress.retrying') }}</p>
     <p v-else-if="!status" class="mt-2 text-sm text-muted-foreground">{{ t('common.loading') }}</p>
   </section>
