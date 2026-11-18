@@ -942,6 +942,8 @@ const messages = {
         title: '订单管理',
         directReview: {
           filter: '待直充核对',
+          complete: '记录人工交付完成',
+          completePrompt: '请确认已实际完成人工交付，且原上游尝试不会再开通。确认后将同时完结父单和子单。',
           title: '直充核对',
           stage: '阶段',
           updatedAt: '更新时间',
@@ -5589,6 +5591,8 @@ const messages = {
         title: '訂單管理',
         directReview: {
           filter: '待直充核對',
+          complete: '記錄人工交付完成',
+          completePrompt: '請確認已實際完成人工交付，且原上游嘗試不會再開通。確認後將同時完結父單和子單。',
           title: '直充核對',
           stage: '階段',
           updatedAt: '更新時間',
@@ -10236,6 +10240,8 @@ const messages = {
         title: 'Orders',
         directReview: {
           filter: 'Pending recharge review',
+          complete: 'Record manual delivery',
+          completePrompt: 'Confirm that manual delivery has taken place and the original supplier attempt can no longer deliver. This completes both shop orders.',
           title: 'Recharge review',
           stage: 'Stage',
           updatedAt: 'Last updated',

@@ -3,6 +3,8 @@ package orderwiring
 import (
 	"github.com/dujiao-next/internal/app/container"
 	ordertransport "github.com/dujiao-next/internal/modules/order/transport/http"
+	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
+	"time"
 )
 
 // Handlers contains every order HTTP entrypoint required by the router.
@@ -27,6 +29,12 @@ func New(c *container.Container) Handlers {
 			orderAdminPaymentChannelAdapter{channels: c.PaymentChannelStore},
 			orderAdminAccountingAdapter{settings: c.SettingService},
 			newAdminDirectStatusReader(c),
+			func(childID, attemptID, adminID uint, confirmed bool) error {
+				if c.OrderStore == nil {
+					return ordertransport.ErrOrderNotFound
+				}
+				return mapOrderTransportError(kafudaworkflow.CompleteManual(c.OrderStore, childID, attemptID, adminID, confirmed, time.Now().UTC()))
+			},
 		),
 		AdminRefund: NewAdminRefundHandler(c),
 		User: ordertransport.NewUserHandler(

@@ -26,6 +26,7 @@ import { formatDate, formatMoney, getLocalizedText, hasPositiveAmount } from '@/
 import { resolveSkuCodeFromSnapshot, resolveSkuSpecFromSnapshot } from '@/utils/sku'
 import { adminUrl } from '@/utils/adminBase'
 import { confirmAction } from '@/utils/confirm'
+import { useAdminAuthStore } from '@/stores/auth'
 import { buildItemRefundAllocation, calcItemProfit, toNumber } from '@/utils/orderProfit'
 
 const props = defineProps<{
@@ -46,6 +47,29 @@ const { t, locale } = useI18n()
 const detailLoading = ref(false)
 const detailError = ref('')
 const selectedOrder = ref<AdminOrder | null>(null)
+const auth = useAdminAuthStore()
+const directCompleting = ref(false)
+const completeDirect = async () => {
+  const order = selectedOrder.value
+  const recharge = order?.direct_recharge
+  if (!order || recharge?.stage !== 'manual_delivery' || !recharge.attempt || recharge.attempt.active || directCompleting.value) return
+  directCompleting.value = true
+  try {
+    const confirmed = await confirmAction({
+      title: t('admin.orders.directReview.complete'),
+      description: t('admin.orders.directReview.completePrompt'),
+      variant: 'destructive',
+    })
+    if (!confirmed || selectedOrder.value !== order) return
+    await adminAPI.completeDirectOrder(recharge.child_id, recharge.attempt.id)
+    if (selectedOrder.value === order) await fetchOrderDetail(order.id)
+    emit('refresh')
+  } catch {
+    // The shared API client displays the error.
+  } finally {
+    directCompleting.value = false
+  }
+}
 const procurementOrder = ref<AdminProcurementOrder | null | undefined>(null)
 
 const refundSubmitting = ref(false)
@@ -772,6 +796,10 @@ watch(
                 <div v-if="selectedOrder.direct_recharge.attempt.masked_email"><dt class="text-muted-foreground">{{ t('admin.orders.directReview.account') }}</dt><dd>{{ selectedOrder.direct_recharge.attempt.masked_email }}</dd></div>
               </template>
             </dl>
+            <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-complete') && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
+              class="mt-4" size="sm" :disabled="directCompleting" @click="completeDirect">
+              {{ t('admin.orders.directReview.complete') }}
+            </Button>
           </section>
 
           <div class="rounded-xl border border-border bg-muted/20 p-4">

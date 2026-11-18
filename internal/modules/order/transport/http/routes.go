@@ -10,6 +10,7 @@ func RegisterAdminRoutes(authorized gin.IRoutes, handler *AdminHandler) {
 	authorized.GET("/orders", handler.AdminListOrders)
 	authorized.GET("/orders/:id", handler.AdminGetOrder)
 	authorized.PATCH("/orders/:id", handler.AdminUpdateOrderStatus)
+	authorized.POST("/orders/:id/direct-complete", handler.AdminCompleteDirect)
 }
 
 // RegisterAdminRefundRoutes 注册后台退款只读路由。

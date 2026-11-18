@@ -155,10 +155,11 @@ export interface AdminFulfillment {
 
 export interface AdminOrder {
   direct_recharge?: {
+    child_id: number
     stage: string
     updated_at: string
     reason?: string
-    attempt?: { sequence: number; active: boolean; reference?: string; upstream_order_id?: string; masked_email?: string }
+    attempt?: { id: number; sequence: number; active: boolean; reference?: string; upstream_order_id?: string; masked_email?: string }
   }
   id: number
   order_no: string

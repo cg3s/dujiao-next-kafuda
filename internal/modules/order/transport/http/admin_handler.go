@@ -88,14 +88,15 @@ type AccountingPolicy interface {
 
 // AdminHandler 处理后台订单 HTTP。
 type AdminHandler struct {
-	orders     OrderQuery
-	users      UserDirectory
-	coupons    CouponLookup
-	promotions PromotionLookup
-	payments   PaymentDirectory
-	channels   PaymentChannelDirectory
-	accounting AccountingPolicy
-	direct     AdminDirectStatusReader
+	orders         OrderQuery
+	users          UserDirectory
+	coupons        CouponLookup
+	promotions     PromotionLookup
+	payments       PaymentDirectory
+	channels       PaymentChannelDirectory
+	accounting     AccountingPolicy
+	direct         AdminDirectStatusReader
+	completeDirect func(childID, attemptID, adminID uint, confirmed bool) error
 }
 
 func NewAdminHandler(
@@ -107,19 +108,21 @@ func NewAdminHandler(
 	channels PaymentChannelDirectory,
 	accounting AccountingPolicy,
 	direct AdminDirectStatusReader,
+	completeDirect func(childID, attemptID, adminID uint, confirmed bool) error,
 ) *AdminHandler {
 	if orders == nil || users == nil || coupons == nil || promotions == nil || payments == nil || channels == nil || accounting == nil {
 		panic("order admin handler: required dependency is nil")
 	}
 	return &AdminHandler{
-		orders:     orders,
-		users:      users,
-		coupons:    coupons,
-		promotions: promotions,
-		payments:   payments,
-		channels:   channels,
-		accounting: accounting,
-		direct:     direct,
+		orders:         orders,
+		users:          users,
+		coupons:        coupons,
+		promotions:     promotions,
+		payments:       payments,
+		channels:       channels,
+		accounting:     accounting,
+		direct:         direct,
+		completeDirect: completeDirect,
 	}
 }
 
@@ -151,6 +154,7 @@ type AdminOrderDetail struct {
 }
 
 type AdminDirectStatus struct {
+	ChildID   uint                `json:"child_id"`
 	Stage     string              `json:"stage"`
 	UpdatedAt time.Time           `json:"updated_at"`
 	Reason    string              `json:"reason,omitempty"`
@@ -158,6 +162,7 @@ type AdminDirectStatus struct {
 }
 
 type AdminDirectAttempt struct {
+	ID              uint   `json:"id"`
 	Sequence        uint   `json:"sequence"`
 	Active          bool   `json:"active"`
 	Reference       string `json:"reference,omitempty"`
@@ -166,6 +171,36 @@ type AdminDirectAttempt struct {
 }
 
 type AdminDirectStatusReader func(context.Context, *orderdomain.Order) (*AdminDirectStatus, error)
+
+func (h *AdminHandler) AdminCompleteDirect(c *gin.Context) {
+	adminID, ok := ginutil.GetAdminID(c)
+	if !ok {
+		return
+	}
+	childID, err := ginutil.ParseParamUint(c, "id")
+	if err != nil {
+		ginutil.RespondError(c, response.CodeBadRequest, "error.order_item_invalid", nil)
+		return
+	}
+	var input struct {
+		AttemptID uint `json:"attempt_id" binding:"required"`
+		Confirmed bool `json:"confirmed" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		ginutil.RespondBindError(c, err)
+		return
+	}
+	switch err := h.completeDirect(childID, input.AttemptID, adminID, input.Confirmed); {
+	case err == nil:
+		response.Success(c, gin.H{})
+	case errors.Is(err, ErrOrderNotFound):
+		ginutil.RespondError(c, response.CodeNotFound, "error.order_not_found", nil)
+	case errors.Is(err, ErrOrderStatusInvalid):
+		ginutil.RespondError(c, response.CodeBadRequest, "error.order_status_invalid", nil)
+	default:
+		ginutil.RespondError(c, response.CodeInternal, "error.order_update_failed", nil)
+	}
+}
 
 // AdminListOrders 管理端订单列表
 func (h *AdminHandler) AdminListOrders(c *gin.Context) {

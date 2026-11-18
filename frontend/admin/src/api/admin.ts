@@ -437,6 +437,7 @@ export const adminAPI = {
   updatePassword: (data: { old_password: string; new_password: string }) => api.put('/admin/password', data),
   getOrders: (params?: Record<string, unknown>) => api.get('/admin/orders', { params }),
   getOrder: (id: number) => api.get(`/admin/orders/${id}`),
+  completeDirectOrder: (childID: number, attemptID: number) => api.post(`/admin/orders/${childID}/direct-complete`, { attempt_id: attemptID, confirmed: true }),
   updateOrderStatus: (id: number, data: { status: string }) => api.patch(`/admin/orders/${id}`, data),
   createFulfillment: (data: Partial<AdminFulfillment>) => api.post('/admin/fulfillments', data),
   downloadFulfillment: (orderId: number) => api.get(`/admin/orders/${orderId}/fulfillment/download`, { blob: true }),

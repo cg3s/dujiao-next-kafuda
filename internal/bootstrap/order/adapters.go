@@ -133,7 +133,7 @@ func newAdminDirectStatusReader(c *container.Container) ordertransport.AdminDire
 		default:
 			return nil, nil
 		}
-		status := &ordertransport.AdminDirectStatus{Stage: string(record.Stage), UpdatedAt: record.UpdatedAt}
+		status := &ordertransport.AdminDirectStatus{ChildID: child.ID, Stage: string(record.Stage), UpdatedAt: record.UpdatedAt}
 		switch record.ReasonCode {
 		case "check_rejected", "session_invalid", "outcome_unknown", "upstream_review", "upstream_failed", "upstream_cancelled",
 			"cost_limit_exceeded", "lookup_deadline_exceeded", "check_interrupted":
@@ -149,7 +149,7 @@ func newAdminDirectStatusReader(c *container.Container) ordertransport.AdminDire
 		if attempt == nil || attempt.OrderID != child.ID {
 			return status, nil
 		}
-		info := &ordertransport.AdminDirectAttempt{Sequence: attempt.Sequence, Active: attempt.Status.Active()}
+		info := &ordertransport.AdminDirectAttempt{ID: attempt.ID, Sequence: attempt.Sequence, Active: attempt.Status.Active()}
 		if attempt.Validate() == nil {
 			info.Reference = attempt.Reference
 		}

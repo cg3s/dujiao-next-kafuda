@@ -331,8 +331,17 @@ func TestControlledDirectManualCompletionRequiresTerminalAttempt(t *testing.T) {
 	if err := complete(id+1, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("wrong attempt allowed manual completion: %v", err)
 	}
-	if err := complete(id, true); err != nil {
-		t.Fatal(err)
+	handler := orderwiring.New(&container.Container{OrderStore: f.options.OrderStore}).Admin
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("admin_id", uint(adminID)) })
+	orderhttp.RegisterAdminRoutes(router.Group("/admin"), handler)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/orders/%d/direct-complete", childID),
+		strings.NewReader(fmt.Sprintf(`{"attempt_id":%d,"confirmed":true,"admin_id":999}`, id)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), `"status_code":0`) {
+		t.Fatalf("direct completion endpoint: %s", rec.Body.String())
 	}
 	if err := complete(id, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("manual completion replay accepted: %v", err)
