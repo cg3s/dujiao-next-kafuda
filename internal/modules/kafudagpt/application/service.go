@@ -167,7 +167,26 @@ func (s *Service) MarkUnknown(ctx context.Context, attemptID uint, now, nextPoll
 // RecordResult consumes a normalized query/create response, not arbitrary text.
 // A terminal duplicate is a no-op. Old terminal events never reopen a recharge.
 func (s *Service) RecordResult(ctx context.Context, attemptID uint, result kafudacontract.OrderResult, now, nextPoll time.Time) error {
-	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
+	return s.change(ctx, attemptID, resultUpdate(result, now, nextPoll))
+}
+
+// RecordResultInTransaction allows the caller to complete the shop order in
+// the same transaction. The returned flag is true only for a fresh completion.
+func RecordResultInTransaction(tx kafudacontract.Transaction, orderID, attemptID uint, result kafudacontract.OrderResult, now, nextPoll time.Time) (bool, error) {
+	update := resultUpdate(result, now, nextPoll)
+	completed := false
+	err := changeInTransaction(tx, orderID, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
+		if err := update(record, attempt); err != nil {
+			return err
+		}
+		completed = record.Stage == kafudadomain.StageCompleted
+		return nil
+	})
+	return completed && err == nil, err
+}
+
+func resultUpdate(result kafudacontract.OrderResult, now, nextPoll time.Time) func(*kafudadomain.Recharge, *kafudadomain.Attempt) error {
+	return func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 		if result.ID == 0 || result.Reference != attempt.Reference || result.Product != record.Snapshot.Product || result.Plan != record.Snapshot.Plan || result.Country != record.Snapshot.Country {
 			return kafudadomain.ErrInvalidTransition
 		}
@@ -238,7 +257,7 @@ func (s *Service) RecordResult(ctx context.Context, attemptID uint, result kafud
 			record.Stage, record.ReasonCode, record.CompletedAt = kafudadomain.StageCompleted, "", &now
 		}
 		return nil
-	})
+	}
 }
 
 func (s *Service) change(ctx context.Context, attemptID uint, update func(*kafudadomain.Recharge, *kafudadomain.Attempt) error) error {
@@ -252,30 +271,37 @@ func (s *Service) change(ctx context.Context, attemptID uint, update func(*kafud
 		return kafudadomain.ErrNotFound
 	}
 	return s.store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
-		record, err := tx.GetRechargeForUpdate(initial.OrderID)
-		if err != nil {
-			return err
-		}
-		if record == nil || record.CurrentAttemptID == nil || *record.CurrentAttemptID != attemptID {
-			return kafudadomain.ErrConflict
-		}
-		attempt, err := tx.GetAttemptForUpdate(attemptID)
-		if err != nil {
-			return err
-		}
-		if attempt == nil {
-			return kafudadomain.ErrNotFound
-		}
-		if err := update(record, attempt); err == errNoRecordChange {
-			return nil
-		} else if err != nil {
-			return err
-		}
-		if err := tx.SaveAttempt(attempt); err != nil {
-			return err
-		}
-		return tx.SaveRecharge(record)
+		return changeInTransaction(tx, initial.OrderID, attemptID, update)
 	})
+}
+
+func changeInTransaction(tx kafudacontract.Transaction, orderID, attemptID uint, update func(*kafudadomain.Recharge, *kafudadomain.Attempt) error) error {
+	record, err := tx.GetRechargeForUpdate(orderID)
+	if err != nil {
+		return err
+	}
+	if record == nil || record.CurrentAttemptID == nil || *record.CurrentAttemptID != attemptID {
+		return kafudadomain.ErrConflict
+	}
+	attempt, err := tx.GetAttemptForUpdate(attemptID)
+	if err != nil {
+		return err
+	}
+	if attempt == nil {
+		return kafudadomain.ErrNotFound
+	}
+	if attempt.OrderID != orderID {
+		return kafudadomain.ErrConflict
+	}
+	if err := update(record, attempt); err == errNoRecordChange {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := tx.SaveAttempt(attempt); err != nil {
+		return err
+	}
+	return tx.SaveRecharge(record)
 }
 
 func containsFullEmail(value string) bool {

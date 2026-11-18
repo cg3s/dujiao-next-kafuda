@@ -161,6 +161,46 @@ func TestUnknownOutcomeRetainsSlotAndLateSuccessConverges(t *testing.T) {
 	}
 }
 
+func TestRechargeCompletionCanShareCallerTransaction(t *testing.T) {
+	_, store, service := database(t)
+	ctx, now := context.Background(), time.Now().UTC()
+	prepare(t, service, 10, now)
+	attempt := reserve(t, service, 10, now).Attempt
+	if err := service.MarkSubmitting(ctx, attempt.ID, "quo_1", now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	result := kafudacontract.OrderResult{ID: 101, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed"}
+	orderWriteErr := errors.New("shop order update failed")
+	if err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
+		completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, time.Time{})
+		if err != nil || !completed {
+			t.Fatalf("expected fresh completion: %t, %v", completed, err)
+		}
+		return orderWriteErr
+	}); !errors.Is(err, orderWriteErr) {
+		t.Fatalf("transaction did not return the order error: %v", err)
+	}
+	record, err := store.GetRecharge(ctx, 10)
+	if err != nil || record == nil || record.Stage != kafudadomain.StageSubmitting || record.CompletedAt != nil {
+		t.Fatalf("caller failure did not roll back recharge: %+v, %v", record, err)
+	}
+	stored, err := store.GetAttempt(ctx, attempt.ID)
+	if err != nil || stored == nil || stored.Status != kafudadomain.AttemptSubmitting || stored.ActiveOrderID == nil {
+		t.Fatalf("caller failure did not roll back attempt: %+v, %v", stored, err)
+	}
+	for _, wantFresh := range []bool{true, false} {
+		if err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
+			completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, time.Time{})
+			if err != nil || completed != wantFresh {
+				t.Fatalf("fresh completion = %t, %v; want %t", completed, err, wantFresh)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestStalePollCannotRegressScheduleAndLateCompletionStillConverges(t *testing.T) {
 	_, store, service := database(t)
 	ctx, now := context.Background(), time.Now().UTC()
