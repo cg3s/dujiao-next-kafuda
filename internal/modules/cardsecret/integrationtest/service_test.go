@@ -27,7 +27,7 @@ import (
 	"gorm.io/gorm"
 )
 
-type cardSecretImportHook struct {
+type cardSecretTransactionHook struct {
 	cardsecretcontract.UnitOfWork
 	before func()
 }
@@ -65,7 +65,7 @@ func TestCardSecretUpdateDoesNotRestoreDeletedInventory(t *testing.T) {
 	}
 }
 
-func (u cardSecretImportHook) Transaction(fn func(cardsecretcontract.Repository, cardsecretcontract.BatchRepository, cardsecretcontract.ProductRepository, cardsecretcontract.ProductSKURepository) error) error {
+func (u cardSecretTransactionHook) Transaction(fn func(cardsecretcontract.Repository, cardsecretcontract.BatchRepository, cardsecretcontract.ProductRepository, cardsecretcontract.ProductSKURepository) error) error {
 	u.before()
 	return u.UnitOfWork.Transaction(fn)
 }
@@ -95,7 +95,7 @@ func TestCardSecretImportRechecksProductAndSKUInTransaction(t *testing.T) {
 				products, skus := productgormstore.NewProductStore(db), productgormstore.NewSKUStore(db)
 				secrets := cardsecretgormstore.New(db)
 				called := false
-				uow := cardSecretImportHook{UnitOfWork: secrets.WithProducts(products, skus), before: func() {
+				uow := cardSecretTransactionHook{UnitOfWork: secrets.WithProducts(products, skus), before: func() {
 					called = true
 					var err error
 					switch change {
@@ -874,6 +874,64 @@ func TestCardSecretServiceListBatchesReturnsRealtimeCounts(t *testing.T) {
 		default:
 			t.Fatalf("unexpected batch summary: %+v", summary)
 		}
+	}
+}
+
+func TestExportAvailableCardSecretsRechecksScopeInTransaction(t *testing.T) {
+	for _, change := range []struct {
+		name string
+		want error
+	}{
+		{"product_deleted", cardsecretapp.ErrProductNotFound},
+		{"product_converted", cardsecretapp.ErrInvalid},
+		{"sku_disabled", cardsecretapp.ErrProductSKUInvalid},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			db := setupCardSecretServiceTestDB(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			product := productdomain.Product{Slug: "export-race", TitleJSON: jsonmap.JSON{"zh-CN": "export-race"}, FulfillmentType: constants.FulfillmentTypeAuto}
+			if err := db.Create(&product).Error; err != nil {
+				t.Fatal(err)
+			}
+			sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: productdomain.DefaultSKUCode, IsActive: true}
+			if err := db.Create(&sku).Error; err != nil {
+				t.Fatal(err)
+			}
+			item := cardsecretdomain.Secret{ProductID: product.ID, SKUID: sku.ID, Secret: "unchanged", Status: cardsecretdomain.StatusAvailable}
+			if err := db.Create(&item).Error; err != nil {
+				t.Fatal(err)
+			}
+			products, skus := productgormstore.NewProductStore(db), productgormstore.NewSKUStore(db)
+			secrets := cardsecretgormstore.New(db)
+			uow := cardSecretTransactionHook{UnitOfWork: secrets.WithProducts(products, skus), before: func() {
+				var err error
+				switch change.name {
+				case "product_deleted":
+					err = db.Delete(&product).Error
+				case "product_converted":
+					err = db.Model(&product).Update("fulfillment_type", constants.FulfillmentTypeKafudaGPT).Error
+				case "sku_disabled":
+					err = db.Model(&sku).Update("is_active", false).Error
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}}
+			svc := cardsecretapp.NewService(cardsecretapp.ServiceOptions{Secrets: secrets, Transactions: uow, Products: products, ProductSKUs: skus})
+			result, err := svc.ExportAvailableCardSecrets(ExportAvailableCardSecretInput{ProductID: product.ID, SKUID: sku.ID, Limit: 1, Format: "txt"})
+			if result != nil || !errors.Is(err, change.want) {
+				t.Fatalf("export returned content=%t, error=%v; want no content and %v", result != nil, err, change.want)
+			}
+			current, err := secrets.GetByID(item.ID)
+			if err != nil || current == nil || current.Status != cardsecretdomain.StatusAvailable {
+				t.Fatalf("export changed inventory or failed to load it: %v", err)
+			}
+		})
 	}
 }
 

@@ -65,7 +65,18 @@ func (s *Service) ExportAvailableCardSecrets(input ExportAvailableCardSecretInpu
 	if s.transactions == nil {
 		return nil, ErrFetchFailed
 	}
-	err = s.transactions.Transaction(func(secretRepo cardsecretcontract.Repository, _ cardsecretcontract.BatchRepository, _ cardsecretcontract.ProductRepository, _ cardsecretcontract.ProductSKURepository) error {
+	err = s.transactions.Transaction(func(secretRepo cardsecretcontract.Repository, _ cardsecretcontract.BatchRepository, products cardsecretcontract.ProductRepository, skus cardsecretcontract.ProductSKURepository) error {
+		if products == nil || skus == nil {
+			return ErrFetchFailed
+		}
+		if err := products.LockByIDs([]uint{input.ProductID}); err != nil {
+			return ErrFetchFailed
+		}
+		bound := *s
+		bound.productRepo, bound.productSKURepo = products, skus
+		if err := bound.validateAutoCardSecretExportScope(input.ProductID, input.SKUID); err != nil {
+			return err
+		}
 		items, err := secretRepo.ListAvailableByProductBatchForUpdate(input.ProductID, input.SKUID, input.BatchID, input.Limit)
 		if err != nil {
 			return ErrFetchFailed
