@@ -288,6 +288,55 @@ func TestOverCapChargeRequiresReviewAndKeepsSupplierOutcome(t *testing.T) {
 	}
 }
 
+func TestOverCapTerminalFailurePermitsControlledAfterSales(t *testing.T) {
+	for _, status := range []kafudadomain.AttemptStatus{kafudadomain.AttemptFailed, kafudadomain.AttemptCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			_, store, service := database(t)
+			ctx, now := t.Context(), time.Now().UTC()
+			prepare(t, service, 10, now)
+			reservation := reserve(t, service, 10, now)
+			attemptID := reservation.Attempt.ID
+			if err := service.MarkSubmitting(ctx, attemptID, "quo_1", now, now.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			charge := reservation.Recharge.Snapshot.MaxCostCents + 1
+			result := kafudacontract.OrderResult{
+				ID: 101, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus",
+				Country: "PH", Status: string(kafudadomain.AttemptProcessing), ChargedUSDCents: &charge,
+			}
+			if err := service.RecordResult(ctx, attemptID, result, now, now.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			active, err := store.GetAttempt(ctx, attemptID)
+			if err != nil || active == nil {
+				t.Fatalf("load active attempt: %+v, %v", active, err)
+			}
+			review, err := store.GetRecharge(ctx, 10)
+			if err != nil || review == nil || review.Stage != kafudadomain.StageManualReview ||
+				kafudacontract.CanResolveManualAttempt(review, active) {
+				t.Fatalf("active over-cap attempt must remain blocked: %+v, %v", review, err)
+			}
+
+			result.Status, result.ChargedUSDCents = string(status), nil
+			if err := service.RecordResult(ctx, attemptID, result, now.Add(time.Second), time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			attempt, err := store.GetAttempt(ctx, attemptID)
+			if err != nil || attempt == nil || attempt.Status != status || attempt.ActiveOrderID != nil || attempt.NextPollAt != nil ||
+				attempt.ChargedUSDCents == nil || *attempt.ChargedUSDCents != charge {
+				t.Fatalf("terminal supplier result or original charge missing: %+v, %v", attempt, err)
+			}
+			record, err := store.GetRecharge(ctx, 10)
+			if err != nil || record == nil || record.Stage != kafudadomain.StageManualDelivery ||
+				record.ReasonCode != kafudadomain.ReasonCostLimitExceeded || record.CompletedAt != nil ||
+				!record.Snapshot.SellPrice.Equal(reservation.Recharge.Snapshot.SellPrice.Decimal) ||
+				!kafudacontract.CanResolveManualAttempt(record, attempt) {
+				t.Fatalf("terminal failure did not permit controlled after-sales: %+v, %v", record, err)
+			}
+		})
+	}
+}
+
 func TestInputCorrectionReleasesSlotButBusinessFailureRequiresManual(t *testing.T) {
 	_, store, service := database(t)
 	ctx, now := context.Background(), time.Now().UTC()

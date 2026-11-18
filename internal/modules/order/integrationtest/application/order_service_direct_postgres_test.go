@@ -100,9 +100,49 @@ func TestPostgresDirectCentralMigration(t *testing.T) {
 	gormdb.DB = db
 	t.Cleanup(func() { gormdb.DB = previousDB })
 
+	if err := databasemigrations.AutoMigrate(); err != nil {
+		t.Fatalf("initial central migration: %v", err)
+	}
+	const costReason = kafudadomain.ReasonCostLimitExceeded
+	charge := int64(3000)
+	for i, status := range []kafudadomain.AttemptStatus{kafudadomain.AttemptFailed, kafudadomain.AttemptCompleted} {
+		orderID := uint(i + 1)
+		upstreamID := uint64(orderID)
+		attempt := kafudadomain.Attempt{
+			OrderID: orderID, Sequence: 1, Status: status, Reference: string(status),
+			UpstreamOrderID: &upstreamID, ChargedUSDCents: &charge,
+		}
+		if err := db.Create(&attempt).Error; err != nil {
+			t.Fatal(err)
+		}
+		record := kafudadomain.Recharge{
+			OrderID: orderID, CurrentAttemptID: &attempt.ID, AttemptCount: 1, Version: 1,
+			Stage: kafudadomain.StageManualReview, ReasonCode: costReason,
+			Snapshot: kafudadomain.Snapshot{MaxCostCents: 2500},
+		}
+		if err := db.Create(&record).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	for range 2 {
 		if err := databasemigrations.AutoMigrate(); err != nil {
 			t.Fatalf("central migration: %v", err)
+		}
+	}
+	for _, want := range []struct {
+		orderID uint
+		stage   kafudadomain.Stage
+		version uint64
+	}{
+		{1, kafudadomain.StageManualDelivery, 2},
+		{2, kafudadomain.StageManualReview, 1},
+	} {
+		var record kafudadomain.Recharge
+		if err := db.First(&record, "order_id = ?", want.orderID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if record.Stage != want.stage || record.Version != want.version || record.ReasonCode != costReason {
+			t.Fatalf("order %d after backfill: stage=%s version=%d reason=%s", want.orderID, record.Stage, record.Version, record.ReasonCode)
 		}
 	}
 	migrator := db.Migrator()

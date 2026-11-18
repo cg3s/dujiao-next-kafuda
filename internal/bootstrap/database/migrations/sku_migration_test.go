@@ -13,6 +13,7 @@ import (
 	externalidentitydomain "github.com/dujiao-next/internal/modules/identity/externalidentity/domain"
 
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
+	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	procurementdomain "github.com/dujiao-next/internal/modules/procurement/domain"
 	resellerdomain "github.com/dujiao-next/internal/modules/reseller/domain"
@@ -697,5 +698,93 @@ func TestAutoMigrateReplacesSupersededProcurementConstraintName(t *testing.T) {
 	assertModelIndexesExist(t, db, &procurementdomain.Order{})
 	if !db.Migrator().HasConstraint(&procurementdomain.Order{}, procurementOrderForeignKeyConstraint) {
 		t.Errorf("procurement index repair removed canonical constraint %s", procurementOrderForeignKeyConstraint)
+	}
+}
+
+func TestAutoMigrateRecoversOverCapTerminalFailures(t *testing.T) {
+	db := setupRegistryMigrationTestDB(t)
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+	if err := AutoMigrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, time.November, 19, 0, 0, 0, 0, time.UTC)
+	scenarios := []struct {
+		name                     string
+		status                   kafudadomain.AttemptStatus
+		noUpstreamID, wrongOrder bool
+		completed, otherReason   bool
+		wantManualDelivery       bool
+	}{
+		{name: "failed", status: kafudadomain.AttemptFailed, wantManualDelivery: true},
+		{name: "cancelled", status: kafudadomain.AttemptCancelled, wantManualDelivery: true},
+		{name: "in_flight", status: kafudadomain.AttemptProcessing},
+		{name: "upstream_completed", status: kafudadomain.AttemptCompleted},
+		{name: "missing_upstream_id", status: kafudadomain.AttemptFailed, noUpstreamID: true},
+		{name: "wrong_order", status: kafudadomain.AttemptFailed, wrongOrder: true},
+		{name: "local_completion", status: kafudadomain.AttemptFailed, completed: true},
+		{name: "other_reason", status: kafudadomain.AttemptFailed, otherReason: true},
+	}
+	records := make([]kafudadomain.Recharge, 0, len(scenarios))
+	for i, scenario := range scenarios {
+		orderID := uint(i + 1)
+		attempt := kafudadomain.Attempt{
+			OrderID: orderID, Sequence: 1, Status: scenario.status, Reference: fmt.Sprintf("test-%d", orderID),
+			CreatedAt: now, UpdatedAt: now,
+		}
+		if !scenario.noUpstreamID {
+			id := uint64(orderID)
+			attempt.UpstreamOrderID = &id
+		}
+		if scenario.wrongOrder {
+			attempt.OrderID += 100
+		}
+		if attempt.Status.Active() {
+			nextPoll := now.Add(time.Minute)
+			attempt.ActiveOrderID, attempt.NextPollAt = &attempt.OrderID, &nextPoll
+		}
+		if err := db.Create(&attempt).Error; err != nil {
+			t.Fatalf("%s: seed attempt: %v", scenario.name, err)
+		}
+		record := kafudadomain.Recharge{
+			OrderID: orderID, Stage: kafudadomain.StageManualReview, Version: 5, CurrentAttemptID: &attempt.ID,
+			ReasonCode: kafudadomain.ReasonCostLimitExceeded, CreatedAt: now, UpdatedAt: now,
+		}
+		if scenario.completed {
+			record.CompletedAt = &now
+		}
+		if scenario.otherReason {
+			record.ReasonCode = "outcome_unknown"
+		}
+		if err := db.Create(&record).Error; err != nil {
+			t.Fatalf("%s: seed recharge: %v", scenario.name, err)
+		}
+		records = append(records, record)
+	}
+
+	for range 2 {
+		if err := AutoMigrate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, scenario := range scenarios {
+		before := records[i]
+		wantStage, wantVersion := before.Stage, before.Version
+		if scenario.wantManualDelivery {
+			wantStage, wantVersion = kafudadomain.StageManualDelivery, before.Version+1
+		}
+		var actual kafudadomain.Recharge
+		if err := db.First(&actual, "order_id = ?", before.OrderID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if actual.Stage != wantStage || actual.Version != wantVersion ||
+			actual.ReasonCode != before.ReasonCode || !actual.UpdatedAt.Equal(before.UpdatedAt) ||
+			actual.CurrentAttemptID == nil || *actual.CurrentAttemptID != *before.CurrentAttemptID {
+			t.Errorf("%s: unexpected recharge after migration: %+v", scenario.name, actual)
+		}
 	}
 }

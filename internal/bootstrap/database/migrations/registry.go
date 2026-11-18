@@ -111,6 +111,9 @@ func AutoMigrate() error {
 	if err := backfillPendingOrderRiskIPs(db); err != nil {
 		return err
 	}
+	if err := backfillKafudaTerminalFailures(db); err != nil {
+		return err
+	}
 	if err := resellerstore.Migrate(db); err != nil {
 		return err
 	}
@@ -153,6 +156,20 @@ func AutoMigrate() error {
 		}
 	}
 	return nil
+}
+
+// backfillKafudaTerminalFailures restores after-sales eligibility for over-cap
+// recharges that have a verified terminal failure on their current attempt.
+func backfillKafudaTerminalFailures(db *gorm.DB) error {
+	terminalAttempt := db.Model(&kafudadomain.Attempt{}).Select("1").
+		Where("kafuda_gpt_attempts.id = kafuda_gpt_recharges.current_attempt_id").
+		Where("kafuda_gpt_attempts.order_id = kafuda_gpt_recharges.order_id").
+		Where("status IN ?", []kafudadomain.AttemptStatus{kafudadomain.AttemptFailed, kafudadomain.AttemptCancelled}).
+		Where("upstream_order_id > 0 AND active_order_id IS NULL AND next_poll_at IS NULL")
+	return db.Model(&kafudadomain.Recharge{}).
+		Where("stage = ? AND reason_code = ? AND completed_at IS NULL", kafudadomain.StageManualReview, kafudadomain.ReasonCostLimitExceeded).
+		Where("EXISTS (?)", terminalAttempt).
+		UpdateColumns(map[string]any{"stage": kafudadomain.StageManualDelivery, "version": gorm.Expr("version + 1")}).Error
 }
 
 // backfillPendingOrderRiskIPs 只迁移仍可能占用库存的在途订单，避免启动时扫描全部历史订单。

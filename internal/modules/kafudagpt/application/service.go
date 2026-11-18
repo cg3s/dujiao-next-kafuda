@@ -18,8 +18,6 @@ import (
 // recharge update; this service does not independently mark a shop order paid.
 type Service struct{ store kafudacontract.Store }
 
-const costLimitExceeded = "cost_limit_exceeded"
-
 var errNoRecordChange = errors.New("kafuda recharge unchanged")
 
 func New(store kafudacontract.Store) *Service { return &Service{store: store} }
@@ -172,7 +170,7 @@ func (s *Service) MarkUnknown(ctx context.Context, attemptID uint, now, nextPoll
 		}
 		attempt.Status, attempt.NextPollAt, attempt.UpdatedAt = kafudadomain.AttemptReview, &nextPoll, now
 		record.Stage, record.UpdatedAt = kafudadomain.StageManualReview, now
-		if record.ReasonCode != costLimitExceeded {
+		if record.ReasonCode != kafudadomain.ReasonCostLimitExceeded {
 			record.ReasonCode = "outcome_unknown"
 		}
 		return nil
@@ -252,11 +250,14 @@ func resultUpdate(result kafudacontract.OrderResult, now, nextPoll time.Time) fu
 			attempt.ActiveOrderID = nil
 		}
 		record.UpdatedAt = now
-		// Keep the upstream outcome for reconciliation. An over-cap charge
-		// needs review even if the supplier reports a completed recharge.
-		if record.ReasonCode == costLimitExceeded ||
+		// An over-cap charge needs review even if already completed upstream.
+		// A terminal failure or cancellation still permits controlled after-sales.
+		if record.ReasonCode == kafudadomain.ReasonCostLimitExceeded ||
 			(attempt.ChargedUSDCents != nil && *attempt.ChargedUSDCents > record.Snapshot.MaxCostCents) {
-			record.Stage, record.ReasonCode = kafudadomain.StageManualReview, costLimitExceeded
+			record.Stage, record.ReasonCode = kafudadomain.StageManualReview, kafudadomain.ReasonCostLimitExceeded
+			if next == kafudadomain.AttemptFailed || next == kafudadomain.AttemptCancelled {
+				record.Stage = kafudadomain.StageManualDelivery
+			}
 			return nil
 		}
 		switch next {
