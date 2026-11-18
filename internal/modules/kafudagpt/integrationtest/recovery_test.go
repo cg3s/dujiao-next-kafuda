@@ -197,7 +197,7 @@ func (g *knownOrderLookupGateway) GetOrder(_ context.Context, id uint64) (*kafud
 }
 
 func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
-	for _, scenario := range []string{"completed", "timeout", "wrong_reference"} {
+	for _, scenario := range []string{"completed", "timeout", "wrong_reference", "deadline"} {
 		t.Run(scenario, func(t *testing.T) {
 			_, store, service := database(t)
 			ctx, now := context.Background(), time.Now().UTC()
@@ -214,12 +214,16 @@ func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
 			result.Status = "completed"
 			gateway := &knownOrderLookupGateway{result: &result}
 			switch scenario {
-			case "timeout":
+			case "timeout", "deadline":
 				gateway.err = context.DeadlineExceeded
 			case "wrong_reference":
 				result.Reference = "wrong"
 			}
-			got, err := service.PollKnownOrder(ctx, gateway, attempt.ID, due, retry)
+			reviewAfter := time.Hour
+			if scenario == "deadline" {
+				reviewAfter = time.Minute
+			}
+			got, err := service.PollKnownOrder(ctx, gateway, attempt.ID, due, retry, reviewAfter)
 			if gateway.id != 101 {
 				t.Fatalf("queried wrong upstream ID: %d", gateway.id)
 			}
@@ -234,10 +238,27 @@ func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
 				}
 				wantNext = retry
 			}
+			wantStatus := kafudadomain.AttemptProcessing
+			if scenario == "deadline" {
+				wantStatus = kafudadomain.AttemptReview
+			}
 			stored, err := store.GetAttempt(ctx, attempt.ID)
-			if err != nil || stored == nil || stored.Status != kafudadomain.AttemptProcessing ||
+			if err != nil || stored == nil || stored.Status != wantStatus || stored.ActiveOrderID == nil ||
 				stored.NextPollAt == nil || !stored.NextPollAt.Equal(wantNext) {
 				t.Fatalf("lookup changed the attempt unexpectedly: %+v, %v", stored, err)
+			}
+			if scenario == "deadline" {
+				record, err := store.GetRecharge(ctx, 10)
+				if err != nil || record == nil || record.Stage != kafudadomain.StageManualReview || record.ReasonCode != "lookup_deadline_exceeded" {
+					t.Fatalf("deadline did not enter review: %+v, %v", record, err)
+				}
+				if err := service.RecordResult(ctx, attempt.ID, result, retry, time.Time{}); err != nil {
+					t.Fatal(err)
+				}
+				record, err = store.GetRecharge(ctx, 10)
+				if err != nil || record == nil || record.Stage != kafudadomain.StageCompleted {
+					t.Fatalf("late success did not complete: %+v, %v", record, err)
+				}
 			}
 		})
 	}

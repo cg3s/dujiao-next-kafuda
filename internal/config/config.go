@@ -47,6 +47,7 @@ type KafudaGPTConfig struct {
 	SalesEnabled            bool     `mapstructure:"sales_enabled"`
 	ReferenceLookupVerified bool     `mapstructure:"reference_lookup_verified"`
 	CatalogTTLSeconds       int      `mapstructure:"catalog_ttl_seconds"`
+	PollReviewAfterSeconds  int      `mapstructure:"poll_review_after_seconds"`
 	PollIntervalSeconds     int      `mapstructure:"poll_interval_seconds"`
 	ReviewAfterSeconds      int      `mapstructure:"review_after_seconds"`
 }
@@ -452,6 +453,7 @@ func Load() *Config {
 	viper.SetDefault("kafuda_gpt.sales_enabled", false)
 	viper.SetDefault("kafuda_gpt.reference_lookup_verified", false)
 	viper.SetDefault("kafuda_gpt.catalog_ttl_seconds", 3600)
+	viper.SetDefault("kafuda_gpt.poll_review_after_seconds", 86400)
 	viper.SetDefault("kafuda_gpt.poll_interval_seconds", 10)
 	viper.SetDefault("kafuda_gpt.review_after_seconds", 900)
 

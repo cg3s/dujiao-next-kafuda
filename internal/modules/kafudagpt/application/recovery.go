@@ -11,9 +11,11 @@ import (
 
 var ErrKnownOrderLookupFailed = errors.New("kafuda known order lookup failed")
 
+const DefaultPollReviewAfter = 24 * time.Hour
+
 // PollKnownOrder performs a read-only lookup outside the database transaction.
 // The caller applies a successful result with the corresponding shop order update.
-func (s *Service) PollKnownOrder(ctx context.Context, gateway kafudacontract.Gateway, attemptID uint, now, retryAt time.Time) (*kafudacontract.OrderResult, error) {
+func (s *Service) PollKnownOrder(ctx context.Context, gateway kafudacontract.Gateway, attemptID uint, now, retryAt time.Time, reviewAfter time.Duration) (*kafudacontract.OrderResult, error) {
 	if gateway == nil || now.IsZero() || !retryAt.After(now) {
 		return nil, kafudadomain.ErrInvalidTransition
 	}
@@ -47,12 +49,19 @@ func (s *Service) PollKnownOrder(ctx context.Context, gateway kafudacontract.Gat
 		}
 	}
 	// Never return raw gateway errors, which may contain upstream payloads.
-	return nil, errors.Join(ErrKnownOrderLookupFailed, s.RescheduleKnownOrderPoll(ctx, attemptID, *attempt.NextPollAt, now, retryAt))
+	if reviewAfter <= 0 {
+		reviewAfter = DefaultPollReviewAfter
+	}
+	return nil, errors.Join(ErrKnownOrderLookupFailed, s.rescheduleKnownOrderPoll(ctx, attemptID, *attempt.NextPollAt, now, retryAt, reviewAfter))
 }
 
 // RescheduleKnownOrderPoll defers a failed numeric lookup. A worker that read
 // an older schedule cannot delay a lookup already rescheduled by another worker.
 func (s *Service) RescheduleKnownOrderPoll(ctx context.Context, attemptID uint, scheduledAt, now, nextPoll time.Time) error {
+	return s.rescheduleKnownOrderPoll(ctx, attemptID, scheduledAt, now, nextPoll, 0)
+}
+
+func (s *Service) rescheduleKnownOrderPoll(ctx context.Context, attemptID uint, scheduledAt, now, nextPoll time.Time, reviewAfter time.Duration) error {
 	if scheduledAt.IsZero() || now.Before(scheduledAt) || !nextPoll.After(now) {
 		return kafudadomain.ErrInvalidTransition
 	}
@@ -65,6 +74,10 @@ func (s *Service) RescheduleKnownOrderPoll(ctx context.Context, attemptID uint, 
 			return kafudadomain.ErrConflict
 		}
 		attempt.NextPollAt, attempt.UpdatedAt = &nextPoll, now
+		if reviewAfter > 0 && now.Sub(attempt.CreatedAt) >= reviewAfter && record.Stage != kafudadomain.StageManualReview {
+			attempt.Status = kafudadomain.AttemptReview
+			record.Stage, record.ReasonCode = kafudadomain.StageManualReview, "lookup_deadline_exceeded"
+		}
 		record.UpdatedAt = now
 		return nil
 	})

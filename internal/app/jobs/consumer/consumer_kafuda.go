@@ -54,13 +54,20 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 		return err
 	}
 	var failures []error
+	var reviewAfter time.Duration
+	if c.Config != nil {
+		seconds := c.Config.KafudaGPT.PollReviewAfterSeconds
+		if seconds > 0 && int64(seconds) <= int64((1<<63-1)/time.Second) {
+			reviewAfter = time.Duration(seconds) * time.Second
+		}
+	}
 	for _, attempt := range attempts {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
 		observedAt := time.Now().UTC()
 		retryDelay := kafudaRetryDelay(attempt)
-		result, err := module.Records.PollKnownOrder(ctx, module.Gateway, attempt.ID, observedAt, observedAt.Add(retryDelay))
+		result, err := module.Records.PollKnownOrder(ctx, module.Gateway, attempt.ID, observedAt, observedAt.Add(retryDelay), reviewAfter)
 		if err != nil {
 			if !errors.Is(err, kafudadomain.ErrConflict) && !errors.Is(err, kafudadomain.ErrNotFound) {
 				failures = append(failures, err)
