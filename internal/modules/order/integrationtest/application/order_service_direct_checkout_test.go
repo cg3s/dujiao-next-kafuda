@@ -426,6 +426,7 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 		{"processing", kafudadomain.StageProcessing, true, ""},
 		{"completed", kafudadomain.StageCompleted, true, ""},
 		{"completed_after_sales_disabled", kafudadomain.StageCompleted, true, ""},
+		{"poll_after_sales_disabled", kafudadomain.StageProcessing, true, ""},
 		{"response_lost", kafudadomain.StageManualReview, true, "outcome_unknown"},
 		{"response_mismatch", kafudadomain.StageManualReview, true, "outcome_unknown"},
 	} {
@@ -446,7 +447,7 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx := context.Background()
-			if scenario.name == "completed_after_sales_disabled" {
+			if scenario.name == "completed_after_sales_disabled" || scenario.name == "poll_after_sales_disabled" {
 				options := f.options
 				policy := directCheckoutCommerce(f.store, false)
 				options.DirectCatalog = policy
@@ -508,6 +509,11 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 					result.Reference = "other-reference"
 				}
 				return result, nil
+			}, get: func(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+				if id != 100 {
+					t.Fatalf("polled unexpected upstream order %d", id)
+				}
+				return &kafudacontract.OrderResult{ID: id, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed"}, nil
 			}}
 			completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check, 10*time.Second)
 			wantError := scenario.stage == kafudadomain.StageManualDelivery || scenario.stage == kafudadomain.StageManualReview
@@ -531,7 +537,22 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 					t.Fatalf("first lookup did not use configured interval: %+v, %v", attempt, err)
 				}
 			}
-			if scenario.stage == kafudadomain.StageCompleted {
+			if scenario.name == "poll_after_sales_disabled" {
+				attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
+				if err != nil || attempt == nil || attempt.NextPollAt == nil {
+					t.Fatalf("poll was not scheduled: %+v, %v", attempt, err)
+				}
+				at := *attempt.NextPollAt
+				result, err := records.PollKnownOrder(ctx, gateway, attempt.ID, at, at.Add(time.Minute), 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				completed, err = kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, *result, at, at.Add(time.Minute))
+				if err != nil || !completed {
+					t.Fatalf("polled order completion: completed=%t, err=%v", completed, err)
+				}
+			}
+			if completed {
 				var completedOrders int64
 				if err := f.db.Model(&orderdomain.Order{}).Where("id IN ? AND status = ?", ids, constants.OrderStatusCompleted).
 					Count(&completedOrders).Error; err != nil || completedOrders != 2 {
