@@ -1,6 +1,7 @@
 package integrationtest
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -106,6 +107,118 @@ func TestProductServiceUpdateRejectsDisablingAutoSKUWithCardSecretStock(t *testi
 	})
 	if err != productcontract.ErrProductSKUHasCardSecretStock {
 		t.Fatalf("update product error want %v got %v", productcontract.ErrProductSKUHasCardSecretStock, err)
+	}
+}
+
+func TestProductServiceUpdatePreservesCardStockWhenRemovingSKUs(t *testing.T) {
+	for _, edit := range []struct {
+		name     string
+		collapse bool
+	}{
+		{name: "omit_variant"},
+		{name: "collapse_to_single", collapse: true},
+	} {
+		for _, stock := range []struct {
+			name        string
+			status      string
+			target      string
+			switchFirst bool
+		}{
+			{name: "available_during_manual_switch", status: cardsecretdomain.StatusAvailable, target: constants.FulfillmentTypeManual},
+			{name: "reserved_during_manual_switch", status: cardsecretdomain.StatusReserved, target: constants.FulfillmentTypeManual},
+			{name: "available_during_upstream_switch", status: cardsecretdomain.StatusAvailable, target: constants.FulfillmentTypeUpstream},
+			{name: "reserved_after_manual_switch", status: cardsecretdomain.StatusReserved, target: constants.FulfillmentTypeManual, switchFirst: true},
+			{name: "used_card_allows_removal", status: cardsecretdomain.StatusUsed, target: constants.FulfillmentTypeManual},
+		} {
+			t.Run(edit.name+"/"+stock.name, func(t *testing.T) {
+				svc, db := newProductServiceForTest(t)
+				pool, err := db.DB()
+				if err != nil {
+					t.Fatal(err)
+				}
+				pool.SetMaxOpenConns(1)
+				t.Cleanup(func() { _ = pool.Close() })
+
+				category := categorydomain.Category{Slug: "edit-card-stock", NameJSON: jsonmap.JSON{"zh-CN": "卡密库存"}}
+				if err := db.Create(&category).Error; err != nil {
+					t.Fatal(err)
+				}
+				price := decimal.NewFromInt(10)
+				product := productdomain.Product{
+					CategoryID: category.ID, Slug: "auto-stock", TitleJSON: jsonmap.JSON{"zh-CN": "自动发货"},
+					FulfillmentType: constants.FulfillmentTypeAuto, PriceAmount: money.FromDecimal(price),
+				}
+				if err := db.Create(&product).Error; err != nil {
+					t.Fatal(err)
+				}
+				skus := []productdomain.ProductSKU{
+					{ProductID: product.ID, SKUCode: productdomain.DefaultSKUCode, PriceAmount: product.PriceAmount, IsActive: true},
+					{ProductID: product.ID, SKUCode: "CARD-STOCK", PriceAmount: product.PriceAmount, IsActive: true},
+				}
+				if err := db.Create(&skus).Error; err != nil {
+					t.Fatal(err)
+				}
+				insertCardSecrets(t, db, product.ID, skus[1].ID, stock.status, 1)
+
+				id := strconv.FormatUint(uint64(product.ID), 10)
+				input := productwrite.CreateProductInput{
+					CategoryID: product.CategoryID, Slug: product.Slug, TitleJSON: product.TitleJSON,
+					FulfillmentType: stock.target, PriceAmount: price,
+				}
+				if stock.switchFirst {
+					input.SKUs = []productwrite.ProductSKUInput{
+						{ID: skus[0].ID, SKUCode: skus[0].SKUCode, PriceAmount: price},
+						{ID: skus[1].ID, SKUCode: skus[1].SKUCode, PriceAmount: price},
+					}
+					converted, err := svc.Write.Update(id, input)
+					if err != nil || converted == nil || converted.FulfillmentType != constants.FulfillmentTypeManual {
+						t.Fatalf("switch keeping both SKUs: %v", err)
+					}
+				}
+
+				input.PriceAmount = decimal.NewFromInt(14)
+				input.SKUs = nil
+				if !edit.collapse {
+					input.SKUs = []productwrite.ProductSKUInput{{ID: skus[0].ID, SKUCode: skus[0].SKUCode, PriceAmount: input.PriceAmount}}
+				}
+				_, err = svc.Write.Update(id, input)
+				wantType := stock.target
+				wantPrice := input.PriceAmount
+				wantSKUs := 1
+				if stock.status != cardsecretdomain.StatusUsed {
+					if !errors.Is(err, productcontract.ErrProductSKUHasCardSecretStock) {
+						t.Fatalf("drop stocked SKU: got %v, want card stock rejection", err)
+					}
+					if !stock.switchFirst {
+						wantType = constants.FulfillmentTypeAuto
+					}
+					wantPrice, wantSKUs = price, 2
+				} else if err != nil {
+					t.Fatalf("drop SKU with used cards only: %v", err)
+				}
+
+				stored, err := productgormstore.NewProductStore(db).GetAdminByID(id)
+				if err != nil || stored == nil || stored.FulfillmentType != wantType || !stored.PriceAmount.Decimal.Equal(wantPrice) || len(stored.SKUs) != wantSKUs {
+					t.Fatalf("unexpected persisted product after edit: %+v, %v", stored, err)
+				}
+				wantSKUPrice := map[uint]decimal.Decimal{skus[0].ID: wantPrice}
+				if wantSKUs == 2 {
+					wantSKUPrice[skus[1].ID] = price
+				}
+				for _, sku := range stored.SKUs {
+					if want, ok := wantSKUPrice[sku.ID]; !ok || !sku.PriceAmount.Decimal.Equal(want) {
+						t.Fatalf("unexpected SKU %d or price %s", sku.ID, sku.PriceAmount.Decimal)
+					}
+				}
+				var cards []cardsecretdomain.Secret
+				if err := db.Where("product_id = ?", product.ID).Find(&cards).Error; err != nil {
+					t.Fatal(err)
+				}
+				if len(cards) != 1 || cards[0].SKUID != skus[1].ID || cards[0].Status != stock.status || cards[0].DeletedAt != nil {
+					t.Fatal("SKU edit changed the original card's association or status")
+				}
+			})
+		}
 	}
 }
 

@@ -24,7 +24,6 @@ func (s *WriteService) syncSingleProductSKU(
 	skuRepo SKURepository,
 	cardSecretRepo CardSecretStockRepository,
 	productID uint,
-	fulfillmentType string,
 	priceAmount decimal.Decimal,
 	costPriceAmount decimal.Decimal,
 	manualStockTotal *int,
@@ -60,7 +59,7 @@ func (s *WriteService) syncSingleProductSKU(
 		if i == targetIndex {
 			continue
 		}
-		if err := ensureSKURemovable(cardSecretRepo, productID, fulfillmentType, skus[i]); err != nil {
+		if err := ensureSKURemovable(cardSecretRepo, productID, skus[i]); err != nil {
 			return err
 		}
 	}
@@ -92,10 +91,9 @@ func (s *WriteService) syncSingleProductSKU(
 	return nil
 }
 
-// ensureSKURemovable 在自动发货场景下校验该 SKU 是否可以安全删除（无卡密库存占用）。
-// 非自动发货或未注入卡密仓储时直接放行。
-func ensureSKURemovable(cardSecretRepo CardSecretStockRepository, productID uint, fulfillmentType string, sku productdomain.ProductSKU) error {
-	if cardSecretRepo == nil || productID == 0 || strings.TrimSpace(fulfillmentType) != constants.FulfillmentTypeAuto {
+// ensureSKURemovable 保护关联卡密的库存归属，包括商品切换交付方式后保留的卡密。
+func ensureSKURemovable(cardSecretRepo CardSecretStockRepository, productID uint, sku productdomain.ProductSKU) error {
+	if cardSecretRepo == nil || productID == 0 {
 		return nil
 	}
 	total, available, used, err := cardSecretRepo.CountByProduct(productID, sku.ID)
@@ -386,9 +384,10 @@ func (s *WriteService) ensureAutoSKUCardSecretStockSafe(
 	existingByID map[uint]productdomain.ProductSKU,
 	existingByCode map[string]productdomain.ProductSKU,
 ) error {
-	if cardSecretRepo == nil || productID == 0 || strings.TrimSpace(fulfillmentType) != constants.FulfillmentTypeAuto {
+	if cardSecretRepo == nil || productID == 0 {
 		return nil
 	}
+	protectDeactivation := strings.TrimSpace(fulfillmentType) == constants.FulfillmentTypeAuto
 
 	// nextActive 只收录本次保留的行；不在其中的行将被删除。
 	nextActive := make(map[uint]bool, len(existingRows))
@@ -409,11 +408,11 @@ func (s *WriteService) ensureAutoSKUCardSecretStockSafe(
 	}
 
 	for _, existing := range existingRows {
-		// 删除的行一律校验（与单规格收敛路径一致）；保留的行仅在由启用变为停用时校验。
-		if active, kept := nextActive[existing.ID]; kept && (!existing.IsActive || active) {
+		// 删除一律校验卡密库存；保留的行仅在自动发货 SKU 由启用变为停用时校验。
+		if active, kept := nextActive[existing.ID]; kept && (!protectDeactivation || !existing.IsActive || active) {
 			continue
 		}
-		if err := ensureSKURemovable(cardSecretRepo, productID, fulfillmentType, existing); err != nil {
+		if err := ensureSKURemovable(cardSecretRepo, productID, existing); err != nil {
 			return err
 		}
 	}
