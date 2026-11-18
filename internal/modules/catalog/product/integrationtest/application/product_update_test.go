@@ -36,6 +36,58 @@ func (s productUpdateTransactionHook) WithinTransaction(fn func(ordercontract.Tr
 	return s.Store.WithinTransaction(fn)
 }
 
+func TestProductEditPreservesLegacyOrderStockChanges(t *testing.T) {
+	for _, setStock := range []bool{false, true} {
+		t.Run(fmt.Sprintf("set_stock_%t", setStock), func(t *testing.T) {
+			_, db := newProductServiceForTest(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			price := decimal.NewFromInt(10)
+			product := productdomain.Product{
+				Slug: "legacy-manual-stock", TitleJSON: jsonmap.JSON{"zh-CN": "原标题"},
+				FulfillmentType: constants.FulfillmentTypeManual, PriceAmount: money.FromDecimal(price),
+				ManualStockTotal: 8, ManualStockLocked: 2, ManualStockSold: 3,
+			}
+			if err := db.Create(&product).Error; err != nil {
+				t.Fatal(err)
+			}
+			products := productgormstore.NewProductStore(db)
+			orders := productUpdateTransactionHook{
+				Store: ordergormstore.New(db, "test-guest-credential-secret-with-32-bytes"),
+				before: func() {
+					if affected, err := products.ReleaseManualStock(product.ID, 1); err != nil || affected != 1 {
+						t.Fatalf("release legacy hold: %d, %v", affected, err)
+					}
+					if affected, err := products.ConsumeManualStock(product.ID, 1); err != nil || affected != 1 {
+						t.Fatalf("consume legacy hold: %d, %v", affected, err)
+					}
+				},
+			}
+			service := productwrite.NewWriteService(productwrite.Options{
+				Products: products, SKUs: productgormstore.NewSKUStore(db), Orders: orders,
+			})
+			input := productwrite.CreateProductInput{Slug: product.Slug, TitleJSON: jsonmap.JSON{"zh-CN": "编辑后"}, PriceAmount: price}
+			wantTotal := 9
+			if setStock {
+				wantTotal = 12
+				input.ManualStockTotal = &wantTotal
+			}
+			updated, err := service.Update(strconv.FormatUint(uint64(product.ID), 10), input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated.TitleJSON["zh-CN"] != "编辑后" || updated.ManualStockTotal != wantTotal ||
+				updated.ManualStockLocked != 0 || updated.ManualStockSold != 4 {
+				t.Fatalf("edit lost legacy inventory changes: %+v", updated)
+			}
+		})
+	}
+}
+
 func TestDirectTypeChangeRechecksDataAfterPreflight(t *testing.T) {
 	for _, change := range []string{"order", "card", "sku_stock", "product_stock", "mapped", "type", "stale_edit"} {
 		t.Run(change, func(t *testing.T) {

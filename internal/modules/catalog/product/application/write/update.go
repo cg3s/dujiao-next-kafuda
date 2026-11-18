@@ -190,6 +190,13 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 				return err
 			}
 		}
+		// Legacy orders without a SKU still update stock on the product row.
+		product.ManualStockLocked = current.ManualStockLocked
+		product.ManualStockSold = current.ManualStockSold
+		if input.ManualStockTotal == nil && len(normalizedSKUs) == 0 {
+			manualStockTotal = current.ManualStockTotal
+			product.ManualStockTotal = manualStockTotal
+		}
 		if len(normalizedSKUs) > 0 {
 			if err := s.applyProductSKUsWithStockGuard(skuRepo, cardSecretRepo, product.ID, fulfillmentType, normalizedSKUs); err != nil {
 				return err
