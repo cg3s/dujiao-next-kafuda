@@ -3,7 +3,9 @@ package application
 import (
 	"time"
 
+	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/constants"
+	"github.com/dujiao-next/internal/logger"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
@@ -11,7 +13,38 @@ import (
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
+	settingsapp "github.com/dujiao-next/internal/modules/settings/application"
 )
+
+// EnqueueCompletionEmail applies the existing parent-order notification policy
+// after a fresh completion commits. Notification failure cannot undo delivery.
+func EnqueueCompletionEmail(store ordercontract.Store, queue ordercontract.Queue, settings *settingsapp.Service, cfg *config.Config, childID uint) {
+	if queue == nil || !queue.Enabled() {
+		return
+	}
+	child, err := store.GetByID(childID)
+	if err != nil || child == nil || child.ParentID == nil {
+		logger.Warnw("kafuda_completion_email_order_unavailable", "child_order_id", childID)
+		return
+	}
+	var email config.EmailConfig
+	if cfg != nil {
+		email = cfg.Email
+	}
+	if _, err := orderapp.EnqueueStatusEmailTaskIfEligible(store, queue, settings, email, *child.ParentID, constants.OrderStatusCompleted); err != nil {
+		logger.Warnw("kafuda_completion_email_enqueue_failed", "order_id", *child.ParentID)
+	}
+}
+
+// CompleteManualAndNotify is the administrator entry point for a confirmed
+// delivery. A rejected or replayed operation never enqueues an email.
+func CompleteManualAndNotify(store ordercontract.Store, queue ordercontract.Queue, settings *settingsapp.Service, cfg *config.Config, childID, attemptID, adminID uint, confirmed bool, now time.Time) error {
+	if err := CompleteManual(store, childID, attemptID, adminID, confirmed, now); err != nil {
+		return err
+	}
+	EnqueueCompletionEmail(store, queue, settings, cfg, childID)
+	return nil
+}
 
 // ApplyResult records the supplier outcome and completes a paid direct order
 // atomically. A fresh completion flag is safe to use only after commit.

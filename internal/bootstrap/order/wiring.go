@@ -1,10 +1,12 @@
 package orderwiring
 
 import (
+	"time"
+
 	"github.com/dujiao-next/internal/app/container"
+	orderqueue "github.com/dujiao-next/internal/modules/order/infrastructure/queueadapter"
 	ordertransport "github.com/dujiao-next/internal/modules/order/transport/http"
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
-	"time"
 )
 
 // Handlers contains every order HTTP entrypoint required by the router.
@@ -33,7 +35,8 @@ func New(c *container.Container) Handlers {
 				if c.OrderStore == nil {
 					return ordertransport.ErrOrderNotFound
 				}
-				return mapOrderTransportError(kafudaworkflow.CompleteManual(c.OrderStore, childID, attemptID, adminID, confirmed, time.Now().UTC()))
+				return mapOrderTransportError(kafudaworkflow.CompleteManualAndNotify(c.OrderStore, orderqueue.New(c.QueueClient),
+					c.SettingService, c.Config, childID, attemptID, adminID, confirmed, time.Now().UTC()))
 			},
 		),
 		AdminRefund: NewAdminRefundHandler(c),

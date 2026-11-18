@@ -32,6 +32,7 @@ import (
 	memberstore "github.com/dujiao-next/internal/modules/memberlevel/infrastructure/gormstore"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	orderrefund "github.com/dujiao-next/internal/modules/order/application/refund"
+	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
 	orderhttp "github.com/dujiao-next/internal/modules/order/transport/http"
@@ -287,6 +288,32 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 }
 
 func TestControlledDirectManualCompletionRequiresTerminalAttempt(t *testing.T) {
+	t.Run("http", func(t *testing.T) { testControlledDirectManualCompletion(t, false) })
+	t.Run("notification", func(t *testing.T) { testControlledDirectManualCompletion(t, true) })
+}
+
+type directCompletionEmailQueue struct {
+	ordercontract.Queue
+	t        *testing.T
+	store    ordercontract.Store
+	parentID uint
+	calls    int
+}
+
+func (q *directCompletionEmailQueue) Enabled() bool { return true }
+
+func (q *directCompletionEmailQueue) EnqueueStatusEmail(orderID uint, status string) error {
+	q.t.Helper()
+	q.calls++
+	parent, err := q.store.GetByID(orderID)
+	if err != nil || parent == nil || parent.Status != constants.OrderStatusCompleted ||
+		orderID != q.parentID || status != constants.OrderStatusCompleted {
+		q.t.Fatalf("notification did not observe committed parent: %d, %s, %v", orderID, status, err)
+	}
+	return nil
+}
+
+func testControlledDirectManualCompletion(t *testing.T, notify bool) {
 	f := newDirectCheckoutFixture(t)
 	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
 		t.Fatal(err)
@@ -315,7 +342,11 @@ func TestControlledDirectManualCompletionRequiresTerminalAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	const adminID = 9
+	emailQueue := &directCompletionEmailQueue{t: t, store: f.options.OrderStore, parentID: order.ID}
 	complete := func(attemptID uint, confirmed bool) error {
+		if notify {
+			return kafudaworkflow.CompleteManualAndNotify(f.options.OrderStore, emailQueue, nil, nil, childID, attemptID, adminID, confirmed, now)
+		}
 		return kafudaworkflow.CompleteManual(f.options.OrderStore, childID, attemptID, adminID, confirmed, now)
 	}
 	if err := complete(id, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
@@ -331,20 +362,29 @@ func TestControlledDirectManualCompletionRequiresTerminalAttempt(t *testing.T) {
 	if err := complete(id+1, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("wrong attempt allowed manual completion: %v", err)
 	}
-	handler := orderwiring.New(&container.Container{OrderStore: f.options.OrderStore}).Admin
-	router := gin.New()
-	router.Use(func(c *gin.Context) { c.Set("admin_id", uint(adminID)) })
-	orderhttp.RegisterAdminRoutes(router.Group("/admin"), handler)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/orders/%d/direct-complete", childID),
-		strings.NewReader(fmt.Sprintf(`{"attempt_id":%d,"confirmed":true,"admin_id":999}`, id)))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if !strings.Contains(rec.Body.String(), `"status_code":0`) {
-		t.Fatalf("direct completion endpoint: %s", rec.Body.String())
+	if notify {
+		if err := complete(id, true); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		handler := orderwiring.New(&container.Container{OrderStore: f.options.OrderStore}).Admin
+		router := gin.New()
+		router.Use(func(c *gin.Context) { c.Set("admin_id", uint(adminID)) })
+		orderhttp.RegisterAdminRoutes(router.Group("/admin"), handler)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/orders/%d/direct-complete", childID),
+			strings.NewReader(fmt.Sprintf(`{"attempt_id":%d,"confirmed":true,"admin_id":999}`, id)))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(rec, req)
+		if !strings.Contains(rec.Body.String(), `"status_code":0`) {
+			t.Fatalf("direct completion endpoint: %s", rec.Body.String())
+		}
 	}
 	if err := complete(id, true); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("manual completion replay accepted: %v", err)
+	}
+	if notify && emailQueue.calls != 1 {
+		t.Fatalf("manual completion and replay queued %d emails, want one", emailQueue.calls)
 	}
 	var delivery fulfillmentdomain.Fulfillment
 	if err := f.db.Where("order_id = ?", childID).First(&delivery).Error; err != nil || delivery.DeliveredBy == nil || *delivery.DeliveredBy != adminID || delivery.Payload != "" {
