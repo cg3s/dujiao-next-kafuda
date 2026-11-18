@@ -24,11 +24,15 @@ import (
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
+	memberapp "github.com/dujiao-next/internal/modules/memberlevel/application"
+	memberdomain "github.com/dujiao-next/internal/modules/memberlevel/domain"
+	memberstore "github.com/dujiao-next/internal/modules/memberlevel/infrastructure/gormstore"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
 	orderpresenter "github.com/dujiao-next/internal/modules/order/transport/presenter"
 	paymentapp "github.com/dujiao-next/internal/modules/payment/application"
+	promotiondomain "github.com/dujiao-next/internal/modules/promotion/domain"
 	promotionstore "github.com/dujiao-next/internal/modules/promotion/infrastructure/gormstore"
 	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
 	"github.com/dujiao-next/internal/platform/http/response"
@@ -45,6 +49,84 @@ type directCheckoutFixture struct {
 	input   orderapp.CreateOrderInput
 	catalog *kafudadomain.Catalog
 	store   *kafudastore.Store
+}
+
+func TestDirectCheckoutDiscountsMatchPreviewAndSnapshot(t *testing.T) {
+	for _, scenario := range []struct {
+		name                                     string
+		promotion, wholesale, floor              int64
+		memberRate, exclusive                    int64
+		total, promoOff, wholesaleOff, memberOff string
+	}{
+		{"promotion", 10, 0, 0, 0, 0, "90.00", "10.00", "0.00", "0.00"},
+		{"wholesale_at_one", 10, 85, 1, 0, 0, "85.00", "0.00", "15.00", "0.00"},
+		{"wholesale_above_one", 10, 70, 2, 0, 0, "90.00", "10.00", "0.00", "0.00"},
+		{"member_after_promotion", 10, 0, 0, 80, 0, "72.00", "10.00", "0.00", "18.00"},
+		{"exclusive_wins", 10, 85, 1, 80, 60, "60.00", "0.00", "0.00", "40.00"},
+		{"exclusive_loses", 10, 85, 1, 80, 75, "68.00", "0.00", "15.00", "17.00"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newDirectCheckoutFixture(t)
+			amount := func(value int64) money.Amount { return money.FromDecimal(decimal.NewFromInt(value)) }
+			if err := f.db.AutoMigrate(&memberdomain.MemberLevel{}, &memberdomain.MemberLevelPrice{}, &memberdomain.UserProductPrice{}); err != nil {
+				t.Fatal(err)
+			}
+			promotion := promotiondomain.Promotion{
+				Name: "direct discount", ScopeType: constants.ScopeTypeProduct, ScopeRefID: f.product.ID,
+				Type: constants.PromotionTypeFixed, Value: amount(scenario.promotion), IsActive: true,
+			}
+			if err := f.db.Create(&promotion).Error; err != nil {
+				t.Fatal(err)
+			}
+			if scenario.wholesale > 0 {
+				tiers := productdomain.WholesalePriceTiers{{MinQuantity: int(scenario.floor), UnitPrice: amount(scenario.wholesale)}}
+				if err := f.db.Model(&f.product).Update("wholesale_prices", tiers).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario.memberRate > 0 {
+				level := memberdomain.MemberLevel{Slug: "direct-member", NameJSON: jsonmap.JSON{"en-US": "Member"}, DiscountRate: amount(scenario.memberRate)}
+				if err := f.db.Create(&level).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := f.db.Model(&f.users[0]).Update("member_level_id", level.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario.exclusive > 0 {
+				price := memberdomain.UserProductPrice{UserID: f.users[0].ID, ProductID: f.product.ID, SKUID: f.sku.ID, PriceAmount: amount(scenario.exclusive)}
+				if err := f.db.Create(&price).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.options.MemberLevelService = memberapp.NewService(memberstore.NewLevelStore(f.db), memberstore.NewPriceStore(f.db), memberstore.NewUserStore(f.db), memberstore.NewUserPriceStore(f.db))
+			svc := orderapp.NewOrderService(f.options)
+			preview, err := svc.PreviewOrder(f.input)
+			if err != nil || preview.TotalAmount.String() != scenario.total {
+				t.Fatalf("expected preview total %s, got %+v, %v", scenario.total, preview, err)
+			}
+			if preview.PromotionDiscountAmount.String() != scenario.promoOff ||
+				preview.WholesaleDiscountAmount.String() != scenario.wholesaleOff || preview.MemberDiscountAmount.String() != scenario.memberOff {
+				t.Fatalf("unexpected preview discount breakdown: %+v", preview)
+			}
+			assertNoDirectCheckoutRows(t, f)
+			order, err := svc.CreateOrder(f.input)
+			if err != nil || len(order.Children) != 1 {
+				t.Fatalf("checkout failed: %+v, %v", order, err)
+			}
+			child := order.Children[0]
+			for _, row := range []orderdomain.Order{*order, child} {
+				if row.TotalAmount.String() != scenario.total || row.PromotionDiscountAmount.String() != scenario.promoOff ||
+					row.WholesaleDiscountAmount.String() != scenario.wholesaleOff || row.MemberDiscountAmount.String() != scenario.memberOff {
+					t.Fatalf("unexpected discount breakdown: %+v", row)
+				}
+			}
+			record, err := f.store.GetRecharge(context.Background(), child.ID)
+			if err != nil || record == nil || record.Snapshot.SellPrice.String() != scenario.total || record.Snapshot.CostPrice.String() != "45.00" {
+				t.Fatalf("unexpected checkout snapshot: %+v, %v", record, err)
+			}
+		})
+	}
 }
 
 func newDirectCheckoutFixture(t *testing.T) directCheckoutFixture {
