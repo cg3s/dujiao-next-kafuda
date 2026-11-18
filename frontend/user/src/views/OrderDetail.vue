@@ -79,6 +79,8 @@
           </div>
         </div>
 
+        <DirectOrderStatus v-if="directOrderNo" :status="directStatus" :unavailable="directStatusUnavailable" :format-date="formatDate" />
+
         <div v-if="order.children && order.children.length > 0"
           class="rounded-2xl border bg-card shadow-sm p-6">
           <h2 class="text-lg font-bold mb-4">{{ t('orderDetail.childOrdersTitle') }}</h2>
@@ -444,6 +446,7 @@ import EmptyState from '../components/EmptyState.vue'
 import BreadcrumbNav from '../components/BreadcrumbNav.vue'
 import SmartImage from '../components/SmartImage.vue'
 import { useOrderDetail } from '../composables/useOrderDetail'
+import DirectOrderStatus from '../components/DirectOrderStatus.vue'
 
 const { t } = useI18n()
 
@@ -456,5 +459,6 @@ const {
   hasItemDiscount, formatItemDiscountTotal, formatItemPaidAmount, resolvedChildStatus,
   fulfillmentDeliveryLines, instructionBlocks, isFulfillmentTruncated,
   fulfillmentCopied, handleCopyFulfillment, fulfillmentDownloading, handleDownloadFulfillment,
+  directOrderNo, directStatus, directStatusUnavailable,
 } = useOrderDetail()
 </script>

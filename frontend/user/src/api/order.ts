@@ -49,6 +49,7 @@ export const userOrderAPI = {
     list: (params?: any) => userApi.get('/orders', { params }),
     stats: (params?: any) => userApi.get('/orders/stats', { params }),
     detail: (orderNo: string, options?: any) => userApi.get(`/orders/${encodeURIComponent(orderNo)}`, options),
+    directStatus: (orderNo: string) => userApi.get(`/orders/${encodeURIComponent(orderNo)}/direct-status`, { silentBusinessError: true }),
     cancel: (orderNo: string) => userApi.post(`/orders/${encodeURIComponent(orderNo)}/cancel`),
     downloadFulfillment: (orderNo: string) => userApi.get(`/orders/${encodeURIComponent(orderNo)}/fulfillment/download`, { blob: true }),
 }

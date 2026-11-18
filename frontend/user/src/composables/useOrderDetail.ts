@@ -1,8 +1,9 @@
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { userOrderAPI } from '../api'
 import { debounceAsync } from '../utils/debounce'
+import { directStatusOrderNo, startDirectOrderPolling, type DirectOrderStatus } from '../utils/directOrderStatus'
 import { useConfirmDialog } from './useConfirmDialog'
 import { toast } from './useToast'
 import { useOrderDisplayHelpers } from './useOrderDisplayHelpers'
@@ -19,6 +20,10 @@ export function useOrderDetail() {
   const loading = ref(true)
   const order = ref<any>(null)
   const fulfillmentDownloading = ref(false)
+  const orderNo = computed(() => String(route.params.order_no || '').trim())
+  const directStatus = ref<DirectOrderStatus | null>(null)
+  const directStatusUnavailable = ref(false)
+  const directOrderNo = computed(() => order.value?.order_no === orderNo.value ? directStatusOrderNo(order.value) : '')
 
   const helpers = useOrderDisplayHelpers(order)
 
@@ -39,22 +44,50 @@ export function useOrderDetail() {
     }
   }
 
-  const loadOrder = async () => {
-    loading.value = true
+  let orderRequest = 0
+  const loadOrder = async (showLoading = true) => {
+    const request = ++orderRequest
+    const number = orderNo.value
+    if (showLoading) loading.value = true
     try {
-      const response = await userOrderAPI.detail(String(route.params.order_no || '').trim())
-      order.value = response.data.data
-    } catch (error) {
-      order.value = null
+      const response = await userOrderAPI.detail(number, { silentBusinessError: !showLoading })
+      if (request === orderRequest && number === orderNo.value) order.value = response.data.data
+    } catch {
+      if (showLoading && request === orderRequest && number === orderNo.value) order.value = null
     } finally {
-      loading.value = false
+      if (request === orderRequest) loading.value = false
     }
   }
 
   const debouncedLoadOrder = debounceAsync(loadOrder, 300)
 
+  watch(directOrderNo, (number, _, onCleanup) => {
+    directStatus.value = null
+    directStatusUnavailable.value = false
+    if (!number) return
+    onCleanup(startDirectOrderPolling(
+      async () => {
+        const response = await userOrderAPI.directStatus(number)
+        return response.data.data
+      },
+      (status) => {
+        if (number !== directOrderNo.value) return
+        directStatusUnavailable.value = status === null
+        if (status) {
+          directStatus.value = status
+          if (status.stage === 'completed' && order.value?.status !== 'completed') void loadOrder(false)
+        }
+      },
+    ))
+  })
+
+  watch(orderNo, (number) => {
+    if (number) void loadOrder()
+  })
+
   const cancelOrder = async () => {
-    if (!order.value) return
+    const number = order.value?.order_no
+    if (!number || number !== orderNo.value) return
     const confirmed = await showConfirm({
       title: t('orderDetail.cancel'),
       message: t('orderDetail.cancelConfirm'),
@@ -62,10 +95,10 @@ export function useOrderDetail() {
       cancelText: t('common.cancel'),
       variant: 'danger',
     })
-    if (!confirmed) return
+    if (!confirmed || number !== orderNo.value) return
     try {
-      await userOrderAPI.cancel(order.value.order_no)
-      await debouncedLoadOrder()
+      await userOrderAPI.cancel(number)
+      if (number === orderNo.value) await debouncedLoadOrder()
     } catch {
       toast.error(t('orderDetail.cancelFailed'))
     }
@@ -80,12 +113,16 @@ export function useOrderDetail() {
   })
 
   onUnmounted(() => {
+    orderRequest++
     debouncedLoadOrder.cancel()
   })
 
   return {
     loading,
     order,
+    directOrderNo,
+    directStatus,
+    directStatusUnavailable,
     debouncedLoadOrder,
     cancelOrder,
     fulfillmentDownloading,

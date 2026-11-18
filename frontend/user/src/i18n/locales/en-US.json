@@ -234,6 +234,15 @@
     "viewDetail": "View Details"
   },
   "directPurchase": {
+    "progress": {
+      "title": "Recharge progress",
+      "waiting_session": "Awaiting submission",
+      "processing": "Recharge in progress",
+      "manual_review": "Under manual review",
+      "completed": "Recharge complete",
+      "updated": "Updated {time}",
+      "retrying": "Progress is temporarily unavailable. Retrying automatically."
+    },
     "label": "Kafuda GPT Direct",
     "sku": "Plan {plan} · Region {country}",
     "available": "Available",

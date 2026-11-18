@@ -46,6 +46,8 @@
         </div>
       </div>
 
+      <DirectOrderStatus v-if="directOrderNo" class="mb-[18px]" :status="directStatus" :unavailable="directStatusUnavailable" :format-date="formatDate" />
+
       <VaultOrderBody
         :order="order"
         variant="user"
@@ -63,11 +65,13 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import VaultOrderBody from './components/VaultOrderBody.vue'
 import { useOrderDetail } from '../../composables/useOrderDetail'
+import DirectOrderStatus from '../../components/DirectOrderStatus.vue'
 
 const { t } = useI18n()
 
 const {
   loading, order, debouncedLoadOrder, cancelOrder, fulfillmentDownloading, handleDownloadFulfillment,
   statusLabel, statusVariant, formatDate, formatMoney,
+  directOrderNo, directStatus, directStatusUnavailable,
 } = useOrderDetail()
 </script>

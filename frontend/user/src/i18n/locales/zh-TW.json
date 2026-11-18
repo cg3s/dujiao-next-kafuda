@@ -234,6 +234,15 @@
     "viewDetail": "查看詳情"
   },
   "directPurchase": {
+    "progress": {
+      "title": "直充進度",
+      "waiting_session": "待提交",
+      "processing": "充值處理中",
+      "manual_review": "人工核對中",
+      "completed": "充值完成",
+      "updated": "更新於 {time}",
+      "retrying": "暫時無法更新，稍後會自動重試。"
+    },
     "label": "Kafuda GPT 直充",
     "sku": "方案 {plan} · 地區 {country}",
     "available": "可購買",
