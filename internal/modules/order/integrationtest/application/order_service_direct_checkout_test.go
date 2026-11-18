@@ -413,6 +413,7 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 		{"policy_rejected", kafudadomain.StageManualDelivery, false},
 		{"processing", kafudadomain.StageProcessing, true},
 		{"completed", kafudadomain.StageCompleted, true},
+		{"completed_after_sales_disabled", kafudadomain.StageCompleted, true},
 		{"response_lost", kafudadomain.StageManualReview, true},
 		{"response_mismatch", kafudadomain.StageManualReview, true},
 	} {
@@ -433,6 +434,28 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx := context.Background()
+			if scenario.name == "completed_after_sales_disabled" {
+				options := f.options
+				policy := directCheckoutCommerce(f.store, false)
+				options.DirectCatalog = policy
+				closedCheckout := orderapp.NewOrderService(options)
+				if _, err := closedCheckout.PreviewOrder(f.input); !errors.Is(err, orderapp.ErrProductNotAvailable) {
+					t.Fatalf("preview with sales disabled: %v", err)
+				}
+				if _, err := closedCheckout.CreateOrder(f.input); !errors.Is(err, orderapp.ErrProductNotAvailable) {
+					t.Fatalf("create with sales disabled: %v", err)
+				}
+				if revisions, err := policy.PurchasableSKURevisions(ctx); !errors.Is(err, kafudaapp.ErrQuoteUnavailable) || len(revisions) != 0 {
+					t.Fatalf("storefront availability with sales disabled: %v, %v", revisions, err)
+				}
+				if options, err := policy.SKUOptions(ctx); err != nil || len(options) != 1 || options[0].SKUCode != kafudacontract.SKUCode("plus", "PH") {
+					t.Fatalf("admin catalog with sales disabled: %v, %v", options, err)
+				}
+				var count int64
+				if err := f.db.Model(&orderdomain.Order{}).Count(&count).Error; err != nil || count != 2 {
+					t.Fatalf("disabled checkout changed persisted orders: %d, %v", count, err)
+				}
+			}
 			records := kafudaapp.New(f.store)
 			reservation, err := kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, ordercontract.TenantScope{}, order.OrderNo, order.UserID, now, now.Add(time.Minute))
 			if err != nil {
@@ -457,7 +480,7 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 				}
 				result := &kafudacontract.OrderResult{ID: 100, Reference: req.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing"}
 				switch scenario.name {
-				case "completed":
+				case "completed", "completed_after_sales_disabled":
 					result.Status = "completed"
 				case "response_lost":
 					return nil, errors.New("supplier response lost")
@@ -883,7 +906,7 @@ func newDirectCheckoutFixture(t *testing.T) directCheckoutFixture {
 	if err := f.db.Model(&f.sku).Updates(map[string]interface{}{"sku_code": kafudacontract.SKUCode("plus", "PH"), "spec_values_json": jsonmap.JSON{"plan": "plus", "country": "PH", "merchant_cost": "private-cost"}, "direct_cost_configured": true, "cost_price_amount": "45", "manual_stock_total": 0}).Error; err != nil {
 		t.Fatal(err)
 	}
-	policy := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{Catalog: kafudaapp.NewCatalogService(store, nil, "checkout-profile", time.Hour), SalesEnabled: true, ReferenceLookupVerified: true, ProductCode: "checkout-card", MaxCostCents: 2500, AllowedKinds: []string{"new", "renew"}, WorkerReady: func(context.Context) bool { return true }})
+	policy := directCheckoutCommerce(store, true)
 	options := orderapp.OrderServiceOptions{DirectCatalog: policy, OrderStore: orderstore.New(f.db, "test-guest-credential-secret-with-32-bytes"), UserStore: userstore.New(f.db), ProductStore: productstore.NewProductStore(f.db), ProductSKUStore: productstore.NewSKUStore(f.db), CouponStore: f.couponRepo, CouponUsageStore: f.usageRepo, PromotionRepo: promotionstore.New(f.db), Queue: f.queue}
 	input := f.input(f.users[0].ID)
 	input.CouponCode = ""
@@ -892,6 +915,14 @@ func newDirectCheckoutFixture(t *testing.T) directCheckoutFixture {
 	input.ManualFormData = map[string]jsonmap.JSON{fmt.Sprint(f.product.ID): {"session": "session-must-not-persist"}}
 	return directCheckoutFixture{couponLimitRaceFixture: f, options: options, input: input, catalog: catalog, store: store}
 }
+func directCheckoutCommerce(store *kafudastore.Store, salesEnabled bool) *kafudaapp.CommerceService {
+	return kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+		Catalog:      kafudaapp.NewCatalogService(store, nil, "checkout-profile", time.Hour),
+		SalesEnabled: salesEnabled, ReferenceLookupVerified: true, ProductCode: "checkout-card",
+		MaxCostCents: 2500, AllowedKinds: []string{"new", "renew"}, WorkerReady: func(context.Context) bool { return true },
+	})
+}
+
 func assertNoDirectCheckoutRows(t *testing.T, f directCheckoutFixture) {
 	t.Helper()
 	for _, model := range []interface{}{&orderdomain.Order{}, &orderdomain.OrderItem{}, &kafudadomain.Recharge{}, &coupondomain.CouponUsage{}} {
