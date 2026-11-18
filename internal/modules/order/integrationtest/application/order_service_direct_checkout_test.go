@@ -437,7 +437,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 		wantReason string
 	}{
 		{"region_locked", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuoteRegionLocked},
-		{"quote_expired", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuoteExpired},
+		{"quote_expired", kafudadomain.StageWaiting, false, kafudadomain.ReasonQuoteExpired},
 		{"quote_unavailable", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuoteUnavailable},
 		{"policy_rejected", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuotePolicy},
 		{"processing", kafudadomain.StageProcessing, true, ""},
@@ -524,9 +524,12 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				return &kafudacontract.OrderResult{ID: id, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed"}, nil
 			}}
 			completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check, 10*time.Second)
-			wantError := scenario.stage == kafudadomain.StageManualDelivery || scenario.stage == kafudadomain.StageManualReview
+			wantError := scenario.wantReason != ""
 			if completed != (scenario.stage == kafudadomain.StageCompleted) || (err != nil) != wantError {
 				t.Fatalf("unexpected outcome: completed=%v, err=%v", completed, err)
+			}
+			if scenario.name == "quote_expired" && !errors.Is(err, kafudaapp.ErrQuoteExpired) {
+				t.Fatalf("expected locally expired quote, got %v", err)
 			}
 			if _, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check, 10*time.Second); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
 				t.Fatalf("stale submission replay: %v", err)
@@ -537,6 +540,19 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 			record, err := f.store.GetRecharge(ctx, childID)
 			if err != nil || record == nil || record.Stage != scenario.stage || record.ReasonCode != scenario.wantReason {
 				t.Fatalf("unexpected persisted recharge: %+v, %v", record, err)
+			}
+			if scenario.name == "quote_expired" {
+				previous, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
+				if err != nil || previous == nil || previous.Status != kafudadomain.AttemptFailed || previous.ActiveOrderID != nil ||
+					previous.QuoteID != "" || previous.NextPollAt != nil || previous.Reference != reservation.Attempt.Reference ||
+					record.CurrentAttemptID == nil || *record.CurrentAttemptID != previous.ID {
+					t.Fatalf("expired quote left an active attempt or lost history: %+v, %v", previous, err)
+				}
+				retryAt := time.Now().UTC()
+				retry, err := kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, ordercontract.TenantScope{}, order.OrderNo, order.UserID, retryAt, retryAt.Add(time.Minute))
+				if err != nil || retry == nil || !retry.Created || retry.Attempt == nil || retry.Attempt.Sequence != previous.Sequence+1 || retry.Attempt.Reference == previous.Reference {
+					t.Fatalf("expired pre-submission quote prevented a new attempt: %+v, %v", retry, err)
+				}
 			}
 			if scenario.stage == kafudadomain.StageProcessing {
 				attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)

@@ -24,16 +24,16 @@ func (s *Service) CheckQuote(ctx context.Context, attemptID uint, result kafudac
 	if err == nil {
 		return quote, nil
 	}
-	reason := kafudadomain.ReasonQuotePolicy
+	stage, reason := kafudadomain.StageManualDelivery, kafudadomain.ReasonQuotePolicy
 	switch {
 	case errors.Is(err, ErrQuoteRegionLocked):
 		reason = kafudadomain.ReasonQuoteRegionLocked
 	case errors.Is(err, ErrQuoteExpired):
-		reason = kafudadomain.ReasonQuoteExpired
+		stage, reason = kafudadomain.StageWaiting, kafudadomain.ReasonQuoteExpired
 	case errors.Is(err, ErrQuoteUnavailable):
 		reason = kafudadomain.ReasonQuoteUnavailable
 	}
-	return nil, errors.Join(err, s.rejectCheck(ctx, attemptID, kafudadomain.StageManualDelivery, reason, now))
+	return nil, errors.Join(err, s.rejectCheck(ctx, attemptID, stage, reason, now))
 }
 
 // SelectQuote matches only the paid order's plan and country. Local prices are
