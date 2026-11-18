@@ -21,7 +21,7 @@ test('polling targets only an eligible direct checkout parent', () => {
 
 test('buyer progress accepts only the public stages and a valid timestamp', () => {
   const updated_at = '2026-11-18T08:00:00Z'
-  for (const stage of ['waiting_session', 'checking', 'submitting', 'processing', 'manual_review', 'completed']) {
+  for (const stage of ['waiting_session', 'checking', 'submitting', 'processing', 'manual_review', 'completed', 'refunded']) {
     assert.deepEqual(parseDirectOrderStatus({ stage, updated_at, internal: 'ignored' }), { stage, updated_at })
   }
   for (const input of [null, {}, { stage: 'failed', updated_at }, { stage: 'manual_delivery', updated_at }, { stage: 'processing', updated_at: 'invalid' }]) {
@@ -103,4 +103,22 @@ test('a hidden tab pauses polling and refreshes immediately when visible again',
   stop()
   changeVisibility('visible')
   assert.equal(calls, 3)
+})
+
+test('a confirmed refund stops polls and visibility refreshes', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const page = testPage()
+  const stages: (string | undefined)[] = []
+  let calls = 0
+  startDirectOrderPolling(async () => {
+    calls++
+    return { stage: calls === 1 ? 'manual_review' : 'refunded', updated_at: '2026-11-18T08:00:00Z' }
+  }, (status) => stages.push(status?.stage), page)
+  await Promise.resolve()
+  t.mock.timers.tick(60_000)
+  await Promise.resolve()
+  page.dispatchEvent(new Event('visibilitychange'))
+  t.mock.timers.tick(60_000)
+  assert.deepEqual(stages, ['manual_review', 'refunded'])
+  assert.equal(calls, 2)
 })

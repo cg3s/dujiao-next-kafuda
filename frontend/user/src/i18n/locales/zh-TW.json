@@ -242,6 +242,7 @@
       "processing": "充值處理中",
       "manual_review": "人工核對中",
       "completed": "充值完成",
+      "refunded": "已退款",
       "updated": "更新於 {time}",
       "retrying": "暫時無法更新，稍後會自動重試。"
     },

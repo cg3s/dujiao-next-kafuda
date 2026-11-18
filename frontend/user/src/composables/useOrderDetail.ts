@@ -75,7 +75,9 @@ export function useOrderDetail() {
         directStatusUnavailable.value = status === null
         if (status) {
           directStatus.value = status
-          if (status.stage === 'completed' && order.value?.status !== 'completed') void loadOrder(false)
+          if ((status.stage === 'completed' || status.stage === 'refunded') && order.value?.status !== status.stage) {
+            void loadOrder(false)
+          }
         }
       },
       document,

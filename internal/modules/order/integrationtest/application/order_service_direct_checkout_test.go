@@ -571,6 +571,16 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 			t.Fatalf("status read changed the recharge: %+v, %v", record, err)
 		}
 	}
+	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
+		Update("status", constants.OrderStatusRefunded).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&orderdomain.Order{}).Where("id = ?", order.ID).
+		Update("refunded_amount", order.TotalAmount).Error; err != nil {
+		t.Fatal(err)
+	}
+	request(order.OrderNo, order.UserID, main, 0, "refunded")
+	request(order.OrderNo, order.UserID+100, main, response.CodeNotFound, "")
 }
 
 func TestControlledDirectManualCompletionRequiresTerminalAttempt(t *testing.T) {

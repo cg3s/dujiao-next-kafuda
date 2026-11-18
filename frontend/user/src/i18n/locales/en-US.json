@@ -242,6 +242,7 @@
       "processing": "Recharge in progress",
       "manual_review": "Under manual review",
       "completed": "Recharge complete",
+      "refunded": "Refunded",
       "updated": "Updated {time}",
       "retrying": "Progress is temporarily unavailable. Retrying automatically."
     },

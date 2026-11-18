@@ -1,6 +1,6 @@
 import { KAFUDA_GPT_DIRECT } from './directPurchase.ts'
 
-const DIRECT_ORDER_STAGES = ['waiting_session', 'checking', 'submitting', 'processing', 'manual_review', 'completed'] as const
+const DIRECT_ORDER_STAGES = ['waiting_session', 'checking', 'submitting', 'processing', 'manual_review', 'completed', 'refunded'] as const
 
 export type DirectOrderStage = typeof DIRECT_ORDER_STAGES[number]
 
@@ -62,7 +62,7 @@ export function startDirectOrderPolling(
     if (stopped) return
     if (status) lastStage = status.stage
     onUpdate(status)
-    if (lastStage === 'completed') {
+    if (lastStage === 'completed' || lastStage === 'refunded') {
       stop()
     } else if (!stopped && page.visibilityState === 'visible') {
       const interval = lastStage === 'manual_review' ? MANUAL_REVIEW_POLL_INTERVAL : ACTIVE_POLL_INTERVAL

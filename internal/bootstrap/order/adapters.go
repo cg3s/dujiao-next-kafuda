@@ -54,14 +54,20 @@ func newDirectStatusReader(c *container.Container) ordertransport.DirectStatusRe
 			return nil, err
 		}
 		if userID == 0 || order.UserID != userID || order.ResellerID != nil || order.PaidAt == nil ||
-			!order.RefundedAmount.IsZero() || len(order.Children) != 1 {
+			len(order.Children) != 1 {
 			return nil, nil
 		}
 		child := order.Children[0]
 		if child.ParentID == nil || *child.ParentID != order.ID || child.UserID != userID || child.ResellerID != nil ||
-			child.PaidAt == nil || !child.RefundedAmount.IsZero() || len(child.Items) != 1 ||
-			child.Items[0].FulfillmentType != constants.FulfillmentTypeKafudaGPT ||
-			(order.Status != constants.OrderStatusPaid && order.Status != constants.OrderStatusCompleted) || child.Status != order.Status {
+			child.PaidAt == nil || len(child.Items) != 1 ||
+			child.Items[0].FulfillmentType != constants.FulfillmentTypeKafudaGPT || child.Status != order.Status {
+			return nil, nil
+		}
+		if order.Status == constants.OrderStatusRefunded && order.RefundedAmount.IsPositive() {
+			return &ordertransport.DirectStatus{Stage: constants.OrderStatusRefunded, UpdatedAt: order.UpdatedAt}, nil
+		}
+		if (order.Status != constants.OrderStatusPaid && order.Status != constants.OrderStatusCompleted) ||
+			!order.RefundedAmount.IsZero() || !child.RefundedAmount.IsZero() {
 			return nil, nil
 		}
 		record, err := c.KafudaGPT.Store.GetRecharge(ctx, child.ID)
