@@ -11,17 +11,23 @@ export interface DirectOrderStatus {
   renewal_cancelled?: boolean
 }
 
+type OrderItemFulfillment = { fulfillment_type?: string }
+
 type DirectOrderCandidate = {
   order_no?: string
   status?: string
-  items?: { fulfillment_type?: string }[]
-  children?: { items?: { fulfillment_type?: string }[] }[]
+  items?: OrderItemFulfillment[]
+  children?: { items?: OrderItemFulfillment[] }[]
+}
+
+export function isDirectOrderFulfillment(items?: readonly OrderItemFulfillment[], fulfillmentType?: string): boolean {
+  return fulfillmentType === KAFUDA_GPT_DIRECT || (items?.length === 1 && items[0]?.fulfillment_type === KAFUDA_GPT_DIRECT)
 }
 
 export function directStatusOrderNo(order: DirectOrderCandidate | null): string {
   if (!order?.order_no || !['paid', 'fulfilling', 'completed', 'refunded'].includes(order.status ?? '')) return ''
   const child = order.children?.length === 1 ? order.children[0] : undefined
-  return child?.items?.length === 1 && child.items[0]?.fulfillment_type === KAFUDA_GPT_DIRECT ? order.order_no : ''
+  return isDirectOrderFulfillment(child?.items) ? order.order_no : ''
 }
 
 export function parseDirectOrderStatus(input: unknown): DirectOrderStatus | null {

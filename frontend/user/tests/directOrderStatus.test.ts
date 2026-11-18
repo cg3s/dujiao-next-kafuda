@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { directStatusOrderNo, parseDirectOrderStatus, startDirectOrderPolling, type DirectOrderStatus } from '../src/utils/directOrderStatus.ts'
+import { directStatusOrderNo, isDirectOrderFulfillment, parseDirectOrderStatus, startDirectOrderPolling, type DirectOrderStatus } from '../src/utils/directOrderStatus.ts'
 
 const order = {
   order_no: 'ORDER-1',
@@ -19,6 +19,14 @@ test('polling targets only an eligible direct checkout parent', () => {
   assert.equal(directStatusOrderNo({ ...order, children: [] }), '')
   assert.equal(directStatusOrderNo({ ...order, children: [...order.children, ...order.children] }), '')
   assert.equal(directStatusOrderNo({ ...order, status: 'fulfilling', children: [{ items: [{ fulfillment_type: 'auto' }] }] }), '')
+})
+
+test('manual delivery retains the direct order presentation only for a direct purchase', () => {
+  const directItems = order.children[0]!.items
+  assert.equal(isDirectOrderFulfillment(directItems, 'manual'), true)
+  assert.equal(isDirectOrderFulfillment([{ fulfillment_type: 'manual' }], 'manual'), false)
+  assert.equal(isDirectOrderFulfillment(undefined, 'kafuda_gpt_direct'), true)
+  assert.equal(isDirectOrderFulfillment([...directItems, { fulfillment_type: 'manual' }], 'manual'), false)
 })
 
 test('buyer progress accepts only the public stages and a valid timestamp', () => {
