@@ -398,10 +398,15 @@ func TestReserveBuyerAttemptRequiresPaidScopedCheckoutAndDeduplicates(t *testing
 type directCreateGateway struct {
 	kafudacontract.Gateway
 	create func(context.Context, kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error)
+	get    func(context.Context, uint64) (*kafudacontract.OrderResult, error)
 }
 
 func (g directCreateGateway) CreateOrder(ctx context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
 	return g.create(ctx, req)
+}
+
+func (g directCreateGateway) GetOrder(ctx context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+	return g.get(ctx, id)
 }
 
 func TestSubmitCheckedDirectQuote(t *testing.T) {
@@ -517,7 +522,61 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 					t.Fatalf("unknown outcome lost active attempt: %+v, %v", attempt, err)
 				}
 			}
+			if scenario.name == "response_lost" {
+				testReconcileUnknownDirectOrder(t, f, childID, reservation.Attempt)
+			}
 		})
+	}
+}
+
+func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, childID uint, attempt *kafudadomain.Attempt) {
+	t.Helper()
+	const upstreamID = uint64(9_007_199_254_740_993)
+	calls := 0
+	gateway := directCreateGateway{get: func(ctx context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+		calls++
+		if id != upstreamID {
+			t.Fatalf("unexpected supplier ID: %d", id)
+		}
+		// This would block on the SQLite single connection inside a transaction.
+		if _, err := f.store.GetAttempt(ctx, attempt.ID); err != nil {
+			t.Fatal(err)
+		}
+		reference := attempt.Reference
+		if calls == 1 {
+			reference = "different-order"
+		}
+		return &kafudacontract.OrderResult{
+			ID: id, Reference: reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing",
+		}, nil
+	}}
+	handler := orderwiring.New(&container.Container{OrderStore: f.options.OrderStore, KafudaGPT: &kafudawiring.Module{Store: f.store, Gateway: gateway}}).Admin
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("admin_id", uint(9)) })
+	orderhttp.RegisterAdminRoutes(router.Group("/admin"), handler)
+	request := func(id uint, success bool) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/orders/%d/direct-reconcile", childID),
+			strings.NewReader(fmt.Sprintf(`{"attempt_id":%d,"upstream_order_id":"%d"}`, id, upstreamID)))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(rec, req)
+		if strings.Contains(rec.Body.String(), `"status_code":0`) != success {
+			t.Fatalf("reconciliation response: %s", rec.Body.String())
+		}
+	}
+	request(attempt.ID+1, false)
+	request(attempt.ID, false)
+	stored, err := f.store.GetAttempt(context.Background(), attempt.ID)
+	if err != nil || stored == nil || stored.UpstreamOrderID != nil || stored.Status != kafudadomain.AttemptReview {
+		t.Fatalf("mismatch changed the original attempt: %+v, %v", stored, err)
+	}
+	request(attempt.ID, true)
+	request(attempt.ID, false)
+	stored, err = f.store.GetAttempt(context.Background(), attempt.ID)
+	if err != nil || stored == nil || stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != upstreamID ||
+		stored.NextPollAt == nil || stored.Status != kafudadomain.AttemptProcessing || calls != 2 {
+		t.Fatalf("verified ID did not restore scheduled lookups: %+v, %v, calls=%d", stored, err, calls)
 	}
 }
 

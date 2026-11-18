@@ -439,6 +439,8 @@ export const adminAPI = {
   getOrder: (id: number) => api.get(`/admin/orders/${id}`),
   completeDirectOrder: (childID: number, attemptID: number) => api.post(`/admin/orders/${childID}/direct-complete`, { attempt_id: attemptID, confirmed: true }),
   releaseDirectOrder: (childID: number, attemptID: number) => api.post(`/admin/orders/${childID}/direct-release`, { attempt_id: attemptID, confirmed: true }),
+  reconcileDirectOrder: (childID: number, attemptID: number, upstreamOrderID: string) =>
+    api.post(`/admin/orders/${childID}/direct-reconcile`, { attempt_id: attemptID, upstream_order_id: upstreamOrderID }),
   updateOrderStatus: (id: number, data: { status: string }) => api.patch(`/admin/orders/${id}`, data),
   createFulfillment: (data: Partial<AdminFulfillment>) => api.post('/admin/fulfillments', data),
   downloadFulfillment: (orderId: number) => api.get(`/admin/orders/${orderId}/fulfillment/download`, { blob: true }),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,16 +89,17 @@ type AccountingPolicy interface {
 
 // AdminHandler 处理后台订单 HTTP。
 type AdminHandler struct {
-	orders         OrderQuery
-	users          UserDirectory
-	coupons        CouponLookup
-	promotions     PromotionLookup
-	payments       PaymentDirectory
-	channels       PaymentChannelDirectory
-	accounting     AccountingPolicy
-	direct         AdminDirectStatusReader
-	completeDirect func(childID, attemptID, adminID uint, confirmed bool) error
-	releaseDirect  func(childID, attemptID, adminID uint, confirmed bool) error
+	orders          OrderQuery
+	users           UserDirectory
+	coupons         CouponLookup
+	promotions      PromotionLookup
+	payments        PaymentDirectory
+	channels        PaymentChannelDirectory
+	accounting      AccountingPolicy
+	direct          AdminDirectStatusReader
+	completeDirect  func(childID, attemptID, adminID uint, confirmed bool) error
+	releaseDirect   func(childID, attemptID, adminID uint, confirmed bool) error
+	reconcileDirect func(context.Context, uint, uint, uint, uint64) error
 }
 
 func NewAdminHandler(
@@ -111,21 +113,23 @@ func NewAdminHandler(
 	direct AdminDirectStatusReader,
 	completeDirect func(childID, attemptID, adminID uint, confirmed bool) error,
 	releaseDirect func(childID, attemptID, adminID uint, confirmed bool) error,
+	reconcileDirect func(context.Context, uint, uint, uint, uint64) error,
 ) *AdminHandler {
 	if orders == nil || users == nil || coupons == nil || promotions == nil || payments == nil || channels == nil || accounting == nil {
 		panic("order admin handler: required dependency is nil")
 	}
 	return &AdminHandler{
-		orders:         orders,
-		users:          users,
-		coupons:        coupons,
-		promotions:     promotions,
-		payments:       payments,
-		channels:       channels,
-		accounting:     accounting,
-		direct:         direct,
-		completeDirect: completeDirect,
-		releaseDirect:  releaseDirect,
+		orders:          orders,
+		users:           users,
+		coupons:         coupons,
+		promotions:      promotions,
+		payments:        payments,
+		channels:        channels,
+		accounting:      accounting,
+		direct:          direct,
+		completeDirect:  completeDirect,
+		releaseDirect:   releaseDirect,
+		reconcileDirect: reconcileDirect,
 	}
 }
 
@@ -183,6 +187,32 @@ func (h *AdminHandler) AdminReleaseDirect(c *gin.Context) {
 	h.applyDirectManualAction(c, h.releaseDirect)
 }
 
+func (h *AdminHandler) AdminReconcileDirect(c *gin.Context) {
+	adminID, ok := ginutil.GetAdminID(c)
+	if !ok {
+		return
+	}
+	childID, err := ginutil.ParseParamUint(c, "id")
+	if err != nil {
+		ginutil.RespondError(c, response.CodeBadRequest, "error.order_item_invalid", nil)
+		return
+	}
+	var input struct {
+		AttemptID  uint   `json:"attempt_id" binding:"required"`
+		UpstreamID string `json:"upstream_order_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		ginutil.RespondBindError(c, err)
+		return
+	}
+	upstreamID, err := strconv.ParseUint(input.UpstreamID, 10, 64)
+	if err != nil || upstreamID == 0 {
+		ginutil.RespondError(c, response.CodeBadRequest, "error.bad_request", nil)
+		return
+	}
+	respondDirectManualAction(c, h.reconcileDirect(c.Request.Context(), childID, input.AttemptID, adminID, upstreamID))
+}
+
 func (h *AdminHandler) applyDirectManualAction(c *gin.Context, action func(childID, attemptID, adminID uint, confirmed bool) error) {
 	adminID, ok := ginutil.GetAdminID(c)
 	if !ok {
@@ -201,7 +231,11 @@ func (h *AdminHandler) applyDirectManualAction(c *gin.Context, action func(child
 		ginutil.RespondBindError(c, err)
 		return
 	}
-	switch err := action(childID, input.AttemptID, adminID, input.Confirmed); {
+	respondDirectManualAction(c, action(childID, input.AttemptID, adminID, input.Confirmed))
+}
+
+func respondDirectManualAction(c *gin.Context, err error) {
+	switch {
 	case err == nil:
 		response.Success(c, gin.H{})
 	case errors.Is(err, ErrOrderNotFound):

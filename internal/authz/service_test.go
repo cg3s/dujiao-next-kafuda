@@ -210,7 +210,7 @@ func TestDirectReviewUsesExistingOrderReadPermissions(t *testing.T) {
 				t.Fatalf("%s GET %s allowed=%t, err=%v", role, path, allowed, err)
 			}
 		}
-		for _, path := range []string{"/admin/orders/101/direct-complete", "/admin/orders/101/direct-release", "/admin/orders/101/direct-refund-to-wallet", "/admin/orders/101/direct-manual-refund"} {
+		for _, path := range []string{"/admin/orders/101/direct-complete", "/admin/orders/101/direct-release", "/admin/orders/101/direct-reconcile", "/admin/orders/101/direct-refund-to-wallet", "/admin/orders/101/direct-manual-refund"} {
 			allowed, err := svc.EnforceAdmin(42, path, "POST")
 			if err != nil || allowed != (role == "support") {
 				t.Fatalf("%s POST %s allowed=%t, err=%v", role, path, allowed, err)

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Package } from 'lucide-vue-next'
 import { adminAPI } from '@/api/admin'
@@ -71,6 +71,30 @@ const handleDirectManualAction = async (action: 'complete' | 'release') => {
     directCompleting.value = false
   }
 }
+const reconcileOrderID = ref('')
+const directReconciliation = computed(() => {
+  const order = selectedOrder.value
+  const recharge = order?.direct_recharge
+  if (order?.status !== 'paid' || recharge?.stage !== 'manual_review' || recharge.reason !== 'outcome_unknown' ||
+      !recharge.attempt?.active || recharge.attempt.upstream_order_id || !auth.hasPermission('POST:/admin/orders/:id/direct-reconcile')) return null
+  return { order, recharge, attempt: recharge.attempt }
+})
+const reconcileDirect = async () => {
+  const target = directReconciliation.value
+  const upstreamID = reconcileOrderID.value.trim()
+  if (!target || directCompleting.value || !/^\d{1,20}$/.test(upstreamID)) return
+  directCompleting.value = true
+  try {
+    await adminAPI.reconcileDirectOrder(target.recharge.child_id, target.attempt.id, upstreamID)
+    if (selectedOrder.value === target.order) await fetchOrderDetail(target.order.id)
+    emit('refresh')
+  } catch {
+    // The shared API client displays the error.
+  } finally {
+    directCompleting.value = false
+  }
+}
+watch(selectedOrder, () => { reconcileOrderID.value = '' })
 const procurementOrder = ref<AdminProcurementOrder | null | undefined>(null)
 
 const refundSubmitting = ref(false)
@@ -839,6 +863,17 @@ watch(
               class="mt-4 ms-2" size="sm" variant="outline" :disabled="directCompleting" @click="handleDirectManualAction('release')">
               {{ t('admin.orders.directReview.release') }}
             </Button>
+            <form v-if="directReconciliation" class="mt-4 space-y-2" @submit.prevent="reconcileDirect">
+              <label class="block text-sm font-medium" for="direct-reconcile-id">{{ t('admin.orders.directReview.upstreamId') }}</label>
+              <p class="text-xs text-muted-foreground">{{ t('admin.orders.directReview.reconcileHint') }}</p>
+              <div class="flex flex-wrap items-center gap-2">
+                <Input id="direct-reconcile-id" v-model="reconcileOrderID" class="w-full sm:w-56" inputmode="numeric"
+                  maxlength="20" pattern="[0-9]+" required :disabled="directCompleting" />
+                <Button type="submit" size="sm" :disabled="directCompleting || !reconcileOrderID">
+                  {{ t('admin.orders.directReview.reconcile') }}
+                </Button>
+              </div>
+            </form>
           </section>
 
           <div class="rounded-xl border border-border bg-muted/20 p-4">

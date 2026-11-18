@@ -1,9 +1,11 @@
 package orderwiring
 
 import (
+	"context"
 	"time"
 
 	"github.com/dujiao-next/internal/app/container"
+	"github.com/dujiao-next/internal/logger"
 	orderqueue "github.com/dujiao-next/internal/modules/order/infrastructure/queueadapter"
 	ordertransport "github.com/dujiao-next/internal/modules/order/transport/http"
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
@@ -43,6 +45,20 @@ func New(c *container.Container) Handlers {
 					return ordertransport.ErrOrderNotFound
 				}
 				return mapOrderTransportError(kafudaworkflow.ReleaseManual(c.OrderStore, childID, attemptID, adminID, confirmed, time.Now().UTC()))
+			},
+			func(ctx context.Context, childID, attemptID, adminID uint, upstreamID uint64) error {
+				if c.OrderStore == nil || c.KafudaGPT == nil || c.KafudaGPT.Gateway == nil {
+					return ordertransport.ErrOrderNotFound
+				}
+				completed, err := kafudaworkflow.ReconcileUnknownOrder(ctx, c.OrderStore, c.KafudaGPT.Gateway, childID, attemptID, upstreamID)
+				if err != nil {
+					return mapOrderTransportError(err)
+				}
+				logger.Infow("kafuda_unknown_order_reconciled", "child_order_id", childID, "attempt_id", attemptID, "admin_id", adminID)
+				if completed {
+					kafudaworkflow.EnqueueCompletionEmail(c.OrderStore, orderqueue.New(c.QueueClient), c.SettingService, c.Config, childID)
+				}
+				return nil
 			},
 		),
 		AdminRefund: NewAdminRefundHandler(c),
