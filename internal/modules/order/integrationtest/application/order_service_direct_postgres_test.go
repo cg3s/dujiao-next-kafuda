@@ -44,6 +44,21 @@ func TestPostgresDirectSubmitCheckedQuote(t *testing.T) {
 	})
 }
 
+func TestPostgresDirectAfterSalesWithSalesStopped(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	fixture := func(t *testing.T) directCheckoutFixture {
+		db := openPostgresDirectRaceDB(t, dsn)
+		return seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-after-sales", 0, 0))
+	}
+	t.Run("refund", func(t *testing.T) { testDirectCheckoutRefunds(t, fixture) })
+	for _, action := range []string{"direct-complete", "direct-release"} {
+		t.Run(action, func(t *testing.T) { testControlledDirectManualAction(t, fixture(t), action, false) })
+	}
+}
+
 func TestPostgresDirectCentralMigration(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 	if dsn == "" {

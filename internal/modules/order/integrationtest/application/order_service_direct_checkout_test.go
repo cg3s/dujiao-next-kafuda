@@ -157,13 +157,17 @@ func TestAdminDirectReviewFilterAndProjection(t *testing.T) {
 }
 
 func TestDirectCheckoutGenericAfterSalesCannotBypassReview(t *testing.T) {
+	testDirectCheckoutRefunds(t, newDirectCheckoutFixture)
+}
+
+func testDirectCheckoutRefunds(t *testing.T, fixture func(*testing.T) directCheckoutFixture) {
+	t.Helper()
 	for _, method := range []string{"wallet", "manual"} {
-		t.Run(method, func(t *testing.T) { testDirectCheckoutRefund(t, method) })
+		t.Run(method, func(t *testing.T) { testDirectCheckoutRefund(t, fixture(t), method) })
 	}
 }
 
-func testDirectCheckoutRefund(t *testing.T, method string) {
-	f := newDirectCheckoutFixture(t)
+func testDirectCheckoutRefund(t *testing.T, f directCheckoutFixture, method string) {
 	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &orderdomain.OrderRefundRecord{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +184,8 @@ func testDirectCheckoutRefund(t *testing.T, method string) {
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
+	stopped := stoppedDirectSalesContainer(t, f)
+	service = stopped.OrderService
 	records := kafudaapp.New(f.store)
 	reservation, err := records.Reserve(ctx, childID, now, now.Add(time.Minute))
 	if err != nil {
@@ -249,7 +255,8 @@ func testDirectCheckoutRefund(t *testing.T, method string) {
 	if err := apply(order.ID, id, amount); !errors.Is(err, orderrefund.ErrOrderStatusInvalid) {
 		t.Fatalf("partial direct refund accepted: %v", err)
 	}
-	handler := orderwiring.NewAdminRefundHandler(&container.Container{OrderStore: f.options.OrderStore, OrderRefundService: refunds})
+	stopped.OrderRefundService = refunds
+	handler := orderwiring.NewAdminRefundHandler(stopped)
 	router := gin.New()
 	router.Use(func(c *gin.Context) { c.Set("admin_id", uint(9)) })
 	orderhttp.RegisterAdminRefundWriteRoutes(router.Group("/admin"), handler)
@@ -453,16 +460,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 			}
 			ctx := context.Background()
 			if scenario.name == "completed_after_sales_disabled" || scenario.name == "poll_after_sales_disabled" {
-				options := f.options
-				policy := directCheckoutCommerce(f.store, false)
-				options.DirectCatalog = policy
-				closedCheckout := orderapp.NewOrderService(options)
-				if _, err := closedCheckout.PreviewOrder(f.input); !errors.Is(err, orderapp.ErrProductNotAvailable) {
-					t.Fatalf("preview with sales disabled: %v", err)
-				}
-				if _, err := closedCheckout.CreateOrder(f.input); !errors.Is(err, orderapp.ErrProductNotAvailable) {
-					t.Fatalf("create with sales disabled: %v", err)
-				}
+				policy := stoppedDirectSalesContainer(t, f).KafudaGPT.Commerce
 				if revisions, err := policy.PurchasableSKURevisions(ctx); !errors.Is(err, kafudaapp.ErrQuoteUnavailable) || len(revisions) != 0 {
 					t.Fatalf("storefront availability with sales disabled: %v, %v", revisions, err)
 				}
@@ -785,8 +783,12 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 }
 
 func TestControlledDirectManualCompletionRequiresTerminalAttempt(t *testing.T) {
-	t.Run("http", func(t *testing.T) { testControlledDirectManualAction(t, "direct-complete", false) })
-	t.Run("notification", func(t *testing.T) { testControlledDirectManualAction(t, "direct-complete", true) })
+	t.Run("http", func(t *testing.T) {
+		testControlledDirectManualAction(t, newDirectCheckoutFixture(t), "direct-complete", false)
+	})
+	t.Run("notification", func(t *testing.T) {
+		testControlledDirectManualAction(t, newDirectCheckoutFixture(t), "direct-complete", true)
+	})
 }
 
 type directCompletionEmailQueue struct {
@@ -811,11 +813,10 @@ func (q *directCompletionEmailQueue) EnqueueStatusEmail(orderID uint, status str
 }
 
 func TestControlledDirectManualReleaseRequiresTerminalAttempt(t *testing.T) {
-	testControlledDirectManualAction(t, "direct-release", false)
+	testControlledDirectManualAction(t, newDirectCheckoutFixture(t), "direct-release", false)
 }
 
-func testControlledDirectManualAction(t *testing.T, action string, notify bool) {
-	f := newDirectCheckoutFixture(t)
+func testControlledDirectManualAction(t *testing.T, f directCheckoutFixture, action string, notify bool) {
 	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
 		t.Fatal(err)
 	}
@@ -830,6 +831,7 @@ func testControlledDirectManualAction(t *testing.T, action string, notify bool) 
 		Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": now}).Error; err != nil {
 		t.Fatal(err)
 	}
+	stopped := stoppedDirectSalesContainer(t, f)
 	records := kafudaapp.New(f.store)
 	reserved, err := records.Reserve(ctx, childID, now, now.Add(time.Minute))
 	if err != nil {
@@ -871,7 +873,7 @@ func testControlledDirectManualAction(t *testing.T, action string, notify bool) 
 			t.Fatal(err)
 		}
 	} else {
-		handler := orderwiring.New(&container.Container{OrderStore: f.options.OrderStore}).Admin
+		handler := orderwiring.New(stopped).Admin
 		router := gin.New()
 		router.Use(func(c *gin.Context) { c.Set("admin_id", uint(adminID)) })
 		orderhttp.RegisterAdminRoutes(router.Group("/admin"), handler)
@@ -1116,6 +1118,26 @@ func directCheckoutCommerce(store *kafudastore.Store, salesEnabled bool) *kafuda
 		SalesEnabled: salesEnabled, ReferenceLookupVerified: true, ProductCode: "checkout-card",
 		MaxCostCents: 2500, AllowedKinds: []string{"new", "renew"}, WorkerReady: func(context.Context) bool { return true },
 	})
+}
+
+func stoppedDirectSalesContainer(t *testing.T, f directCheckoutFixture) *container.Container {
+	t.Helper()
+	cfg := &config.Config{KafudaGPT: config.KafudaGPTConfig{SalesEnabled: false}}
+	commerce := directCheckoutCommerce(f.store, cfg.KafudaGPT.SalesEnabled)
+	options := f.options
+	options.DirectCatalog = commerce
+	orders := orderapp.NewOrderService(options)
+	if _, err := orders.PreviewOrder(f.input); !errors.Is(err, orderapp.ErrProductNotAvailable) {
+		t.Fatalf("preview after sales stopped: %v", err)
+	}
+	if _, err := orders.CreateOrder(f.input); !errors.Is(err, orderapp.ErrProductNotAvailable) {
+		t.Fatalf("checkout after sales stopped: %v", err)
+	}
+	return &container.Container{
+		Config:     cfg,
+		OrderStore: options.OrderStore, OrderService: orders,
+		KafudaGPT: &kafudawiring.Module{Store: f.store, Commerce: commerce},
+	}
 }
 
 func assertNoDirectCheckoutRows(t *testing.T, f directCheckoutFixture) {
