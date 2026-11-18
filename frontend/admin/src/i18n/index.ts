@@ -5,6 +5,14 @@ const messages = {
     kafuda: {
       skuRegions: '规格地区',
       unknownRegion: '未指定地区',
+      salesBlockReasons: {
+        gateway_not_configured: '站点暂不可购买：未配置 Kafuda API。',
+        sales_disabled: '站点暂不可购买：部署配置未开启直充销售。',
+        reference_lookup_unverified: '站点暂不可购买：尚未确认按 reference 核对订单的渠道。',
+        merchant_policy_incomplete: '站点暂不可购买：请检查卡头、成本上限和允许的业务类型。',
+        fulfillment_not_wired: '站点暂不可购买：当前版本尚未接通买家直充履约。启用规格无法解除此限制。',
+        worker_not_ready: '站点暂不可购买：直充后台任务尚未就绪。',
+      },
       type: 'Kafuda GPT Direct（直充）',
       sync: '刷新直充套餐',
       tip: '套餐和地区来自 Kafuda。请逐个确认成本价与售价，再启用规格；目录刷新保留您的价格。此商品不使用卡密或人工库存。',
@@ -4666,6 +4674,14 @@ const messages = {
     kafuda: {
       skuRegions: '規格地區',
       unknownRegion: '未指定地區',
+      salesBlockReasons: {
+        gateway_not_configured: '站點暫不可購買：未設定 Kafuda API。',
+        sales_disabled: '站點暫不可購買：部署設定未開啟直充銷售。',
+        reference_lookup_unverified: '站點暫不可購買：尚未確認依 reference 核對訂單的管道。',
+        merchant_policy_incomplete: '站點暫不可購買：請檢查卡頭、成本上限和允許的業務類型。',
+        fulfillment_not_wired: '站點暫不可購買：目前版本尚未接通買家直充履約。啟用規格無法解除此限制。',
+        worker_not_ready: '站點暫不可購買：直充背景工作尚未就緒。',
+      },
       type: 'Kafuda GPT Direct（直充）',
       sync: '更新直充套餐',
       tip: '套餐與地區來自 Kafuda。請逐項確認成本價與售價後再啟用規格；目錄更新保留您的價格。此商品不使用卡密或人工庫存。',
@@ -9327,6 +9343,14 @@ const messages = {
     kafuda: {
       skuRegions: 'SKU regions',
       unknownRegion: 'Unspecified region',
+      salesBlockReasons: {
+        gateway_not_configured: 'Unavailable for purchase: the Kafuda API is not configured.',
+        sales_disabled: 'Unavailable for purchase: direct sales are disabled in deployment settings.',
+        reference_lookup_unverified: 'Unavailable for purchase: order reconciliation by reference has not been verified.',
+        merchant_policy_incomplete: 'Unavailable for purchase: check the card product, cost limit and allowed operation types.',
+        fulfillment_not_wired: 'Unavailable for purchase: buyer recharge fulfillment is not connected in this build. Enabling SKUs cannot clear this restriction.',
+        worker_not_ready: 'Unavailable for purchase: the direct recharge worker is not ready.',
+      },
       type: 'Kafuda GPT Direct',
       sync: 'Refresh recharge plans',
       tip: 'Plans and regions come from Kafuda. Confirm each cost and selling price before enabling a variant. Refreshes preserve your prices. This product uses no card-key or manual inventory.',

@@ -42,6 +42,7 @@ const initialCategoryID = ref<number | null>(null)
 const catalogBusy = ref(false)
 const catalogStale = ref(true)
 const catalogSyncedAt = ref('')
+const catalogSalesBlockReason = ref('')
 const activeSKURegion = ref('')
 const directAvailability = ref<Record<string, boolean>>({})
 const directReviewRequired = ref<Record<string, boolean>>({})
@@ -517,6 +518,7 @@ const isTextLikeField = (fieldType: string) => {
 }
 
 const resetForm = () => {
+  catalogSalesBlockReason.value = ''
   activeSKURegion.value = ''
   initialCategoryID.value = null
   originalManualStockTotal.value = null
@@ -549,6 +551,7 @@ const resetForm = () => {
 }
 
 const populateForm = (product: AdminProduct) => {
+  catalogSalesBlockReason.value = ''
   activeSKURegion.value = ''
   initialCategoryID.value = Number(product.category_id || 0) || null
   originalManualStockTotal.value = resolveManualStockMetrics(product).total
@@ -660,6 +663,7 @@ const loadDirectCatalog = async (sync: boolean) => {
     directAvailability.value = available
     directReviewRequired.value = reviewRequired
     catalogStale.value = Boolean(catalog.stale)
+    catalogSalesBlockReason.value = String(catalog.sales_block_reason || '')
     catalogSyncedAt.value = catalog.synced_at ? new Date(catalog.synced_at).toLocaleString() : ''
   } catch (error) {
     if (!isNotifiedError(error)) notifyError(t('kafuda.failed'))
@@ -1091,6 +1095,9 @@ watch(
               <p>{{ t('kafuda.tip') }}</p>
               <p>{{ t('kafuda.lastSync', { time: catalogSyncedAt || t('kafuda.neverSynced') }) }}</p>
               <p v-if="catalogStale" class="text-amber-600">{{ t('kafuda.stale') }}</p>
+              <p v-if="catalogSalesBlockReason" class="text-amber-600" role="status">
+                {{ t(`kafuda.salesBlockReasons.${catalogSalesBlockReason}`) }}
+              </p>
             </div>
             <div v-if="!form.skus.length" class="rounded-lg border border-dashed border-border p-4 text-xs text-muted-foreground">
               {{ t('admin.products.form.skuEmpty') }}

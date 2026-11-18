@@ -58,18 +58,25 @@ func TestAdminCatalogRefreshUsesPersistedSnapshotWithoutSecondRead(t *testing.T)
 	reads := &singleReadCatalogStore{Store: store}
 	service := kafudaapp.NewCatalogService(reads, failingCatalogGateway{data: envelope.Data}, "default", time.Hour)
 	router := gin.New()
-	kafudahttp.RegisterAdminRoutes(router.Group("/admin"), &kafudahttp.AdminHandler{Catalog: service, Configured: true})
+	commerce := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+		Catalog: service, SalesEnabled: true, ReferenceLookupVerified: true,
+		ProductCode: "test-card", MaxCostCents: 1000, AllowedKinds: []string{"new"},
+	})
+	kafudahttp.RegisterAdminRoutes(router.Group("/admin"), &kafudahttp.AdminHandler{
+		Catalog: service, Configured: true, SalesBlockReason: commerce.SalesBlockReason,
+	})
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/admin/kafuda-gpt/catalog/sync", nil))
 	var body struct {
 		StatusCode int `json:"status_code"`
 		Data       struct {
-			Options   []kafudacontract.SKUOption `json:"options"`
-			Cards     []kafudadomain.CardProduct `json:"cards"`
-			Enabled   bool                       `json:"enabled"`
-			Stale     bool                       `json:"stale"`
-			SyncedAt  time.Time                  `json:"synced_at"`
-			ExpiresAt time.Time                  `json:"expires_at"`
+			Options          []kafudacontract.SKUOption `json:"options"`
+			Cards            []kafudadomain.CardProduct `json:"cards"`
+			Enabled          bool                       `json:"enabled"`
+			Stale            bool                       `json:"stale"`
+			SyncedAt         time.Time                  `json:"synced_at"`
+			ExpiresAt        time.Time                  `json:"expires_at"`
+			SalesBlockReason string                     `json:"sales_block_reason"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
@@ -77,6 +84,9 @@ func TestAdminCatalogRefreshUsesPersistedSnapshotWithoutSecondRead(t *testing.T)
 	}
 	if recorder.Code != http.StatusOK || body.StatusCode != 0 || reads.reads != 1 || len(body.Data.Options) != 60 || len(body.Data.Cards) != 11 {
 		t.Fatalf("catalog refresh failed or re-read the cache: reads=%d, response=%s", reads.reads, recorder.Body.String())
+	}
+	if body.Data.SalesBlockReason != "fulfillment_not_wired" {
+		t.Fatalf("missing sales status: %q", body.Data.SalesBlockReason)
 	}
 	saved, err := store.GetCatalog(context.Background(), "default")
 	if err != nil || saved == nil {

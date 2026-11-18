@@ -19,8 +19,9 @@ type CatalogUseCase interface {
 }
 
 type AdminHandler struct {
-	Catalog    CatalogUseCase
-	Configured bool
+	Catalog          CatalogUseCase
+	Configured       bool
+	SalesBlockReason func(context.Context) string
 }
 
 func (h *AdminHandler) GetCatalog(c *gin.Context)  { h.catalog(c, false) }
@@ -42,12 +43,23 @@ func (h *AdminHandler) catalog(c *gin.Context, sync bool) {
 		respondCatalogFailure(c, err)
 		return
 	}
-	if catalog == nil {
-		response.Success(c, gin.H{"options": []kafudacontract.SKUOption{}, "cards": []kafudadomain.CardProduct{}, "stale": true, "configured": h.Configured})
-		return
+	data := gin.H{"options": []kafudacontract.SKUOption{}, "cards": []kafudadomain.CardProduct{}, "stale": true, "configured": h.Configured}
+	if !h.Configured {
+		data["sales_block_reason"] = "gateway_not_configured"
+	} else if h.SalesBlockReason != nil {
+		if reason := h.SalesBlockReason(c.Request.Context()); reason != "" {
+			data["sales_block_reason"] = reason
+		}
 	}
-	options := kafudaapp.CatalogSKUOptions(catalog)
-	response.Success(c, gin.H{"options": options, "cards": catalog.Cards, "enabled": catalog.Enabled, "synced_at": catalog.SyncedAt, "expires_at": catalog.ExpiresAt, "stale": !time.Now().Before(catalog.ExpiresAt), "configured": h.Configured})
+	if catalog != nil {
+		data["options"] = kafudaapp.CatalogSKUOptions(catalog)
+		data["cards"] = catalog.Cards
+		data["enabled"] = catalog.Enabled
+		data["synced_at"] = catalog.SyncedAt
+		data["expires_at"] = catalog.ExpiresAt
+		data["stale"] = !time.Now().Before(catalog.ExpiresAt)
+	}
+	response.Success(c, data)
 }
 
 func respondCatalogFailure(c *gin.Context, err error) {

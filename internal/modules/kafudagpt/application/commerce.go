@@ -84,12 +84,30 @@ func (s *CommerceService) PurchasableSKURevisions(ctx context.Context) (map[stri
 	return revisions, nil
 }
 
-func (s *CommerceService) purchaseCatalog(ctx context.Context) (*kafudadomain.Catalog, error) {
+// SalesBlockReason identifies the first deployment prerequisite blocking new sales.
+func (s *CommerceService) SalesBlockReason(ctx context.Context) string {
 	opt := s.options
-	if opt.Catalog == nil || !opt.SalesEnabled || !opt.ReferenceLookupVerified || opt.ProductCode == "" || opt.MaxCostCents <= 0 || len(opt.AllowedKinds) == 0 || opt.WorkerReady == nil || !opt.WorkerReady(ctx) {
+	switch {
+	case !opt.SalesEnabled:
+		return "sales_disabled"
+	case !opt.ReferenceLookupVerified:
+		return "reference_lookup_unverified"
+	case opt.Catalog == nil || opt.ProductCode == "" || opt.MaxCostCents <= 0 || len(opt.AllowedKinds) == 0:
+		return "merchant_policy_incomplete"
+	case opt.WorkerReady == nil:
+		return "fulfillment_not_wired"
+	case !opt.WorkerReady(ctx):
+		return "worker_not_ready"
+	default:
+		return ""
+	}
+}
+
+func (s *CommerceService) purchaseCatalog(ctx context.Context) (*kafudadomain.Catalog, error) {
+	if s.SalesBlockReason(ctx) != "" {
 		return nil, ErrQuoteUnavailable
 	}
-	return opt.Catalog.Cached(ctx)
+	return s.options.Catalog.Cached(ctx)
 }
 
 func (s *CommerceService) cardAllowed(catalog *kafudadomain.Catalog) bool {
