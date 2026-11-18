@@ -462,6 +462,10 @@ func (h *AdminProductHandler) UpdateProduct(c *gin.Context) {
 			ginutil.RespondError(c, response.CodeBadRequest, "error.product_sku_has_card_secret_stock", nil)
 			return
 		}
+		if errors.Is(err, productcontract.ErrManualStockReserved) {
+			ginutil.RespondError(c, response.CodeBadRequest, "error.product_has_reserved_manual_stock", nil)
+			return
+		}
 		ginutil.RespondError(c, response.CodeInternal, "error.product_update_failed", err)
 		return
 	}

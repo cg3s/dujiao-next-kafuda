@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dujiao-next/internal/constants"
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 
@@ -138,13 +139,27 @@ func (r *SKUStore) UpdateForProductEdit(item *productdomain.ProductSKU, manualSt
 	if manualStockTotal != nil {
 		fields["manual_stock_total"] = *manualStockTotal
 	}
-	result := r.db.Model(&productdomain.ProductSKU{}).
-		Where("id = ? AND product_id = ? AND deleted_at IS NULL", item.ID, item.ProductID).
-		Updates(fields)
-	if result.Error == nil && result.RowsAffected == 0 {
-		return productcontract.ErrProductSKUInvalid
+	target := r.db.Model(&productdomain.ProductSKU{}).
+		Where("id = ? AND product_id = ? AND deleted_at IS NULL", item.ID, item.ProductID)
+	update := target
+	setsUnlimited := manualStockTotal != nil && *manualStockTotal == constants.ManualStockUnlimited
+	if setsUnlimited {
+		update = target.Session(&gorm.Session{}).Where("manual_stock_locked <= 0")
 	}
-	return result.Error
+	result := update.Updates(fields)
+	if result.Error != nil || result.RowsAffected > 0 {
+		return result.Error
+	}
+	if setsUnlimited {
+		var count int64
+		if err := target.Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return productcontract.ErrManualStockReserved
+		}
+	}
+	return productcontract.ErrProductSKUInvalid
 }
 
 // Delete 硬删除单个 SKU（绕过软删除，避免唯一索引冲突）
@@ -152,7 +167,18 @@ func (r *SKUStore) Delete(id uint) error {
 	if id == 0 {
 		return errors.New("invalid sku id")
 	}
-	return r.db.Unscoped().Delete(&productdomain.ProductSKU{}, id).Error
+	result := r.db.Unscoped().Where("manual_stock_locked <= 0").Delete(&productdomain.ProductSKU{}, id)
+	if result.Error != nil || result.RowsAffected > 0 {
+		return result.Error
+	}
+	var count int64
+	if err := r.db.Unscoped().Model(&productdomain.ProductSKU{}).Where("id = ?", id).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return productcontract.ErrManualStockReserved
+	}
+	return nil
 }
 
 // PurgeSoftDeletedByProductAndCode 清理指定商品下同 sku_code 的软删除残留记录

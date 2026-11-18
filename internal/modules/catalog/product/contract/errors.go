@@ -15,6 +15,7 @@ var (
 	ErrManualStockInvalid           = errors.New("manual stock invalid")
 	ErrProductSKUInvalid            = errors.New("product sku invalid")
 	ErrProductSKUHasCardSecretStock = errors.New("product sku has card secret stock")
+	ErrManualStockReserved          = errors.New("product has reserved manual stock")
 	ErrProductHasStock              = errors.New("product has stock")
 	ErrProductHasOrderRecord        = errors.New("product has order record")
 	ErrResellerProductNotListed     = errors.New("reseller product not listed")

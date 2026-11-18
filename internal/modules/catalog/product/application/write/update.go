@@ -239,6 +239,10 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 			// 批发价编辑都因为「引用了不存在的 SKU」而失败，这里顺手清掉悬空阶梯。
 			product.WholesalePrices = productdomain.PruneWholesalePricesForSKUs(product.WholesalePrices, skus)
 		}
+		if product.ManualStockLocked > 0 && product.ManualStockTotal == constants.ManualStockUnlimited &&
+			current.ManualStockTotal != constants.ManualStockUnlimited {
+			return productcontract.ErrManualStockReserved
+		}
 		if err := productRepo.Update(product); err != nil {
 			return err
 		}

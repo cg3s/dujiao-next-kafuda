@@ -158,6 +158,90 @@ func TestProductEditSummarizesCurrentActiveSKUStock(t *testing.T) {
 	}
 }
 
+func TestProductEditCannotDiscardReservedManualStock(t *testing.T) {
+	for _, scenario := range []string{"single_mode", "remove_sku", "unlimited_sku", "unlimited_legacy_product"} {
+		t.Run(scenario, func(t *testing.T) {
+			_, db := newProductServiceForTest(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			price := decimal.NewFromInt(10)
+			product := productdomain.Product{
+				Slug: "reserved-stock-edit", TitleJSON: jsonmap.JSON{"zh-CN": "原标题"},
+				FulfillmentType: constants.FulfillmentTypeManual, PriceAmount: money.FromDecimal(price), ManualStockTotal: 5,
+			}
+			if err := db.Create(&product).Error; err != nil {
+				t.Fatal(err)
+			}
+			skus := []productdomain.ProductSKU{
+				{ProductID: product.ID, SKUCode: productdomain.DefaultSKUCode, PriceAmount: product.PriceAmount, ManualStockTotal: 5},
+				{ProductID: product.ID, SKUCode: "reserved", PriceAmount: product.PriceAmount, ManualStockTotal: 5},
+			}
+			if err := db.Create(&skus).Error; err != nil {
+				t.Fatal(err)
+			}
+			products := productgormstore.NewProductStore(db)
+			skuRepo := productgormstore.NewSKUStore(db)
+			reserve, release, owner := skuRepo.ReserveManualStock, skuRepo.ReleaseManualStock, skus[1].ID
+			if scenario == "unlimited_legacy_product" {
+				reserve, release, owner = products.ReserveManualStock, products.ReleaseManualStock, product.ID
+			}
+			reserved := false
+			orders := productUpdateTransactionHook{
+				Store: ordergormstore.New(db, "test-guest-credential-secret-with-32-bytes"),
+				before: func() {
+					if reserved {
+						return
+					}
+					reserved = true
+					if affected, err := reserve(owner, 1); err != nil || affected != 1 {
+						t.Fatalf("reserve after preflight: %d, %v", affected, err)
+					}
+				},
+			}
+			service := productwrite.NewWriteService(productwrite.Options{Products: products, SKUs: skuRepo, Orders: orders})
+			input := productwrite.CreateProductInput{
+				Slug: product.Slug, TitleJSON: jsonmap.JSON{"zh-CN": "编辑后"}, PriceAmount: decimal.NewFromInt(20),
+			}
+			unlimited := constants.ManualStockUnlimited
+			switch scenario {
+			case "remove_sku":
+				input.SKUs = []productwrite.ProductSKUInput{{ID: skus[0].ID, SKUCode: skus[0].SKUCode, PriceAmount: input.PriceAmount}}
+			case "unlimited_sku":
+				input.SKUs = []productwrite.ProductSKUInput{
+					{ID: skus[0].ID, SKUCode: skus[0].SKUCode, PriceAmount: input.PriceAmount},
+					{ID: skus[1].ID, SKUCode: skus[1].SKUCode, PriceAmount: input.PriceAmount, ManualStockTotal: &unlimited},
+				}
+			case "unlimited_legacy_product":
+				input.ManualStockTotal = &unlimited
+			}
+			id := strconv.FormatUint(uint64(product.ID), 10)
+			if _, err := service.Update(id, input); !errors.Is(err, productcontract.ErrManualStockReserved) {
+				t.Fatalf("edit must reject reserved inventory, got %v", err)
+			}
+			actual, err := products.GetByID(id)
+			if err != nil || actual == nil || actual.TitleJSON["zh-CN"] != "原标题" {
+				t.Fatalf("rejected edit changed product: %+v, %v", actual, err)
+			}
+			for _, original := range skus {
+				stored, err := skuRepo.GetByID(original.ID)
+				if err != nil || stored == nil || !stored.PriceAmount.Equal(price) {
+					t.Fatalf("rejected edit changed SKU %d: %+v, %v", original.ID, stored, err)
+				}
+			}
+			if affected, err := release(owner, 1); err != nil || affected != 1 {
+				t.Fatalf("rejected edit lost the hold: %d, %v", affected, err)
+			}
+			if _, err := service.Update(id, input); err != nil {
+				t.Fatalf("edit after release: %v", err)
+			}
+		})
+	}
+}
+
 func TestDirectTypeChangeRechecksDataAfterPreflight(t *testing.T) {
 	for _, change := range []string{"order", "card", "sku_stock", "product_stock", "mapped", "type", "stale_edit"} {
 		t.Run(change, func(t *testing.T) {
