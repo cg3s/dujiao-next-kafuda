@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/dujiao-next/internal/app/container"
@@ -477,6 +478,12 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 
 func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) directCheckoutFixture) {
 	t.Helper()
+	t.Run("quote_expires_before_dispatch", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) { testDirectQuoteExpiresBeforeDispatch(t, newFixture(t), false) })
+	})
+	t.Run("quote_expires_after_recovery", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) { testDirectQuoteExpiresBeforeDispatch(t, newFixture(t), true) })
+	})
 	for _, scenario := range []struct {
 		name       string
 		stage      kafudadomain.Stage
@@ -649,6 +656,112 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				testReconcileUnknownDirectOrder(t, f, order, now, reservation.Attempt)
 			}
 		})
+	}
+}
+
+type directSubmitStore struct {
+	ordercontract.Store
+	afterCommit func()
+}
+
+func (s *directSubmitStore) WithinTransaction(run func(ordercontract.Transaction) error) error {
+	if err := s.Store.WithinTransaction(run); err != nil {
+		return err
+	}
+	if s.afterCommit != nil {
+		afterCommit := s.afterCommit
+		s.afterCommit = nil
+		afterCommit()
+	}
+	return nil
+}
+
+func testDirectQuoteExpiresBeforeDispatch(t *testing.T, f directCheckoutFixture, recoverBeforeDispatch bool) {
+	t.Helper()
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+		t.Fatal(err)
+	}
+	order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, paidAt := t.Context(), time.Now().UTC()
+	childID := order.Children[0].ID
+	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
+		Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": paidAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, ordercontract.TenantScope{}, order.OrderNo, order.UserID, paidAt, paidAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const quoteID = "quote_expires_during_submission"
+	expiresAt := paidAt.Add(time.Second)
+	check := kafudacontract.CheckResult{Country: "PH", PayMode: "auto_card", Plans: []kafudacontract.Quote{{
+		Plan: "plus", Status: "available", Kind: "new", QuoteID: quoteID, ExpiresAt: expiresAt, PriceCents: 900,
+		AutoCard: &kafudacontract.AutoCard{ProductCode: "checkout-card", OpenFeeCents: 50, LoadCents: 50, TotalCents: 1000},
+	}}}
+	records := kafudaapp.New(f.store)
+	store := &directSubmitStore{Store: f.options.OrderStore, afterCommit: func() {
+		attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
+		if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptSubmitting || attempt.QuoteID != quoteID || attempt.NextPollAt == nil {
+			t.Fatalf("expected committed submit before expiry: %+v, %v", attempt, err)
+		}
+		if recoverBeforeDispatch {
+			time.Sleep(time.Until(*attempt.NextPollAt))
+			recovery := kafudaworkflow.WithShopOrderTransitions(records, f.options.OrderStore)
+			if err := recovery.RecoverUnidentifiedSubmissions(ctx, time.Now().UTC(), 1); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		time.Sleep(time.Until(expiresAt))
+	}}
+	calls := 0
+	gateway := directCreateGateway{create: func(ctx context.Context, _ kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
+		calls++
+		return nil, ctx.Err()
+	}}
+	completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, store, records, gateway, reservation, check, time.Second)
+	wantError := kafudaapp.ErrQuoteExpired
+	if recoverBeforeDispatch {
+		wantError = kafudadomain.ErrInvalidTransition
+	}
+	if completed || !errors.Is(err, wantError) || calls != 0 {
+		t.Fatalf("expired quote dispatch: completed=%v, calls=%d, err=%v", completed, calls, err)
+	}
+	attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
+	if err != nil || attempt == nil || attempt.Reference != reservation.Attempt.Reference || attempt.QuoteID != quoteID || attempt.UpstreamOrderID != nil {
+		t.Fatalf("expired quote lost attempt history: %+v, %v", attempt, err)
+	}
+	record, err := f.store.GetRecharge(ctx, childID)
+	if err != nil || record == nil || record.CurrentAttemptID == nil || *record.CurrentAttemptID != attempt.ID ||
+		!reflect.DeepEqual(record.Snapshot, reservation.Recharge.Snapshot) {
+		t.Fatalf("expired quote changed recharge identity: %+v, %v", record, err)
+	}
+	retryAt := time.Now().UTC()
+	if recoverBeforeDispatch {
+		if record.Stage != kafudadomain.StageManualReview || record.ReasonCode != "outcome_unknown" ||
+			attempt.Status != kafudadomain.AttemptReview || attempt.ActiveOrderID == nil || *attempt.ActiveOrderID != childID || attempt.NextPollAt == nil {
+			t.Fatalf("expired quote overwrote recovery: recharge=%+v attempt=%+v", record, attempt)
+		}
+		assertDirectShopOrderStatus(t, store, order, constants.OrderStatusFulfilling, paidAt)
+		replay, err := kafudaworkflow.ReserveBuyerAttempt(store, ordercontract.TenantScope{}, order.OrderNo, order.UserID, retryAt, retryAt.Add(time.Minute))
+		if err != nil || replay == nil || replay.Created || replay.Attempt == nil || replay.Attempt.ID != attempt.ID {
+			t.Fatalf("recovered attempt was replaced: %+v, %v", replay, err)
+		}
+		return
+	}
+	if record.Stage != kafudadomain.StageWaiting || record.ReasonCode != kafudadomain.ReasonQuoteExpired ||
+		attempt.Status != kafudadomain.AttemptFailed || attempt.ActiveOrderID != nil || attempt.NextPollAt != nil {
+		t.Fatalf("expired quote kept its slot: recharge=%+v attempt=%+v", record, attempt)
+	}
+	assertDirectShopOrderStatus(t, store, order, constants.OrderStatusPaid, paidAt)
+	retry, err := kafudaworkflow.ReserveBuyerAttempt(store, ordercontract.TenantScope{}, order.OrderNo, order.UserID, retryAt, retryAt.Add(time.Minute))
+	if err != nil || retry == nil || !retry.Created || retry.Attempt == nil ||
+		retry.Attempt.Sequence != attempt.Sequence+1 || retry.Attempt.Reference == attempt.Reference {
+		t.Fatalf("expired quote prevented a new attempt: %+v, %v", retry, err)
 	}
 }
 

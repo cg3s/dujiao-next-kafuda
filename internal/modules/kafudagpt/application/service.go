@@ -141,6 +141,25 @@ func (s *Service) MarkSubmitting(ctx context.Context, attemptID uint, quoteID st
 	})
 }
 
+// ExpireUndispatchedQuote may only be called before the gateway was invoked.
+// Preserve the committed quote and reference while releasing the active slot.
+func (s *Service) ExpireUndispatchedQuote(ctx context.Context, attemptID uint, quoteID, reference string, expiresAt, now time.Time) error {
+	if strings.TrimSpace(quoteID) == "" || reference == "" || expiresAt.IsZero() || now.IsZero() || now.Before(expiresAt) {
+		return kafudadomain.ErrInvalidTransition
+	}
+	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
+		if record.Stage != kafudadomain.StageSubmitting || record.CompletedAt != nil || attempt.Status != kafudadomain.AttemptSubmitting ||
+			attempt.QuoteID != quoteID || attempt.Reference != reference || attempt.UpstreamOrderID != nil || attempt.NextPollAt == nil ||
+			attempt.ActiveOrderID == nil || *attempt.ActiveOrderID != attempt.OrderID ||
+			now.Before(attempt.UpdatedAt) || now.Before(record.UpdatedAt) {
+			return kafudadomain.ErrInvalidTransition
+		}
+		attempt.Status, attempt.ActiveOrderID, attempt.NextPollAt, attempt.UpdatedAt = kafudadomain.AttemptFailed, nil, nil, now
+		record.Stage, record.ReasonCode, record.UpdatedAt = kafudadomain.StageWaiting, kafudadomain.ReasonQuoteExpired, now
+		return nil
+	})
+}
+
 // CheckRejected applies only before a potentially chargeable request was sent.
 // Reason is classified locally; never persist upstream messages or Session.
 func (s *Service) CheckRejected(ctx context.Context, attemptID uint, retryable bool, now time.Time) error {
