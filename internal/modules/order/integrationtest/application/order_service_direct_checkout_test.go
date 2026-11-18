@@ -1017,7 +1017,11 @@ func TestDirectCheckoutDiscountsMatchPreviewAndSnapshot(t *testing.T) {
 
 func newDirectCheckoutFixture(t *testing.T) directCheckoutFixture {
 	t.Helper()
-	f := newCouponLimitRaceFixture(t, "direct-checkout", 0, 0)
+	return seedDirectCheckoutFixture(t, newCouponLimitRaceFixture(t, "direct-checkout", 0, 0))
+}
+
+func seedDirectCheckoutFixture(t *testing.T, f couponLimitRaceFixture) directCheckoutFixture {
+	t.Helper()
 	if err := f.db.AutoMigrate(&kafudadomain.Catalog{}, &kafudadomain.Recharge{}); err != nil {
 		t.Fatal(err)
 	}

@@ -22,9 +22,14 @@ import (
 )
 
 func TestDirectAfterSalesCompetingResolutions(t *testing.T) {
+	testDirectAfterSalesCompetingResolutions(t, newDirectCheckoutFixture)
+}
+
+func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testing.T) directCheckoutFixture) {
+	t.Helper()
 	for _, alternative := range []string{"wallet_refund", "manual_delivery", "release_and_reserve", "late_supplier_success", "late_success_vs_manual_delivery"} {
 		t.Run(alternative, func(t *testing.T) {
-			f := newDirectCheckoutFixture(t)
+			f := fixture(t)
 			if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &orderdomain.OrderRefundRecord{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
 				t.Fatal(err)
 			}

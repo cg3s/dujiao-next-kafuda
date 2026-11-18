@@ -98,7 +98,11 @@ func newCouponLimitRaceFixture(t *testing.T, name string, usageLimit, perUserLim
 	}
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
+	return seedCouponLimitRaceFixture(t, db, name, usageLimit, perUserLimit)
+}
 
+func seedCouponLimitRaceFixture(t *testing.T, db *gorm.DB, name string, usageLimit, perUserLimit int) couponLimitRaceFixture {
+	t.Helper()
 	if err := db.AutoMigrate(
 		&userdomain.User{},
 		&categorydomain.Category{},
