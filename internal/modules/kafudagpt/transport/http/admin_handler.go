@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	"github.com/dujiao-next/internal/platform/http/ginutil"
@@ -19,7 +20,6 @@ type CatalogUseCase interface {
 
 type AdminHandler struct {
 	Catalog    CatalogUseCase
-	Policy     kafudacontract.CommercePolicy
 	Configured bool
 }
 
@@ -46,11 +46,7 @@ func (h *AdminHandler) catalog(c *gin.Context, sync bool) {
 		response.Success(c, gin.H{"options": []kafudacontract.SKUOption{}, "cards": []kafudadomain.CardProduct{}, "stale": true, "configured": h.Configured})
 		return
 	}
-	options, err := h.Policy.SKUOptions(c.Request.Context())
-	if err != nil {
-		respondCatalogFailure(c, err)
-		return
-	}
+	options := kafudaapp.CatalogSKUOptions(catalog)
 	response.Success(c, gin.H{"options": options, "cards": catalog.Cards, "enabled": catalog.Enabled, "synced_at": catalog.SyncedAt, "expires_at": catalog.ExpiresAt, "stale": !time.Now().Before(catalog.ExpiresAt), "configured": h.Configured})
 }
 

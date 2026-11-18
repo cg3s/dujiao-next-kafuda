@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +28,69 @@ import (
 type catalogFailureStore struct {
 	kafudacontract.Store
 	readErr, writeErr error
+}
+
+type singleReadCatalogStore struct {
+	kafudacontract.Store
+	reads int
+}
+
+func (s *singleReadCatalogStore) GetCatalog(ctx context.Context, profile string) (*kafudadomain.Catalog, error) {
+	s.reads++
+	if s.reads > 1 {
+		return nil, errors.New("catalog unavailable on second read")
+	}
+	return s.Store.GetCatalog(ctx, profile)
+}
+
+func TestAdminCatalogRefreshUsesPersistedSnapshotWithoutSecondRead(t *testing.T) {
+	_, store, _ := database(t)
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "docs", "gpt_catalog_data.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct{ Data json.RawMessage }
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	// The first valid read comes from the committed cache and must also be
+	// sufficient to build the response if the database is briefly unavailable.
+	reads := &singleReadCatalogStore{Store: store}
+	service := kafudaapp.NewCatalogService(reads, failingCatalogGateway{data: envelope.Data}, "default", time.Hour)
+	router := gin.New()
+	kafudahttp.RegisterAdminRoutes(router.Group("/admin"), &kafudahttp.AdminHandler{Catalog: service, Configured: true})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/admin/kafuda-gpt/catalog/sync", nil))
+	var body struct {
+		StatusCode int `json:"status_code"`
+		Data       struct {
+			Options   []kafudacontract.SKUOption `json:"options"`
+			Cards     []kafudadomain.CardProduct `json:"cards"`
+			Enabled   bool                       `json:"enabled"`
+			Stale     bool                       `json:"stale"`
+			SyncedAt  time.Time                  `json:"synced_at"`
+			ExpiresAt time.Time                  `json:"expires_at"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || body.StatusCode != 0 || reads.reads != 1 || len(body.Data.Options) != 60 || len(body.Data.Cards) != 11 {
+		t.Fatalf("catalog refresh failed or re-read the cache: reads=%d, response=%s", reads.reads, recorder.Body.String())
+	}
+	saved, err := store.GetCatalog(context.Background(), "default")
+	if err != nil || saved == nil {
+		t.Fatalf("refreshed catalog was not persisted: %v", err)
+	}
+	if !body.Data.SyncedAt.Equal(saved.SyncedAt) || !body.Data.ExpiresAt.Equal(saved.ExpiresAt) || body.Data.Stale || body.Data.Enabled != saved.Enabled {
+		t.Fatal("response metadata does not match the saved catalog")
+	}
+	for i, option := range body.Data.Options {
+		entry := saved.Options[i]
+		if option.Plan != entry.Plan || option.Country != entry.Country || option.Available != (saved.Enabled && entry.Available) || option.CatalogRevision != saved.Revision(entry.Plan, entry.Country) {
+			t.Fatalf("response option does not match the saved catalog: %+v", option)
+		}
+	}
 }
 
 func (s catalogFailureStore) GetCatalog(ctx context.Context, profile string) (*kafudadomain.Catalog, error) {
@@ -85,7 +150,7 @@ func TestCatalogFailuresAreActionableAndDoNotLeakUpstreamData(t *testing.T) {
 				service := kafudaapp.NewCatalogService(wrapped, gateway, "default", time.Hour)
 				router := gin.New()
 				router.Use(func(c *gin.Context) { c.Set("request_id", "catalog-test-request"); c.Next() })
-				kafudahttp.RegisterAdminRoutes(router.Group("/admin"), &kafudahttp.AdminHandler{Catalog: service, Policy: kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{Catalog: service}), Configured: true})
+				kafudahttp.RegisterAdminRoutes(router.Group("/admin"), &kafudahttp.AdminHandler{Catalog: service, Configured: true})
 				request := httptest.NewRequest(method, path, nil)
 				request.Header.Set("X-Lang", locale)
 				recorder := httptest.NewRecorder()
@@ -129,9 +194,8 @@ func TestAdminExpiredCatalogKeepsListingStateAndReportsStaleness(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalogService := kafudaapp.NewCatalogService(store, nil, "default", time.Hour)
-	policy := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{Catalog: catalogService})
 	router := gin.New()
-	kafudahttp.RegisterAdminRoutes(router.Group("/admin"), &kafudahttp.AdminHandler{Catalog: catalogService, Policy: policy})
+	kafudahttp.RegisterAdminRoutes(router.Group("/admin"), &kafudahttp.AdminHandler{Catalog: catalogService})
 	request := httptest.NewRequest(http.MethodGet, "/admin/kafuda-gpt/catalog", nil)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)

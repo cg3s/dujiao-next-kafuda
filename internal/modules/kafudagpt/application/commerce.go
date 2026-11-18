@@ -34,11 +34,16 @@ func (s *CommerceService) SKUOptions(ctx context.Context) ([]kafudacontract.SKUO
 	if catalog == nil {
 		return nil, kafudadomain.ErrInvalidCatalog
 	}
+	return CatalogSKUOptions(catalog), nil
+}
+
+// CatalogSKUOptions derives the configuration options from a single catalog snapshot.
+func CatalogSKUOptions(catalog *kafudadomain.Catalog) []kafudacontract.SKUOption {
 	result := make([]kafudacontract.SKUOption, 0, len(catalog.Options))
 	for _, entry := range catalog.Options {
 		result = append(result, kafudacontract.SKUOption{SKUCode: kafudacontract.SKUCode(entry.Plan, entry.Country), Plan: entry.Plan, Country: entry.Country, Label: entry.Label, Available: catalog.Enabled && entry.Available, CatalogRevision: catalog.Revision(entry.Plan, entry.Country)})
 	}
-	return result, nil
+	return result
 }
 
 func (s *CommerceService) PurchaseTerms(ctx context.Context, plan, country string, reviewedRevision uint64) (*kafudacontract.PurchaseTerms, error) {

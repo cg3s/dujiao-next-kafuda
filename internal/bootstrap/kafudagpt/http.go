@@ -6,5 +6,5 @@ func NewAdminHandler(module *Module) *kafudahttp.AdminHandler {
 	if module == nil {
 		return &kafudahttp.AdminHandler{}
 	}
-	return &kafudahttp.AdminHandler{Catalog: module.Catalog, Policy: module.Commerce, Configured: module.Gateway != nil}
+	return &kafudahttp.AdminHandler{Catalog: module.Catalog, Configured: module.Gateway != nil}
 }
