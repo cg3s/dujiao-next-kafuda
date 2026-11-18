@@ -427,9 +427,15 @@ func (r *Store) ListAdmin(filter ordercontract.ListFilter) ([]orderdomain.Order,
 	var orders []orderdomain.Order
 	query := r.db.Model(&orderdomain.Order{}).Where("orders.deleted_at IS NULL AND parent_id IS NULL")
 	if filter.DirectReview {
-		query = query.Where(`EXISTS (SELECT 1 FROM orders AS child
-			JOIN kafuda_gpt_recharges AS recharge ON recharge.order_id = child.id
-			WHERE child.parent_id = orders.id AND child.deleted_at IS NULL AND recharge.stage IN ?)`,
+		query = query.Where(`orders.status IN ? AND orders.paid_at IS NOT NULL AND orders.refunded_amount = 0
+			AND orders.user_id > 0 AND orders.reseller_id IS NULL
+			AND EXISTS (SELECT 1 FROM orders AS child
+				JOIN kafuda_gpt_recharges AS recharge ON recharge.order_id = child.id
+				WHERE child.parent_id = orders.id AND child.deleted_at IS NULL
+					AND child.status = orders.status AND child.paid_at IS NOT NULL AND child.refunded_amount = 0
+					AND child.user_id = orders.user_id AND child.reseller_id IS NULL
+					AND recharge.stage IN ? AND recharge.completed_at IS NULL)`,
+			[]string{constants.OrderStatusPaid, constants.OrderStatusFulfilling},
 			[]string{"manual_review", "manual_delivery"})
 	}
 

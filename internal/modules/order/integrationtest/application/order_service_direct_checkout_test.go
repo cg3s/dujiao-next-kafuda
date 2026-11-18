@@ -80,16 +80,38 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 	service := orderapp.NewOrderService(f.options)
 	records := kafudaapp.New(f.store)
 	ctx, now := context.Background(), time.Now().UTC()
-	var parentID, childID uint
-	for _, stage := range []kafudadomain.Stage{kafudadomain.StageManualReview, kafudadomain.StageManualDelivery, kafudadomain.StageWaiting} {
+	var parentID, childID, manualDeliveryID, refundedID uint
+	for _, scenario := range []struct {
+		name          string
+		stage         kafudadomain.Stage
+		status        string
+		parentUpdates map[string]any
+		childUpdates  map[string]any
+		completed     bool
+	}{
+		{name: "manual_review", stage: kafudadomain.StageManualReview, status: constants.OrderStatusFulfilling},
+		{name: "manual_delivery", stage: kafudadomain.StageManualDelivery, status: constants.OrderStatusPaid},
+		{name: "waiting", stage: kafudadomain.StageWaiting, status: constants.OrderStatusPaid},
+		{name: "refunded", stage: kafudadomain.StageManualDelivery, status: constants.OrderStatusRefunded, parentUpdates: map[string]any{"refunded_amount": 1}},
+		{name: "canceled", stage: kafudadomain.StageManualDelivery, status: constants.OrderStatusCanceled},
+		{name: "mismatched_status", stage: kafudadomain.StageManualDelivery, status: constants.OrderStatusFulfilling, childUpdates: map[string]any{"status": constants.OrderStatusPaid}},
+		{name: "unpaid_parent", stage: kafudadomain.StageManualDelivery, status: constants.OrderStatusPaid, parentUpdates: map[string]any{"paid_at": nil}},
+		{name: "unpaid_child", stage: kafudadomain.StageManualDelivery, status: constants.OrderStatusPaid, childUpdates: map[string]any{"paid_at": nil}},
+		{name: "parent_has_refund", stage: kafudadomain.StageManualDelivery, status: constants.OrderStatusPaid, parentUpdates: map[string]any{"refunded_amount": 1}},
+		{name: "child_has_refund", stage: kafudadomain.StageManualDelivery, status: constants.OrderStatusFulfilling, childUpdates: map[string]any{"refunded_amount": 1}},
+		{name: "completed_recharge", stage: kafudadomain.StageManualDelivery, status: constants.OrderStatusFulfilling, completed: true},
+	} {
 		order, err := service.CreateOrder(f.input)
 		if err != nil {
 			t.Fatal(err)
 		}
 		child := order.Children[0].ID
-		status := constants.OrderStatusPaid
-		if stage == kafudadomain.StageManualReview {
-			status = constants.OrderStatusFulfilling
+		switch scenario.name {
+		case "manual_delivery":
+			manualDeliveryID = order.ID
+		case "refunded":
+			refundedID = order.ID
+		case "manual_review":
 			parentID, childID = order.ID, child
 			reserved, err := records.Reserve(ctx, child, now, now.Add(time.Minute))
 			if err != nil {
@@ -102,11 +124,25 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 			}
 		}
 		if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, child}).
-			Updates(map[string]any{"status": status, "paid_at": now}).Error; err != nil {
+			Updates(map[string]any{"status": scenario.status, "paid_at": now}).Error; err != nil {
 			t.Fatal(err)
 		}
+		if len(scenario.parentUpdates) > 0 {
+			if err := f.db.Model(&orderdomain.Order{}).Where("id = ?", order.ID).Updates(scenario.parentUpdates).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(scenario.childUpdates) > 0 {
+			if err := f.db.Model(&orderdomain.Order{}).Where("id = ?", child).Updates(scenario.childUpdates).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		rechargeUpdates := map[string]any{"stage": scenario.stage, "reason_code": "outcome_unknown"}
+		if scenario.completed {
+			rechargeUpdates["completed_at"] = now
+		}
 		if err := f.db.Model(&kafudadomain.Recharge{}).Where("order_id = ?", child).
-			Updates(map[string]any{"stage": stage, "reason_code": "outcome_unknown"}).Error; err != nil {
+			Updates(rechargeUpdates).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -142,6 +178,9 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 	if raw := get(fmt.Sprintf("/admin/orders/%d", ordinary.ID)).Body.String(); strings.Contains(raw, "direct_recharge") || !strings.Contains(raw, `"status_code":0`) {
 		t.Fatalf("ordinary order response: %s", raw)
 	}
+	if raw := get(fmt.Sprintf("/admin/orders/%d", refundedID)).Body.String(); !strings.Contains(raw, `"status":"refunded"`) || !strings.Contains(raw, `"stage":"manual_delivery"`) {
+		t.Fatalf("refunded order historical detail: %s", raw)
+	}
 	seen := make(map[uint]bool)
 	for page := 1; page <= 2; page++ {
 		raw := get(fmt.Sprintf("/admin/orders?direct_review=true&page=%d&page_size=1", page)).Body.Bytes()
@@ -159,7 +198,7 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 		}
 		seen[result.Data[0].ID] = true
 	}
-	if len(seen) != 2 || !seen[parentID] || seen[ordinary.ID] {
+	if len(seen) != 2 || !seen[parentID] || !seen[manualDeliveryID] {
 		t.Fatalf("filtered pages did not return unique review orders: %v", seen)
 	}
 	if raw := get("/admin/orders?direct_review=invalid").Body.String(); !strings.Contains(raw, `"status_code":400`) {
