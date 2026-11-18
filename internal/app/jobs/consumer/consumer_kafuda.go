@@ -39,7 +39,17 @@ func (c *Consumer) handleKafudaRecoverChecks(ctx context.Context, _ *asynq.Task)
 		module.Records.RecoverExpiredChecks(ctx, now, 100),
 		module.Records.RecoverUnidentifiedSubmissions(ctx, now, 100),
 	)
-	if module.Store == nil || module.Gateway == nil || c.OrderStore == nil {
+	if module.Store == nil || c.OrderStore == nil {
+		return recoveryErr
+	}
+	if c.orderStatusQueue != nil && c.orderStatusQueue.Enabled() {
+		pending, err := module.Store.PendingCompletionEmails(ctx, 100)
+		recoveryErr = errors.Join(recoveryErr, err)
+		for _, childID := range pending {
+			kafudaworkflow.EnqueueCompletionEmail(ctx, c.OrderStore, module.Store, c.orderStatusQueue, c.SettingService, c.Config, childID)
+		}
+	}
+	if module.Gateway == nil {
 		return recoveryErr
 	}
 	return errors.Join(recoveryErr, c.pollKnownKafudaOrders(ctx))
@@ -80,7 +90,7 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 		}
 		completed, err := kafudaworkflow.ApplyResult(c.OrderStore, attempt.OrderID, attempt.ID, *result, observedAt, observedAt.Add(interval))
 		if completed {
-			kafudaworkflow.EnqueueCompletionEmail(c.OrderStore, c.orderStatusQueue, c.SettingService, c.Config, attempt.OrderID)
+			kafudaworkflow.EnqueueCompletionEmail(ctx, c.OrderStore, module.Store, c.orderStatusQueue, c.SettingService, c.Config, attempt.OrderID)
 		}
 		if err == nil || errors.Is(err, kafudadomain.ErrConflict) || errors.Is(err, kafudadomain.ErrNotFound) {
 			continue

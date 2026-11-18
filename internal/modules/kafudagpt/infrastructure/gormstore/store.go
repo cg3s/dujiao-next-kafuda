@@ -58,7 +58,8 @@ func (s *Store) SaveRecharge(record *kafudadomain.Recharge) error {
 		Updates(map[string]any{
 			"stage": record.Stage, "attempt_count": record.AttemptCount, "current_attempt_id": record.CurrentAttemptID,
 			"reason_code": record.ReasonCode, "updated_at": record.UpdatedAt, "completed_at": record.CompletedAt,
-			"version": record.Version + 1,
+			"completion_email_pending": record.CompletionEmailPending,
+			"version":                  record.Version + 1,
 		})
 	if result.Error != nil {
 		return result.Error
@@ -68,6 +69,20 @@ func (s *Store) SaveRecharge(record *kafudadomain.Recharge) error {
 	}
 	record.Version++
 	return nil
+}
+
+func (s *Store) PendingCompletionEmails(ctx context.Context, limit int) ([]uint, error) {
+	var ids []uint
+	err := s.db.WithContext(ctx).Model(&kafudadomain.Recharge{}).
+		Where("completion_email_pending = ? AND stage = ?", true, kafudadomain.StageCompleted).
+		Order("order_id").Limit(limit).Pluck("order_id", &ids).Error
+	return ids, err
+}
+
+func (s *Store) ClearCompletionEmail(ctx context.Context, childID uint) error {
+	return s.db.WithContext(ctx).Model(&kafudadomain.Recharge{}).
+		Where("order_id = ? AND completion_email_pending = ? AND stage = ?", childID, true, kafudadomain.StageCompleted).
+		UpdateColumn("completion_email_pending", false).Error
 }
 
 func (s *Store) GetAttempt(ctx context.Context, id uint) (*kafudadomain.Attempt, error) {

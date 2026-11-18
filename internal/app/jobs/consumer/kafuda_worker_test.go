@@ -41,6 +41,7 @@ type kafudaStatusEmailQueue struct {
 	orders  ordercontract.Store
 	orderID uint
 	calls   int
+	err     error
 }
 
 func (q *kafudaStatusEmailQueue) Enabled() bool { return true }
@@ -52,7 +53,7 @@ func (q *kafudaStatusEmailQueue) EnqueueStatusEmail(orderID uint, status string)
 	if err != nil || order == nil || order.Status != constants.OrderStatusCompleted || orderID != q.orderID || status != constants.OrderStatusCompleted {
 		q.t.Fatalf("unexpected completion notification: %d %s, order=%+v, err=%v", orderID, status, order, err)
 	}
-	return nil
+	return q.err
 }
 
 func (g *kafudaPollTestGateway) GetOrder(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
@@ -166,6 +167,7 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 			gateway.err = nil
 		}
 	}
+	emailQueue.err = errors.New("test queue unavailable")
 	gateway.result.Status = "completed"
 	if err := mux.ProcessTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -183,14 +185,26 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 		replay.Attempt.Reference != unknown.Attempt.Reference || replay.Attempt.QuoteID != "unknown_quote" {
 		t.Fatalf("unknown submission lost its original attempt: %+v, %v", replay, err)
 	}
-	if err := mux.ProcessTask(ctx, task); err != nil {
-		t.Fatal(err)
+	pending, err := store.PendingCompletionEmails(ctx, 100)
+	if err != nil || len(pending) != 1 || pending[0] != child.ID || emailQueue.calls != 1 {
+		t.Fatalf("queue failure lost completion notice: %v, %v, calls=%d", pending, err, emailQueue.calls)
+	}
+	emailQueue.err = nil
+	c.KafudaGPT.Gateway = nil
+	for range 2 {
+		if err := mux.ProcessTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pending, err = store.PendingCompletionEmails(ctx, 100)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("successful retry did not clear completion notice: %v, %v", pending, err)
 	}
 	if len(gateway.ids) != 4 || gateway.ids[0] != 101 || gateway.ids[3] != 101 {
 		t.Fatalf("unexpected upstream reads after replay: %v", gateway.ids)
 	}
-	if emailQueue.calls != 1 {
-		t.Fatalf("completion scheduled %d emails, want one", emailQueue.calls)
+	if emailQueue.calls != 2 {
+		t.Fatalf("completion enqueue attempts = %d, want one failure and one success", emailQueue.calls)
 	}
 	for _, orderID := range []uint{parent.ID, child.ID} {
 		var stored orderdomain.Order

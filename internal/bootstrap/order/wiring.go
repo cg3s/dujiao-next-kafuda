@@ -6,6 +6,7 @@ import (
 
 	"github.com/dujiao-next/internal/app/container"
 	"github.com/dujiao-next/internal/logger"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	orderqueue "github.com/dujiao-next/internal/modules/order/infrastructure/queueadapter"
 	ordertransport "github.com/dujiao-next/internal/modules/order/transport/http"
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
@@ -37,7 +38,7 @@ func New(c *container.Container) Handlers {
 				if c.OrderStore == nil {
 					return ordertransport.ErrOrderNotFound
 				}
-				return mapOrderTransportError(kafudaworkflow.CompleteManualAndNotify(c.OrderStore, orderqueue.New(c.QueueClient),
+				return mapOrderTransportError(kafudaworkflow.CompleteManualAndNotify(context.Background(), c.OrderStore, kafudaRecords(c), orderqueue.NewDirectCompletion(c.QueueClient),
 					c.SettingService, c.Config, childID, attemptID, adminID, confirmed, time.Now().UTC()))
 			},
 			func(childID, attemptID, adminID uint, confirmed bool) error {
@@ -56,7 +57,7 @@ func New(c *container.Container) Handlers {
 				}
 				logger.Infow("kafuda_unknown_order_reconciled", "child_order_id", childID, "attempt_id", attemptID, "admin_id", adminID)
 				if completed {
-					kafudaworkflow.EnqueueCompletionEmail(c.OrderStore, orderqueue.New(c.QueueClient), c.SettingService, c.Config, childID)
+					kafudaworkflow.EnqueueCompletionEmail(ctx, c.OrderStore, c.KafudaGPT.Store, orderqueue.NewDirectCompletion(c.QueueClient), c.SettingService, c.Config, childID)
 				}
 				return nil
 			},
@@ -84,6 +85,13 @@ func New(c *container.Container) Handlers {
 			orderPaymentCreatorAdapter{payments: c.PaymentService},
 		),
 	}
+}
+
+func kafudaRecords(c *container.Container) kafudacontract.Store {
+	if c.KafudaGPT == nil {
+		return nil
+	}
+	return c.KafudaGPT.Store
 }
 
 // NewAdminRefundHandler exposes the focused refund composition for integration

@@ -1,6 +1,7 @@
 package application
 
 import (
+	"context"
 	"time"
 
 	"github.com/dujiao-next/internal/config"
@@ -18,8 +19,16 @@ import (
 
 // EnqueueCompletionEmail applies the existing parent-order notification policy
 // after a fresh completion commits. Notification failure cannot undo delivery.
-func EnqueueCompletionEmail(store ordercontract.Store, queue ordercontract.Queue, settings *settingsapp.Service, cfg *config.Config, childID uint) {
-	if queue == nil || !queue.Enabled() {
+func EnqueueCompletionEmail(ctx context.Context, store ordercontract.Store, records kafudacontract.Store, queue ordercontract.Queue, settings *settingsapp.Service, cfg *config.Config, childID uint) {
+	if records == nil || queue == nil || !queue.Enabled() {
+		return
+	}
+	record, err := records.GetRecharge(ctx, childID)
+	if err != nil {
+		logger.Warnw("kafuda_completion_email_state_unavailable", "child_order_id", childID)
+		return
+	}
+	if record == nil || !record.CompletionEmailPending {
 		return
 	}
 	child, err := store.GetByID(childID)
@@ -33,16 +42,20 @@ func EnqueueCompletionEmail(store ordercontract.Store, queue ordercontract.Queue
 	}
 	if _, err := orderapp.EnqueueStatusEmailTaskIfEligible(store, queue, settings, email, *child.ParentID, constants.OrderStatusCompleted); err != nil {
 		logger.Warnw("kafuda_completion_email_enqueue_failed", "order_id", *child.ParentID)
+		return
+	}
+	if err := records.ClearCompletionEmail(ctx, childID); err != nil {
+		logger.Warnw("kafuda_completion_email_ack_failed", "child_order_id", childID)
 	}
 }
 
 // CompleteManualAndNotify is the administrator entry point for a confirmed
 // delivery. A rejected or replayed operation never enqueues an email.
-func CompleteManualAndNotify(store ordercontract.Store, queue ordercontract.Queue, settings *settingsapp.Service, cfg *config.Config, childID, attemptID, adminID uint, confirmed bool, now time.Time) error {
+func CompleteManualAndNotify(ctx context.Context, store ordercontract.Store, records kafudacontract.Store, queue ordercontract.Queue, settings *settingsapp.Service, cfg *config.Config, childID, attemptID, adminID uint, confirmed bool, now time.Time) error {
 	if err := CompleteManual(store, childID, attemptID, adminID, confirmed, now); err != nil {
 		return err
 	}
-	EnqueueCompletionEmail(store, queue, settings, cfg, childID)
+	EnqueueCompletionEmail(ctx, store, records, queue, settings, cfg, childID)
 	return nil
 }
 
@@ -63,6 +76,10 @@ func ApplyResult(store ordercontract.Store, childID, attemptID uint, result kafu
 		}
 		if record == nil || record.CompletedAt == nil {
 			return orderapp.ErrOrderStatusInvalid
+		}
+		record.CompletionEmailPending = true
+		if err := recharges.SaveRecharge(record); err != nil {
+			return err
 		}
 		deliveredAt := *record.CompletedAt
 		if err := tx.Fulfillments().Create(&fulfillmentdomain.Fulfillment{
@@ -87,6 +104,7 @@ func CompleteManual(store ordercontract.Store, childID, attemptID, adminID uint,
 			return err
 		}
 		record.Stage, record.ReasonCode, record.UpdatedAt, record.CompletedAt = kafudadomain.StageCompleted, "", now, &now
+		record.CompletionEmailPending = true
 		if err := tx.KafudaGPT().SaveRecharge(record); err != nil {
 			return err
 		}

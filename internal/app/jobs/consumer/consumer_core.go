@@ -28,7 +28,7 @@ func New(c *container.Container) *Consumer {
 	var statusQueue ordercontract.Queue
 	if c != nil {
 		orders = c.OrderStore
-		statusQueue = orderqueue.New(c.QueueClient)
+		statusQueue = orderqueue.NewDirectCompletion(c.QueueClient)
 	}
 	return &Consumer{
 		Container:        c,

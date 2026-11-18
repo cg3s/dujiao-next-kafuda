@@ -823,7 +823,7 @@ func testControlledDirectManualAction(t *testing.T, action string, notify bool) 
 			return kafudaworkflow.ReleaseManual(f.options.OrderStore, childID, attemptID, adminID, confirmed, now)
 		}
 		if notify {
-			return kafudaworkflow.CompleteManualAndNotify(f.options.OrderStore, emailQueue, nil, nil, childID, attemptID, adminID, confirmed, now)
+			return kafudaworkflow.CompleteManualAndNotify(ctx, f.options.OrderStore, f.store, emailQueue, nil, nil, childID, attemptID, adminID, confirmed, now)
 		}
 		return kafudaworkflow.CompleteManual(f.options.OrderStore, childID, attemptID, adminID, confirmed, now)
 	}

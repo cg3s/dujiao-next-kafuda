@@ -65,16 +65,17 @@ func (s Snapshot) Validate() error {
 // Recharge is keyed by the actual fulfillment order, never the checkout parent.
 // Its snapshot and internal cost information must not be serialized to buyers.
 type Recharge struct {
-	OrderID          uint       `gorm:"primaryKey;autoIncrement:false" json:"-"`
-	Snapshot         Snapshot   `gorm:"serializer:json;type:json;not null" json:"-"`
-	Stage            Stage      `gorm:"type:varchar(32);not null;index" json:"-"`
-	AttemptCount     uint       `gorm:"not null;default:0" json:"-"`
-	CurrentAttemptID *uint      `json:"-"`
-	Version          uint64     `gorm:"not null;default:1" json:"-"`
-	ReasonCode       string     `gorm:"type:varchar(64);not null;default:''" json:"-"`
-	CreatedAt        time.Time  `json:"-"`
-	UpdatedAt        time.Time  `json:"-"`
-	CompletedAt      *time.Time `json:"-"`
+	OrderID                uint       `gorm:"primaryKey;autoIncrement:false" json:"-"`
+	Snapshot               Snapshot   `gorm:"serializer:json;type:json;not null" json:"-"`
+	Stage                  Stage      `gorm:"type:varchar(32);not null;index" json:"-"`
+	AttemptCount           uint       `gorm:"not null;default:0" json:"-"`
+	CurrentAttemptID       *uint      `json:"-"`
+	Version                uint64     `gorm:"not null;default:1" json:"-"`
+	ReasonCode             string     `gorm:"type:varchar(64);not null;default:''" json:"-"`
+	CreatedAt              time.Time  `json:"-"`
+	UpdatedAt              time.Time  `json:"-"`
+	CompletedAt            *time.Time `json:"-"`
+	CompletionEmailPending bool       `gorm:"not null;default:false;index" json:"-"`
 }
 
 func (Recharge) TableName() string { return "kafuda_gpt_recharges" }
