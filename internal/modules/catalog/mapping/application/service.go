@@ -6,6 +6,7 @@ import (
 	"github.com/dujiao-next/internal/constants"
 	mappingcontract "github.com/dujiao-next/internal/modules/catalog/mapping/contract"
 	mappingdomain "github.com/dujiao-next/internal/modules/catalog/mapping/domain"
+	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 )
 
 // 文件组织约定:
@@ -60,6 +61,17 @@ func NewService(options Options) (*Service, error) {
 // withMappingWrite runs local writes after upstream I/O has finished. The
 // shared product lock serializes them with detachment and fulfillment changes.
 func (s *Service) withMappingWrite(snapshot *mappingdomain.Mapping, apply func(*Service, *mappingdomain.Mapping) error) error {
+	return s.withCurrentMapping(snapshot, func(repos mappingcontract.ImportRepositories, current *mappingdomain.Mapping, product *productdomain.Product) error {
+		if !product.IsMapped || product.FulfillmentType != constants.FulfillmentTypeUpstream {
+			return mappingcontract.ErrMappingNotFound
+		}
+		bound := *s
+		bound.products, bound.skus, bound.mappings, bound.skuMappings = repos.Products, repos.SKUs, repos.Mappings, repos.SKUMappings
+		return apply(&bound, current)
+	})
+}
+
+func (s *Service) withCurrentMapping(snapshot *mappingdomain.Mapping, apply func(mappingcontract.ImportRepositories, *mappingdomain.Mapping, *productdomain.Product) error) error {
 	if s.transactions == nil || snapshot == nil {
 		return mappingcontract.ErrMappingNotFound
 	}
@@ -78,12 +90,10 @@ func (s *Service) withMappingWrite(snapshot *mappingdomain.Mapping, apply func(*
 		if err != nil {
 			return err
 		}
-		if product == nil || !product.IsMapped || product.FulfillmentType != constants.FulfillmentTypeUpstream {
+		if product == nil {
 			return mappingcontract.ErrMappingNotFound
 		}
-		bound := *s
-		bound.products, bound.skus, bound.mappings, bound.skuMappings = repos.Products, repos.SKUs, repos.Mappings, repos.SKUMappings
-		return apply(&bound, current)
+		return apply(repos, current, product)
 	})
 }
 
@@ -113,11 +123,12 @@ func (s *Service) SetActive(id uint, active bool) error {
 	if err != nil {
 		return err
 	}
-	if mapping == nil {
-		return mappingcontract.ErrMappingNotFound
-	}
-	mapping.IsActive = active
-	return s.mappings.Update(mapping)
+	return s.withCurrentMapping(mapping, func(repos mappingcontract.ImportRepositories, current *mappingdomain.Mapping, product *productdomain.Product) error {
+		if product.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+			return mappingcontract.ErrMappingNotFound
+		}
+		return repos.Mappings.UpdateActive(current.ID, active)
+	})
 }
 
 // Delete 删除映射（不删除本地商品）

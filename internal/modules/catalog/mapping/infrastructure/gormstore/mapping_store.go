@@ -76,6 +76,16 @@ func (r *MappingStore) Update(mapping *mappingdomain.Mapping) error {
 	return r.db.Save(mapping).Error
 }
 
+func (r *MappingStore) UpdateActive(id uint, active bool) error {
+	result := r.db.Model(&mappingdomain.Mapping{}).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Update("is_active", active)
+	if result.Error == nil && result.RowsAffected == 0 {
+		return mappingcontract.ErrMappingNotFound
+	}
+	return result.Error
+}
+
 // UpdateUpstreamCategoryID 只写 upstream_category_id 一列，供回填旧映射使用。
 func (r *MappingStore) UpdateUpstreamCategoryID(id uint, upstreamCategoryID uint) error {
 	return r.db.Model(&mappingdomain.Mapping{}).

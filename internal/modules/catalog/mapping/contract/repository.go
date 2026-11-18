@@ -23,6 +23,7 @@ type MappingRepository interface {
 	GetByConnectionAndUpstreamID(connectionID, upstreamProductID uint) (*mappingdomain.Mapping, error)
 	Create(mapping *mappingdomain.Mapping) error
 	Update(mapping *mappingdomain.Mapping) error
+	UpdateActive(id uint, active bool) error
 	// UpdateUpstreamCategoryID 只刷新上游分类 ID 这一列，避免整行写回覆盖
 	// 并发同步刚更新的下架状态 / 同步时间。
 	UpdateUpstreamCategoryID(id uint, upstreamCategoryID uint) error

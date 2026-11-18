@@ -838,3 +838,128 @@ func TestLateMappingWritesCannotChangeDetachedProducts(t *testing.T) {
 		}
 	}
 }
+
+type mappingStatusReadHook struct {
+	mappingcontract.MappingRepository
+	afterRead func()
+}
+
+func (r mappingStatusReadHook) GetByID(id uint) (*mappingdomain.Mapping, error) {
+	snapshot, err := r.MappingRepository.GetByID(id)
+	if err == nil && snapshot != nil {
+		r.afterRead()
+	}
+	return snapshot, err
+}
+
+func TestSetMappingActiveUsesCurrentMappingAndProduct(t *testing.T) {
+	for _, scenario := range []struct {
+		name       string
+		wantActive bool
+		stale      bool
+	}{
+		{name: "enable_inactive", wantActive: true},
+		{name: "disable_legacy_manual"},
+		{name: "metadata_changed"},
+		{name: "detached", stale: true},
+		{name: "detached_then_direct", stale: true},
+		{name: "direct_type", stale: true},
+		{name: "rebound", stale: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:mapping_status_%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			if err := db.AutoMigrate(&productdomain.Product{}, &productdomain.ProductSKU{}, &mappingdomain.Mapping{}, &mappingdomain.SKUMapping{}, &siteconnectiondomain.Connection{}); err != nil {
+				t.Fatal(err)
+			}
+			product := productdomain.Product{
+				Slug: "mapping-status", TitleJSON: jsonmap.JSON{"zh-CN": "映射商品"},
+				FulfillmentType: constants.FulfillmentTypeUpstream, IsMapped: true,
+			}
+			if scenario.name == "disable_legacy_manual" {
+				product.FulfillmentType = constants.FulfillmentTypeManual
+			}
+			if err := db.Create(&product).Error; err != nil {
+				t.Fatal(err)
+			}
+			sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: "mapping-status"}
+			if err := db.Create(&sku).Error; err != nil {
+				t.Fatal(err)
+			}
+			mapping := mappingdomain.Mapping{LocalProductID: product.ID, ConnectionID: 1, UpstreamProductID: 20}
+			if err := db.Create(&mapping).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Model(&mapping).Update("is_active", !scenario.wantActive).Error; err != nil {
+				t.Fatal(err)
+			}
+			skuMapping := mappingdomain.SKUMapping{ProductMappingID: mapping.ID, LocalSKUID: sku.ID, UpstreamSKUID: 201}
+			if err := db.Create(&skuMapping).Error; err != nil {
+				t.Fatal(err)
+			}
+
+			products := productgormstore.NewProductStore(db)
+			mappings := mappinggormstore.NewMappingStore(db)
+			unit := &mappingImportUoW{products: products, skus: productgormstore.NewSKUStore(db), mappings: mappings, skuMappings: mappinggormstore.NewSKUMappingStore(db)}
+			options := mappingapp.Options{Mappings: mappings, Products: products, Transactions: unit, Media: adminNoopLocalMediaRecorder{}}
+			deleter, err := mappingapp.NewService(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var before mappingWriteSnapshot
+			options.Mappings = mappingStatusReadHook{MappingRepository: mappings, afterRead: func() {
+				switch scenario.name {
+				case "detached", "detached_then_direct":
+					if err := deleter.Delete(mapping.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var err error
+				switch scenario.name {
+				case "detached_then_direct", "direct_type":
+					err = db.Model(&product).Update("fulfillment_type", constants.FulfillmentTypeKafudaGPT).Error
+				case "rebound":
+					err = db.Model(&mapping).Update("upstream_product_id", 99).Error
+				case "metadata_changed":
+					err = db.Model(&mapping).Updates(map[string]interface{}{
+						"upstream_category_id": 12,
+						"upstream_status":      mappingdomain.UpstreamStatusInactive,
+						"last_synced_at":       time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC),
+					}).Error
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				before = readMappingWriteSnapshot(t, db)
+			}}
+			service, err := mappingapp.NewService(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = service.SetActive(mapping.ID, scenario.wantActive)
+			after := readMappingWriteSnapshot(t, db)
+			if scenario.stale {
+				if !errors.Is(err, mappingcontract.ErrMappingNotFound) {
+					t.Errorf("expected stale mapping to be rejected, got %v", err)
+				}
+			} else {
+				if err != nil || after.Mapping.IsActive != scenario.wantActive {
+					t.Fatalf("expected active=%v, got %v with error %v", scenario.wantActive, after.Mapping.IsActive, err)
+				}
+				after.Mapping.IsActive = before.Mapping.IsActive
+				after.Mapping.UpdatedAt = before.Mapping.UpdatedAt
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("status update changed mapping metadata, product or SKU rows")
+			}
+		})
+	}
+}
