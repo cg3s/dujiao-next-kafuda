@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dujiao-next/internal/app/container"
+	kafudawiring "github.com/dujiao-next/internal/bootstrap/kafudagpt"
 	orderwiring "github.com/dujiao-next/internal/bootstrap/order"
 	"github.com/dujiao-next/internal/constants"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
@@ -30,6 +31,7 @@ import (
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
+	orderhttp "github.com/dujiao-next/internal/modules/order/transport/http"
 	orderpresenter "github.com/dujiao-next/internal/modules/order/transport/presenter"
 	paymentapp "github.com/dujiao-next/internal/modules/payment/application"
 	promotiondomain "github.com/dujiao-next/internal/modules/promotion/domain"
@@ -50,6 +52,74 @@ type directCheckoutFixture struct {
 	input   orderapp.CreateOrderInput
 	catalog *kafudadomain.Catalog
 	store   *kafudastore.Store
+}
+
+func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	f := newDirectCheckoutFixture(t)
+	service := orderapp.NewOrderService(f.options)
+	order, err := service.CreateOrder(f.input)
+	if err != nil || order == nil || len(order.Children) != 1 {
+		t.Fatalf("create checkout: %+v, %v", order, err)
+	}
+	childID := order.Children[0].ID
+	handler := orderwiring.New(&container.Container{
+		OrderService: service, OrderStore: f.options.OrderStore,
+		KafudaGPT: &kafudawiring.Module{Store: f.store},
+	}).User
+	router := gin.New()
+	userID := uint(0)
+	router.Use(func(c *gin.Context) {
+		if userID != 0 {
+			c.Set("user_id", userID)
+		}
+	})
+	orderhttp.RegisterUserReadRoutes(router, handler)
+	request := func(orderNo string, uid uint, tenant resellercontract.TenantContext, wantCode int, wantStage string) {
+		t.Helper()
+		userID = uid
+		ctx := resellercontract.WithTenantContext(context.Background(), tenant)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/orders/"+orderNo+"/direct-status", nil).WithContext(ctx))
+		var responseBody struct {
+			Code int                        `json:"status_code"`
+			Data map[string]json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &responseBody); err != nil || responseBody.Code != wantCode {
+			t.Fatalf("status response: %s, %v; expected %d", recorder.Body.String(), err, wantCode)
+		}
+		if wantStage != "" {
+			if len(responseBody.Data) != 2 || string(responseBody.Data["stage"]) != fmt.Sprintf("%q", wantStage) || len(responseBody.Data["updated_at"]) == 0 {
+				t.Fatalf("unexpected buyer projection: %s", recorder.Body.String())
+			}
+		}
+	}
+	main := resellercontract.MainTenantContext("shop.example")
+	request(order.OrderNo, order.UserID, main, response.CodeNotFound, "")
+	now := time.Now().UTC()
+	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).Updates(map[string]any{"paid_at": now, "status": constants.OrderStatusPaid}).Error; err != nil {
+		t.Fatal(err)
+	}
+	request(order.OrderNo, 0, main, response.CodeUnauthorized, "")
+	request(order.OrderNo, order.UserID+100, main, response.CodeNotFound, "")
+	request(order.OrderNo, order.UserID, resellercontract.ResellerTenantContext("reseller.example", 1, 1, ""), response.CodeNotFound, "")
+	request(order.Children[0].OrderNo, order.UserID, main, response.CodeNotFound, "")
+	for _, stage := range []kafudadomain.Stage{kafudadomain.StageWaiting, kafudadomain.StageProcessing, kafudadomain.StageManualReview, kafudadomain.StageCompleted} {
+		if stage == kafudadomain.StageCompleted {
+			if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).Update("status", constants.OrderStatusCompleted).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := f.db.Model(&kafudadomain.Recharge{}).Where("order_id = ?", childID).
+			Updates(map[string]any{"stage": stage, "reason_code": "private-reason", "version": 5}).Error; err != nil {
+			t.Fatal(err)
+		}
+		request(order.OrderNo, order.UserID, main, 0, string(stage))
+		record, err := f.store.GetRecharge(context.Background(), childID)
+		if err != nil || record == nil || record.Version != 5 {
+			t.Fatalf("status read changed the recharge: %+v, %v", record, err)
+		}
+	}
 }
 
 func TestDirectShopCompletionUpdatesParentAndChildAtomically(t *testing.T) {

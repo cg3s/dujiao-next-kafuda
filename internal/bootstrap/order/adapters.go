@@ -1,8 +1,12 @@
 package orderwiring
 
 import (
+	"context"
 	"errors"
 	"fmt"
+
+	"github.com/dujiao-next/internal/app/container"
+	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 
 	paymentapp "github.com/dujiao-next/internal/modules/payment/application"
 	paymentcontract "github.com/dujiao-next/internal/modules/payment/contract"
@@ -38,6 +42,47 @@ import (
 	"github.com/dujiao-next/internal/queue"
 	"github.com/dujiao-next/internal/shared/money"
 )
+
+func newDirectStatusReader(c *container.Container) ordertransport.DirectStatusReader {
+	if c.OrderStore == nil || c.KafudaGPT == nil || c.KafudaGPT.Store == nil {
+		return nil
+	}
+	return func(ctx context.Context, orderNo string, userID uint) (*ordertransport.DirectStatus, error) {
+		order, err := c.OrderStore.GetByOrderNoAndUserScoped(orderNo, userID, ordercontract.TenantScope{})
+		if err != nil || order == nil {
+			return nil, err
+		}
+		if userID == 0 || order.UserID != userID || order.ResellerID != nil || order.PaidAt == nil ||
+			!order.RefundedAmount.IsZero() || len(order.Children) != 1 {
+			return nil, nil
+		}
+		child := order.Children[0]
+		if child.ParentID == nil || *child.ParentID != order.ID || child.UserID != userID || child.ResellerID != nil ||
+			child.PaidAt == nil || !child.RefundedAmount.IsZero() || len(child.Items) != 1 ||
+			child.Items[0].FulfillmentType != constants.FulfillmentTypeKafudaGPT ||
+			(order.Status != constants.OrderStatusPaid && order.Status != constants.OrderStatusCompleted) || child.Status != order.Status {
+			return nil, nil
+		}
+		record, err := c.KafudaGPT.Store.GetRecharge(ctx, child.ID)
+		if err != nil || record == nil {
+			return nil, err
+		}
+		var stage string
+		switch record.Stage {
+		case kafudadomain.StageWaiting:
+			stage = "waiting_session"
+		case kafudadomain.StageChecking, kafudadomain.StageSubmitting, kafudadomain.StageProcessing:
+			stage = "processing"
+		case kafudadomain.StageManualReview, kafudadomain.StageManualDelivery:
+			stage = "manual_review"
+		case kafudadomain.StageCompleted:
+			stage = "completed"
+		default:
+			return nil, nil
+		}
+		return &ordertransport.DirectStatus{Stage: stage, UpdatedAt: record.UpdatedAt}, nil
+	}
+}
 
 type orderAdminQueryAdapter struct {
 	orders *orderapp.OrderService

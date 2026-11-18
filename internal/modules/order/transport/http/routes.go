@@ -39,6 +39,7 @@ func RegisterUserReadRoutes(user gin.IRoutes, handler *UserHandler) {
 	user.GET("/orders", handler.ListOrders)
 	user.GET("/orders/stats", handler.OrderStats)
 	user.GET("/orders/:order_no", handler.GetOrderByOrderNo)
+	user.GET("/orders/:order_no/direct-status", handler.GetDirectStatus)
 	user.GET("/orders/:order_no/fulfillment/download", handler.DownloadFulfillment)
 }
 

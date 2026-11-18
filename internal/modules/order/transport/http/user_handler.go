@@ -1,8 +1,10 @@
 package orderhttp
 
 import (
+	"context"
 	"errors"
 	"strings"
+	"time"
 
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 
@@ -74,13 +76,44 @@ type UserHandler struct {
 	payments PaymentChannelPolicy
 	refunds  RefundRecordDirectory
 	users    UserLookup
+	direct   DirectStatusReader
 }
 
-func NewUserHandler(orders UserOrderQuery, payments PaymentChannelPolicy, refunds RefundRecordDirectory, users UserLookup) *UserHandler {
+type DirectStatus struct {
+	Stage     string    `json:"stage"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type DirectStatusReader func(context.Context, string, uint) (*DirectStatus, error)
+
+func NewUserHandler(orders UserOrderQuery, payments PaymentChannelPolicy, refunds RefundRecordDirectory, users UserLookup, direct DirectStatusReader) *UserHandler {
 	if orders == nil {
 		panic("order user handler: orders is nil")
 	}
-	return &UserHandler{orders: orders, payments: payments, refunds: refunds, users: users}
+	return &UserHandler{orders: orders, payments: payments, refunds: refunds, users: users, direct: direct}
+}
+
+func (h *UserHandler) GetDirectStatus(c *gin.Context) {
+	uid, ok := ginutil.GetUserID(c)
+	if !ok {
+		return
+	}
+	tenant := tenantFromRequest(c)
+	orderNo := strings.TrimSpace(c.Param("order_no"))
+	if h.direct == nil || orderNo == "" || !tenant.IsMain || tenant.ResellerID != nil || tenant.Unavailable {
+		ginutil.RespondError(c, response.CodeNotFound, "error.order_not_found", nil)
+		return
+	}
+	status, err := h.direct(c.Request.Context(), orderNo, uid)
+	if err != nil {
+		ginutil.RespondError(c, response.CodeInternal, "error.order_fetch_failed", nil)
+		return
+	}
+	if status == nil {
+		ginutil.RespondError(c, response.CodeNotFound, "error.order_not_found", nil)
+		return
+	}
+	response.Success(c, status)
 }
 
 func tenantFromRequest(c *gin.Context) reseller.TenantContext {
