@@ -51,12 +51,12 @@ func (s *OrderService) cancelOrderWithChildren(order *orderdomain.Order, rollbac
 		secretRepo := tx.CardSecrets()
 		if len(order.Children) > 0 {
 			for _, child := range order.Children {
-				if _, err := secretRepo.ReleaseByOrder(child.ID); err != nil {
+				if err := releaseOrderSecrets(secretRepo, child.ID, child.Items); err != nil {
 					return err
 				}
 			}
 		} else {
-			if _, err := secretRepo.ReleaseByOrder(order.ID); err != nil {
+			if err := releaseOrderSecrets(secretRepo, order.ID, order.Items); err != nil {
 				return err
 			}
 		}
@@ -398,7 +398,7 @@ func (s *OrderService) cancelSingleOrderInTx(tx ordercontract.Transaction, order
 		return ErrOrderUpdateFailed
 	}
 	secretRepo := tx.CardSecrets()
-	if _, err := secretRepo.ReleaseByOrder(order.ID); err != nil {
+	if err := releaseOrderSecrets(secretRepo, order.ID, order.Items); err != nil {
 		return err
 	}
 	if err := releaseManualStockByItems(productRepo, productSKURepo, order.Items); err != nil {
@@ -548,7 +548,7 @@ func ReopenCanceledOrderInTx(tx ordercontract.Transaction, order *orderdomain.Or
 // reserveAutoSecretsByItems 为自动发货订单项占用可用卡密。
 // 先释放该订单名下残留的占用，避免与新占用叠加造成泄漏。
 func reserveAutoSecretsByItems(secretRepo cardsecretcontract.Repository, ownerOrderID uint, items []orderdomain.OrderItem, now time.Time) error {
-	if _, err := secretRepo.ReleaseByOrder(ownerOrderID); err != nil {
+	if err := releaseOrderSecrets(secretRepo, ownerOrderID, items); err != nil {
 		return err
 	}
 	for _, item := range items {
@@ -578,6 +578,15 @@ func reserveAutoSecretsByItems(secretRepo cardsecretcontract.Repository, ownerOr
 		}
 	}
 	return nil
+}
+
+func releaseOrderSecrets(secretRepo cardsecretcontract.Repository, orderID uint, items []orderdomain.OrderItem) error {
+	// Direct checkout is a single-item order and never reserves card secrets.
+	if len(items) == 1 && items[0].FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+		return nil
+	}
+	_, err := secretRepo.ReleaseByOrder(orderID)
+	return err
 }
 
 // restoreCouponUsageInTx 恢复取消订单时回滚掉的优惠券使用记录与计数。
