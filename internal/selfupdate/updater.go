@@ -451,7 +451,7 @@ func fileSHA256(path string) (string, error) {
 // 写入前后都要卡尺寸：归档本身的 sha256 校验发生在解压之前，一个合法且校验通过的
 // 归档完全可能解出一个超大条目。如果这里只用 LimitReader 截断，io.Copy 会「成功」返回，
 // 一个被砍掉尾巴的二进制就这样通过 chmod 和 swap 上线，直到下次重启才暴露。
-func extractBinary(archivePath, dest string) error {
+func extractBinary(archivePath, dest string) (resultErr error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open archive: %w", err)
@@ -490,21 +490,26 @@ func extractBinary(archivePath, dest string) error {
 		if err != nil {
 			return fmt.Errorf("create binary: %w", err)
 		}
-		defer out.Close()
+		defer func() {
+			closeErr := out.Close()
+			if resultErr == nil && closeErr != nil {
+				resultErr = fmt.Errorf("close binary: %w", closeErr)
+			}
+			if resultErr != nil {
+				_ = os.Remove(dest)
+			}
+		}()
 
 		// 用 CopyN 按 header 声明的字节数精确读取：短读会返回 io.EOF，
 		// 从而把「归档声称有 N 字节但实际只给了 M 字节」这种情况暴露成错误而不是静默截断。
 		written, err := io.CopyN(out, tr, header.Size)
 		if err != nil {
-			_ = os.Remove(dest)
 			return fmt.Errorf("write binary (%d of %d bytes): %w", written, header.Size, err)
 		}
 		if written != header.Size {
-			_ = os.Remove(dest)
 			return fmt.Errorf("short binary extraction: got %d bytes, want %d", written, header.Size)
 		}
 		if err := out.Sync(); err != nil {
-			_ = os.Remove(dest)
 			return fmt.Errorf("sync binary: %w", err)
 		}
 		return nil
