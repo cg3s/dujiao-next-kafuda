@@ -107,8 +107,7 @@ func (s *Service) MarkSubmitting(ctx context.Context, attemptID uint, quoteID st
 		return kafudadomain.ErrInvalidTransition
 	}
 	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
-		if record.Stage != kafudadomain.StageChecking || attempt.Status != kafudadomain.AttemptChecking ||
-			attempt.NextPollAt == nil || !now.Before(*attempt.NextPollAt) || now.Before(attempt.UpdatedAt) {
+		if !hasLiveCheck(record, attempt, now) {
 			return kafudadomain.ErrInvalidTransition
 		}
 		attempt.Status, attempt.QuoteID, attempt.UpdatedAt = kafudadomain.AttemptSubmitting, quoteID, now
@@ -122,7 +121,7 @@ func (s *Service) MarkSubmitting(ctx context.Context, attemptID uint, quoteID st
 // Reason is classified locally; never persist upstream messages or Session.
 func (s *Service) CheckRejected(ctx context.Context, attemptID uint, retryable bool, now time.Time) error {
 	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
-		if attempt.Status != kafudadomain.AttemptChecking {
+		if !hasLiveCheck(record, attempt, now) {
 			return kafudadomain.ErrInvalidTransition
 		}
 		attempt.Status, attempt.ActiveOrderID, attempt.NextPollAt, attempt.UpdatedAt = kafudadomain.AttemptFailed, nil, nil, now
@@ -133,6 +132,11 @@ func (s *Service) CheckRejected(ctx context.Context, attemptID uint, retryable b
 		record.UpdatedAt = now
 		return nil
 	})
+}
+
+func hasLiveCheck(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt, now time.Time) bool {
+	return record.Stage == kafudadomain.StageChecking && attempt.Status == kafudadomain.AttemptChecking &&
+		attempt.NextPollAt != nil && !now.IsZero() && now.Before(*attempt.NextPollAt) && !now.Before(attempt.UpdatedAt)
 }
 
 func (s *Service) MarkUnknown(ctx context.Context, attemptID uint, now, nextPoll time.Time) error {

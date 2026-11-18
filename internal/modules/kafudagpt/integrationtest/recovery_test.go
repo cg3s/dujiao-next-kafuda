@@ -30,6 +30,11 @@ func TestInterruptedCheckRequiresFreshSubmission(t *testing.T) {
 		if err := service.MarkSubmitting(ctx, first.Attempt.ID, "late_quote", late, late.Add(time.Minute)); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
 			t.Fatalf("unrecovered expired check could submit at %s: %v", late, err)
 		}
+		for _, retryable := range []bool{true, false} {
+			if err := service.CheckRejected(ctx, first.Attempt.ID, retryable, late); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+				t.Fatalf("expired check rejection changed state at %s (retryable=%t): %v", late, retryable, err)
+			}
+		}
 	}
 	if err := service.MarkSubmitting(ctx, first.Attempt.ID, " ", now, expires); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
 		t.Fatalf("blank quote could submit: %v", err)
@@ -125,7 +130,7 @@ func TestRecoveryRechecksCandidateUnderLock(t *testing.T) {
 					}
 					return
 				}
-				if err := service.CheckRejected(ctx, first.Attempt.ID, true, expires); err != nil {
+				if err := service.CheckRejected(ctx, first.Attempt.ID, true, expires.Add(-time.Nanosecond)); err != nil {
 					t.Fatal(err)
 				}
 				reserve(t, service, 10, expires)
