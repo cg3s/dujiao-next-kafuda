@@ -48,11 +48,12 @@ const detailLoading = ref(false)
 const detailError = ref('')
 const selectedOrder = ref<AdminOrder | null>(null)
 const auth = useAdminAuthStore()
+const isOpenDirectOrder = (order: AdminOrder) => order.status === 'paid' || order.status === 'fulfilling'
 const directCompleting = ref(false)
 const handleDirectManualAction = async (action: 'complete' | 'release') => {
   const order = selectedOrder.value
   const recharge = order?.direct_recharge
-  if (!order || recharge?.stage !== 'manual_delivery' || !recharge.attempt || recharge.attempt.active || directCompleting.value) return
+  if (!order || !isOpenDirectOrder(order) || recharge?.stage !== 'manual_delivery' || !recharge.attempt || recharge.attempt.active || directCompleting.value) return
   directCompleting.value = true
   try {
     const confirmed = await confirmAction({
@@ -75,7 +76,7 @@ const reconcileOrderID = ref('')
 const directReconciliation = computed(() => {
   const order = selectedOrder.value
   const recharge = order?.direct_recharge
-  if (order?.status !== 'paid' || recharge?.stage !== 'manual_review' || recharge.reason !== 'outcome_unknown' ||
+  if (!order || !isOpenDirectOrder(order) || recharge?.stage !== 'manual_review' || recharge.reason !== 'outcome_unknown' ||
       !recharge.attempt?.active || recharge.attempt.upstream_order_id || !auth.hasPermission('POST:/admin/orders/:id/direct-reconcile')) return null
   return { order, recharge, attempt: recharge.attempt }
 })
@@ -474,7 +475,7 @@ const refundableAmountDisplay = (order: AdminOrder | null) => formatMoney(refund
 
 const canRefundDirect = (order: AdminOrder, permission: string) => {
   const recharge = order.direct_recharge
-  return !recharge || (!order.parent_id && order.status === 'paid' && recharge.stage === 'manual_delivery'
+  return !recharge || (!order.parent_id && isOpenDirectOrder(order) && recharge.stage === 'manual_delivery'
     && !!recharge.attempt && !recharge.attempt.active && auth.hasPermission(permission))
 }
 
@@ -855,11 +856,11 @@ watch(
                 <div v-if="selectedOrder.direct_recharge.attempt.masked_email"><dt class="text-muted-foreground">{{ t('admin.orders.directReview.account') }}</dt><dd>{{ selectedOrder.direct_recharge.attempt.masked_email }}</dd></div>
               </template>
             </dl>
-            <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-complete') && selectedOrder.status === 'paid' && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
+            <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-complete') && isOpenDirectOrder(selectedOrder) && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
               class="mt-4" size="sm" :disabled="directCompleting" @click="handleDirectManualAction('complete')">
               {{ t('admin.orders.directReview.complete') }}
             </Button>
-            <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-release') && selectedOrder.status === 'paid' && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
+            <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-release') && isOpenDirectOrder(selectedOrder) && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
               class="mt-4 ms-2" size="sm" variant="outline" :disabled="directCompleting" @click="handleDirectManualAction('release')">
               {{ t('admin.orders.directReview.release') }}
             </Button>

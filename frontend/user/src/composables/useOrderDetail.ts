@@ -73,7 +73,9 @@ export function useOrderDetail() {
       (status) => {
         if (number !== directOrderNo.value) return
         directStatusUnavailable.value = status === null
-        if (status) directStatus.value = status
+        if (!status) return
+        directStatus.value = status
+        if (status.stage === 'manual_review' && order.value?.status === 'paid') void loadOrder(false)
       },
       document,
       async (stage) => {

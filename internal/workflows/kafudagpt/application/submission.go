@@ -23,6 +23,7 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	records = WithShopOrderTransitions(records, orders)
 	attempt := reservation.Attempt
 	now := time.Now().UTC()
 	quote, err := records.CheckQuote(ctx, attempt.ID, check, reservation.Recharge.Snapshot, now)

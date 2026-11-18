@@ -16,11 +16,20 @@ import (
 // the buyer, tenant, paid order and actual fulfillment child before invoking it.
 // Completion of the commerce order must share a transaction with the final
 // recharge update; this service does not independently mark a shop order paid.
-type Service struct{ store kafudacontract.Store }
+type Service struct {
+	store              kafudacontract.Store
+	attemptTransaction func(context.Context, uint, func(kafudacontract.Transaction) error) error
+}
 
 var errNoRecordChange = errors.New("kafuda recharge unchanged")
 
 func New(store kafudacontract.Store) *Service { return &Service{store: store} }
+
+// WithAttemptTransaction binds attempt mutations to the caller's order transaction.
+// The returned service shares the same read store without changing the original.
+func (s *Service) WithAttemptTransaction(run func(context.Context, uint, func(kafudacontract.Transaction) error) error) *Service {
+	return &Service{store: s.store, attemptTransaction: run}
+}
 
 // Prepare preserves the first paid-order snapshot, including administrator cost.
 // It performs no upstream call and does not reserve any card or manual stock.
@@ -287,9 +296,13 @@ func (s *Service) change(ctx context.Context, attemptID uint, update func(*kafud
 	if initial == nil {
 		return kafudadomain.ErrNotFound
 	}
-	return s.store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
+	run := func(tx kafudacontract.Transaction) error {
 		return changeInTransaction(tx, initial.OrderID, attemptID, update)
-	})
+	}
+	if s.attemptTransaction != nil {
+		return s.attemptTransaction(ctx, initial.OrderID, run)
+	}
+	return s.store.WithinTransaction(ctx, run)
 }
 
 func changeInTransaction(tx kafudacontract.Transaction, orderID, attemptID uint, update func(*kafudadomain.Recharge, *kafudadomain.Attempt) error) error {

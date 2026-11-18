@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/dujiao-next/internal/constants"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
@@ -27,7 +26,7 @@ func ReconcileUnknownOrder(ctx context.Context, store ordercontract.Store, gatew
 		if err != nil {
 			return err
 		}
-		if parent.Status != constants.OrderStatusPaid || record == nil || record.Stage != kafudadomain.StageManualReview ||
+		if !isOpenPaidShopOrder(parent.Status) || record == nil || record.Stage != kafudadomain.StageManualReview ||
 			record.ReasonCode != "outcome_unknown" || record.CurrentAttemptID == nil || *record.CurrentAttemptID != attemptID {
 			return orderapp.ErrOrderStatusInvalid
 		}

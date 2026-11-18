@@ -10,6 +10,7 @@ const order = {
 
 test('polling targets only an eligible direct checkout parent', () => {
   assert.equal(directStatusOrderNo(order), order.order_no)
+  assert.equal(directStatusOrderNo({ ...order, status: 'fulfilling' }), order.order_no)
   assert.equal(directStatusOrderNo({ ...order, status: 'completed' }), order.order_no)
   assert.equal(directStatusOrderNo({ ...order, status: 'refunded' }), order.order_no)
   for (const status of ['pending_payment', 'canceled', 'partially_refunded', undefined]) {
@@ -17,7 +18,7 @@ test('polling targets only an eligible direct checkout parent', () => {
   }
   assert.equal(directStatusOrderNo({ ...order, children: [] }), '')
   assert.equal(directStatusOrderNo({ ...order, children: [...order.children, ...order.children] }), '')
-  assert.equal(directStatusOrderNo({ ...order, children: [{ items: [{ fulfillment_type: 'auto' }] }] }), '')
+  assert.equal(directStatusOrderNo({ ...order, status: 'fulfilling', children: [{ items: [{ fulfillment_type: 'auto' }] }] }), '')
 })
 
 test('buyer progress accepts only the public stages and a valid timestamp', () => {

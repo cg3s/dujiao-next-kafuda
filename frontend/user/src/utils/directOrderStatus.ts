@@ -19,7 +19,7 @@ type DirectOrderCandidate = {
 }
 
 export function directStatusOrderNo(order: DirectOrderCandidate | null): string {
-  if (!order?.order_no || !['paid', 'completed', 'refunded'].includes(order.status ?? '')) return ''
+  if (!order?.order_no || !['paid', 'fulfilling', 'completed', 'refunded'].includes(order.status ?? '')) return ''
   const child = order.children?.length === 1 ? order.children[0] : undefined
   return child?.items?.length === 1 && child.items[0]?.fulfillment_type === KAFUDA_GPT_DIRECT ? order.order_no : ''
 }

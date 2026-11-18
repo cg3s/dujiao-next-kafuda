@@ -4,7 +4,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dujiao-next/internal/constants"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
@@ -34,7 +33,7 @@ func ReserveBuyerAttempt(store ordercontract.Store, scope ordercontract.TenantSc
 		if parent.UserID != buyerID || parent.OrderNo != orderNo {
 			return orderapp.ErrOrderNotFound
 		}
-		if parent.Status != constants.OrderStatusPaid {
+		if !isOpenPaidShopOrder(parent.Status) {
 			return orderapp.ErrOrderStatusInvalid
 		}
 		reserved, err := kafudaapp.ReserveInTransaction(tx.KafudaGPT(), childID, now, leaseUntil)

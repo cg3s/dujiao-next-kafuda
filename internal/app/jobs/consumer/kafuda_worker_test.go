@@ -101,13 +101,20 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := gormstore.New(db)
-	records := kafudaapp.New(store)
+	orders := orderstore.New(db, "test-guest-credential-secret-with-32-bytes")
+	module, err := kafudawiring.New(db, config.KafudaGPTConfig{}, orders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := module.Records
 	ctx, past := context.Background(), time.Now().UTC().Add(-time.Hour)
 	snapshot := kafudadomain.Snapshot{
 		ProductID: 1, SKUID: 1, Plan: "plus", Product: "gpt", Country: "PH",
 		PayMode: "auto_card", ProductCode: "test-card", PaymentProfile: "default",
 		Currency: "CNY", SellPrice: money.FromDecimal(decimal.NewFromInt(1)), MaxCostCents: 2000,
 	}
+	seedPaidDirectPollOrder(t, db, 6, 1, past)
+	seedPaidDirectPollOrder(t, db, 7, 2, past)
 	if _, err := records.Prepare(ctx, 1, snapshot, past); err != nil {
 		t.Fatal(err)
 	}
@@ -124,14 +131,10 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 	if err := records.MarkSubmitting(ctx, unknown.Attempt.ID, "unknown_quote", past, past.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	parent := orderdomain.Order{ID: 10, OrderNo: "poll-parent", UserID: 20, Status: constants.OrderStatusPaid, PaidAt: &past, Currency: "CNY"}
+	parent, child := seedPaidDirectPollOrder(t, db, 10, 11, past)
 	buyer := userdomain.User{ID: parent.UserID, Email: "completion@example.test", PasswordHash: "test"}
-	child := orderdomain.Order{ID: 11, ParentID: &parent.ID, OrderNo: "poll-child", UserID: parent.UserID, Status: parent.Status, PaidAt: &past, Currency: parent.Currency}
-	item := orderdomain.OrderItem{OrderID: child.ID, ProductID: 1, SKUID: 1, Quantity: 1, TitleJSON: jsonmap.JSON{"en-US": "Direct recharge"}, FulfillmentType: constants.FulfillmentTypeKafudaGPT}
-	for _, row := range []any{&buyer, &parent, &child, &item} {
-		if err := db.Create(row).Error; err != nil {
-			t.Fatal(err)
-		}
+	if err := db.Create(&buyer).Error; err != nil {
+		t.Fatal(err)
 	}
 	if _, err := records.Prepare(ctx, child.ID, snapshot, past); err != nil {
 		t.Fatal(err)
@@ -150,10 +153,11 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateway := &kafudaPollTestGateway{result: result, err: context.DeadlineExceeded}
+	module.Gateway = gateway
 	c := New(&container.Container{
 		Config:     &config.Config{KafudaGPT: config.KafudaGPTConfig{PollIntervalSeconds: 10}},
-		KafudaGPT:  &kafudawiring.Module{Records: records, Store: store, Gateway: gateway},
-		OrderStore: orderstore.New(db, "test-guest-credential-secret-with-32-bytes"),
+		KafudaGPT:  module,
+		OrderStore: orders,
 	})
 	emailQueue := &kafudaStatusEmailQueue{t: t, orders: c.OrderStore, orderID: parent.ID}
 	c.orderStatusQueue = emailQueue
@@ -195,6 +199,8 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 	if err != nil || record == nil || record.Stage != kafudadomain.StageManualReview || record.ReasonCode != "outcome_unknown" {
 		t.Fatalf("overdue unidentified submission was not flagged: %+v, %v", record, err)
 	}
+	assertDirectPollOrderStatus(t, orders, 7, 2, constants.OrderStatusFulfilling)
+	assertDirectPollOrderStatus(t, orders, 6, 1, constants.OrderStatusPaid)
 	replay, err := records.Reserve(ctx, 2, time.Now(), time.Now().Add(time.Minute))
 	if err != nil || replay == nil || replay.Created || replay.Attempt == nil || replay.Attempt.ActiveOrderID == nil ||
 		replay.Attempt.Reference != unknown.Attempt.Reference || replay.Attempt.QuoteID != "unknown_quote" {
@@ -256,6 +262,7 @@ func TestKafudaRecoveryTaskPersistsBackoffAfterLookupDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		gateway := &kafudaDeadlineTestGateway{}
 		c, store, _ := newKafudaPollBatch(t, gateway, 1, 2)
+		c.Config = &config.Config{KafudaGPT: config.KafudaGPTConfig{PollReviewAfterSeconds: 60}}
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
 		started := time.Now().UTC()
@@ -279,10 +286,11 @@ func TestKafudaRecoveryTaskPersistsBackoffAfterLookupDeadline(t *testing.T) {
 		if err != nil || stored == nil || stored.NextPollAt == nil || !stored.NextPollAt.Equal(wantRetry) || !stored.UpdatedAt.Equal(failedAt) {
 			t.Fatalf("retry was not persisted from the time of failure: %+v, %v", stored, err)
 		}
-		if stored.Status != kafudadomain.AttemptProcessing || stored.ActiveOrderID == nil || *stored.ActiveOrderID != before[0].OrderID ||
+		if stored.Status != kafudadomain.AttemptReview || stored.ActiveOrderID == nil || *stored.ActiveOrderID != before[0].OrderID ||
 			stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != gateway.ids[0] || stored.Reference != before[0].Reference {
 			t.Fatalf("lookup failure changed the active attempt's identity: %+v", stored)
 		}
+		assertDirectPollOrderStatus(t, c.OrderStore, stored.OrderID+100, stored.OrderID, constants.OrderStatusFulfilling)
 		remaining, err := store.DueKnownOrderPolls(ctx, failedAt, 10)
 		if err != nil || len(remaining) != 1 || remaining[0].ID != before[1].ID || !remaining[0].NextPollAt.Equal(*before[1].NextPollAt) ||
 			!remaining[0].UpdatedAt.Equal(before[1].UpdatedAt) {
@@ -348,7 +356,12 @@ func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway, orderIDs .
 		t.Fatal(err)
 	}
 	store := gormstore.New(db)
-	records := kafudaapp.New(store)
+	orders := orderstore.New(db, "test-guest-credential-secret-with-32-bytes")
+	module, err := kafudawiring.New(db, config.KafudaGPTConfig{}, orders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := module.Records
 	ctx := t.Context()
 	past := time.Now().UTC().Add(-time.Hour)
 	due := past.Add(time.Minute)
@@ -358,23 +371,7 @@ func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway, orderIDs .
 		Currency: "CNY", SellPrice: money.FromDecimal(decimal.NewFromInt(1)), MaxCostCents: 2000,
 	}
 	for _, orderID := range orderIDs {
-		parent := orderdomain.Order{
-			ID: orderID + 100, OrderNo: fmt.Sprintf("poll-parent-%d", orderID), UserID: 20,
-			Status: constants.OrderStatusPaid, PaidAt: &past, Currency: "CNY",
-		}
-		child := orderdomain.Order{
-			ID: orderID, ParentID: &parent.ID, OrderNo: fmt.Sprintf("poll-child-%d", orderID), UserID: parent.UserID,
-			Status: parent.Status, PaidAt: &past, Currency: parent.Currency,
-		}
-		item := orderdomain.OrderItem{
-			OrderID: child.ID, ProductID: snapshot.ProductID, SKUID: snapshot.SKUID, Quantity: 1,
-			TitleJSON: jsonmap.JSON{"en-US": "Direct recharge"}, FulfillmentType: constants.FulfillmentTypeKafudaGPT,
-		}
-		for _, row := range []any{&parent, &child, &item} {
-			if err := db.Create(row).Error; err != nil {
-				t.Fatal(err)
-			}
-		}
+		seedPaidDirectPollOrder(t, db, orderID+100, orderID, past)
 		if _, err := records.Prepare(ctx, orderID, snapshot, past); err != nil {
 			t.Fatal(err)
 		}
@@ -392,9 +389,35 @@ func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway, orderIDs .
 			t.Fatal(err)
 		}
 	}
+	module.Gateway = gateway
 	c := New(&container.Container{
-		KafudaGPT:  &kafudawiring.Module{Store: store, Records: records, Gateway: gateway},
-		OrderStore: orderstore.New(db, "test-guest-credential-secret-with-32-bytes"),
+		KafudaGPT:  module,
+		OrderStore: orders,
 	})
 	return c, store, due
+}
+
+func seedPaidDirectPollOrder(t *testing.T, db *gorm.DB, parentID, childID uint, paidAt time.Time) (orderdomain.Order, orderdomain.Order) {
+	t.Helper()
+	parent := orderdomain.Order{ID: parentID, OrderNo: fmt.Sprintf("poll-parent-%d", childID), UserID: 20,
+		Status: constants.OrderStatusPaid, PaidAt: &paidAt, Currency: "CNY"}
+	child := orderdomain.Order{ID: childID, ParentID: &parent.ID, OrderNo: fmt.Sprintf("poll-child-%d", childID), UserID: parent.UserID,
+		Status: parent.Status, PaidAt: &paidAt, Currency: parent.Currency}
+	item := orderdomain.OrderItem{OrderID: childID, ProductID: 1, SKUID: 1, Quantity: 1,
+		TitleJSON: jsonmap.JSON{"en-US": "Direct recharge"}, FulfillmentType: constants.FulfillmentTypeKafudaGPT}
+	for _, row := range []any{&parent, &child, &item} {
+		if err := db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	return parent, child
+}
+
+func assertDirectPollOrderStatus(t *testing.T, orders ordercontract.Store, parentID, childID uint, want string) {
+	t.Helper()
+	order, err := orders.GetByID(parentID)
+	if err != nil || order == nil || order.Status != want || order.PaidAt == nil || len(order.Children) != 1 ||
+		order.Children[0].ID != childID || order.Children[0].Status != want || order.Children[0].PaidAt == nil {
+		t.Fatalf("expected both orders to be %s with payment preserved: %+v, %v", want, order, err)
+	}
 }

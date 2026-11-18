@@ -68,12 +68,15 @@ func ApplyResult(store ordercontract.Store, childID, attemptID uint, result kafu
 		var err error
 		recharges := tx.KafudaGPT()
 		completed, err = kafudaapp.RecordResultInTransaction(recharges, childID, attemptID, result, startedAt, receivedAt, receivedAt.Add(pollInterval))
-		if err != nil || !completed {
+		if err != nil {
 			return err
 		}
 		record, err := recharges.GetRechargeForUpdate(childID)
 		if err != nil {
 			return err
+		}
+		if !completed {
+			return syncManualShopOrders(tx.Orders(), parent, childID, record)
 		}
 		if record == nil || record.CompletedAt == nil {
 			return orderapp.ErrOrderStatusInvalid
@@ -89,7 +92,7 @@ func ApplyResult(store ordercontract.Store, childID, attemptID uint, result kafu
 		}); err != nil {
 			return err
 		}
-		return completeShopOrders(tx.Orders(), parent, childID)
+		return setOpenShopOrderStatus(tx.Orders(), parent, childID, constants.OrderStatusCompleted)
 	})
 	return completed && err == nil, err
 }
@@ -109,7 +112,7 @@ func CompleteManual(store ordercontract.Store, childID, attemptID, adminID uint,
 		if err := tx.KafudaGPT().SaveRecharge(record); err != nil {
 			return err
 		}
-		return completeShopOrders(tx.Orders(), parent, childID)
+		return setOpenShopOrderStatus(tx.Orders(), parent, childID, constants.OrderStatusCompleted)
 	})
 }
 
@@ -133,7 +136,7 @@ func withConfirmedManualAttempt(store ordercontract.Store, childID, attemptID, a
 		return orderapp.ErrOrderStatusInvalid
 	}
 	return withLockedDirectOrder(store, childID, func(tx ordercontract.Transaction, parent *orderdomain.Order) error {
-		if parent.Status != constants.OrderStatusPaid {
+		if !isOpenPaidShopOrder(parent.Status) {
 			return orderapp.ErrOrderStatusInvalid
 		}
 		recharges := tx.KafudaGPT()
@@ -162,12 +165,12 @@ func withConfirmedManualAttempt(store ordercontract.Store, childID, attemptID, a
 	})
 }
 
-func completeShopOrders(orders ordercontract.Store, parent *orderdomain.Order, childID uint) error {
-	if parent.Status != constants.OrderStatusPaid {
+func setOpenShopOrderStatus(orders ordercontract.Store, parent *orderdomain.Order, childID uint, status string) error {
+	if !isOpenPaidShopOrder(parent.Status) {
 		return orderapp.ErrOrderStatusInvalid
 	}
 	for _, id := range []uint{childID, parent.ID} {
-		if err := orders.UpdateStatus(id, constants.OrderStatusCompleted, nil); err != nil {
+		if err := orders.UpdateStatus(id, status, nil); err != nil {
 			return err
 		}
 	}
@@ -213,5 +216,5 @@ func withLockedDirectOrderIDs(store ordercontract.Store, parentID, childID uint,
 
 func paidDirectOrder(order *orderdomain.Order) bool {
 	return order.PaidAt != nil && order.RefundedAmount.IsZero() &&
-		(order.Status == constants.OrderStatusPaid || order.Status == constants.OrderStatusCompleted)
+		(isOpenPaidShopOrder(order.Status) || order.Status == constants.OrderStatusCompleted)
 }

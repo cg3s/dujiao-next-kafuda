@@ -21,6 +21,7 @@ import (
 	"github.com/dujiao-next/internal/constants"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	userauthapp "github.com/dujiao-next/internal/modules/identity/userauth/application"
+	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	orderhttp "github.com/dujiao-next/internal/modules/order/transport/http"
@@ -36,6 +37,7 @@ import (
 	walletstore "github.com/dujiao-next/internal/modules/wallet/infrastructure/gormstore"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
+	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -151,6 +153,7 @@ func testDirectCheckoutPaymentsPreserveRechargeSnapshot(t *testing.T, fixture fu
 				result.Data.OrderNo == "" || result.Data.PaymentError != "" || result.Data.OrderPaid != walletPayment || initial == nil {
 				t.Fatalf("unexpected create-and-pay result: %s, %v", created.Body.String(), err)
 			}
+			var replayOnlinePayment func()
 			if !walletPayment {
 				if result.Data.PaymentID == 0 || gateway.created.PaymentID != result.Data.PaymentID || gateway.created.OrderNo == "" ||
 					!gateway.created.Amount.Equal(wantAmount.Decimal) {
@@ -159,11 +162,14 @@ func testDirectCheckoutPaymentsPreserveRechargeSnapshot(t *testing.T, fixture fu
 				form := url.Values{
 					"pid": {"checkout-test"}, "out_trade_no": {gateway.created.OrderNo}, "trade_status": {constants.EpayTradeStatusSuccess},
 				}
-				for range 2 {
+				replayOnlinePayment = func() {
 					callback := request(http.MethodPost, "/api/v1/payments/callback", form.Encode(), "application/x-www-form-urlencoded", "")
 					if callback.Code != http.StatusOK || callback.Body.String() != constants.EpayCallbackSuccess {
 						t.Fatalf("online payment callback: %d %s", callback.Code, callback.Body.String())
 					}
+				}
+				for range 2 {
+					replayOnlinePayment()
 				}
 			}
 
@@ -191,6 +197,28 @@ func testDirectCheckoutPaymentsPreserveRechargeSnapshot(t *testing.T, fixture fu
 				var count int64
 				if err := f.db.Model(model).Count(&count).Error; err != nil || count != 0 {
 					t.Fatalf("payment created %T: %d, %v", model, count, err)
+				}
+			}
+			if replayOnlinePayment != nil {
+				ctx, now := t.Context(), time.Now().UTC()
+				records := kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), f.options.OrderStore)
+				attempt, err := records.Reserve(ctx, initial.OrderID, now, now.Add(time.Minute))
+				if err != nil || attempt == nil || !attempt.Created || attempt.Attempt == nil {
+					t.Fatalf("reserve paid recharge: %v", err)
+				}
+				if err := records.MarkSubmitting(ctx, attempt.Attempt.ID, "quote", now, now.Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+				if err := records.MarkUnknown(ctx, attempt.Attempt.ID, now, now.Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+				replayOnlinePayment()
+				current, err := f.options.OrderStore.GetByID(parentID)
+				if err != nil || current == nil || current.Status != constants.OrderStatusFulfilling || current.PaidAt == nil ||
+					!current.PaidAt.Equal(*order.PaidAt) || !current.TotalAmount.Equal(order.TotalAmount.Decimal) || len(current.Children) != 1 ||
+					current.Children[0].Status != constants.OrderStatusFulfilling || current.Children[0].PaidAt == nil ||
+					!current.Children[0].PaidAt.Equal(*order.Children[0].PaidAt) {
+					t.Fatalf("payment replay changed manual order state: %+v, %v", current, err)
 				}
 			}
 			if queue.autoFulfill != 0 {

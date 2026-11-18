@@ -87,7 +87,9 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 			t.Fatal(err)
 		}
 		child := order.Children[0].ID
+		status := constants.OrderStatusPaid
 		if stage == kafudadomain.StageManualReview {
+			status = constants.OrderStatusFulfilling
 			parentID, childID = order.ID, child
 			reserved, err := records.Reserve(ctx, child, now, now.Add(time.Minute))
 			if err != nil {
@@ -98,6 +100,10 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 			}).Error; err != nil {
 				t.Fatal(err)
 			}
+		}
+		if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, child}).
+			Updates(map[string]any{"status": status, "paid_at": now}).Error; err != nil {
+			t.Fatal(err)
 		}
 		if err := f.db.Model(&kafudadomain.Recharge{}).Where("order_id = ?", child).
 			Updates(map[string]any{"stage": stage, "reason_code": "outcome_unknown"}).Error; err != nil {
@@ -122,7 +128,7 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 	}
 	for _, id := range []uint{parentID, childID} {
 		raw := get(fmt.Sprintf("/admin/orders/%d", id)).Body.String()
-		if !strings.Contains(raw, `"upstream_order_id":"9007199254740993"`) || !strings.Contains(raw, `"reason":"outcome_unknown"`) ||
+		if !strings.Contains(raw, `"status":"fulfilling"`) || !strings.Contains(raw, `"upstream_order_id":"9007199254740993"`) || !strings.Contains(raw, `"reason":"outcome_unknown"`) ||
 			!strings.Contains(raw, `"active":true`) || strings.Contains(raw, "private@example.test") || strings.Contains(raw, "private-quote") {
 			t.Fatalf("unexpected projection: %s", raw)
 		}
@@ -191,7 +197,7 @@ func testDirectCheckoutRefund(t *testing.T, f directCheckoutFixture, method stri
 	}
 	stopped := stoppedDirectSalesContainer(t, f)
 	service = stopped.OrderService
-	records := kafudaapp.New(f.store)
+	records := kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), f.options.OrderStore)
 	reservation, err := records.Reserve(ctx, childID, now, now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +226,7 @@ func testDirectCheckoutRefund(t *testing.T, f directCheckoutFixture, method stri
 			}
 		}
 		var stored orderdomain.Order
-		if err := f.db.First(&stored, orderID).Error; err != nil || stored.Status != constants.OrderStatusPaid || !stored.RefundedAmount.IsZero() {
+		if err := f.db.First(&stored, orderID).Error; err != nil || stored.Status != constants.OrderStatusFulfilling || !stored.RefundedAmount.IsZero() {
 			t.Fatalf("after-sales changed %d: %+v, %v", orderID, stored, err)
 		}
 	}
@@ -252,6 +258,7 @@ func testDirectCheckoutRefund(t *testing.T, f directCheckoutFixture, method stri
 	if _, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, now, now, 0); err != nil {
 		t.Fatal(err)
 	}
+	assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusFulfilling, now)
 	for _, input := range []struct{ orderID, attemptID uint }{{childID, id}, {order.ID, id + 1}, {order.ID, 0}} {
 		if err := apply(input.orderID, input.attemptID, order.TotalAmount); !errors.Is(err, orderrefund.ErrOrderStatusInvalid) {
 			t.Fatalf("invalid refund target accepted: %+v, %v", input, err)
@@ -532,16 +539,29 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 			if scenario.name == "quote_expired" && !errors.Is(err, kafudaapp.ErrQuoteExpired) {
 				t.Fatalf("expected locally expired quote, got %v", err)
 			}
-			if _, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check, 10*time.Second); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+			wantReplayErr := kafudadomain.ErrInvalidTransition
+			if scenario.stage == kafudadomain.StageCompleted {
+				wantReplayErr = orderapp.ErrOrderStatusInvalid
+			}
+			if _, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check, 10*time.Second); !errors.Is(err, wantReplayErr) {
 				t.Fatalf("stale submission replay: %v", err)
 			}
 			if (scenario.wantCall && calls != 1) || (!scenario.wantCall && calls != 0) {
 				t.Fatalf("create called %d times", calls)
 			}
 			record, err := f.store.GetRecharge(ctx, childID)
-			if err != nil || record == nil || record.Stage != scenario.stage || record.ReasonCode != scenario.wantReason {
+			if err != nil || record == nil || record.Stage != scenario.stage || record.ReasonCode != scenario.wantReason ||
+				!reflect.DeepEqual(record.Snapshot, reservation.Recharge.Snapshot) {
 				t.Fatalf("unexpected persisted recharge: %+v, %v", record, err)
 			}
+			wantStatus := constants.OrderStatusPaid
+			switch scenario.stage {
+			case kafudadomain.StageManualReview, kafudadomain.StageManualDelivery:
+				wantStatus = constants.OrderStatusFulfilling
+			case kafudadomain.StageCompleted:
+				wantStatus = constants.OrderStatusCompleted
+			}
+			assertDirectShopOrderStatus(t, f.options.OrderStore, order, wantStatus, now)
 			if scenario.name == "quote_expired" {
 				previous, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
 				if err != nil || previous == nil || previous.Status != kafudadomain.AttemptFailed || previous.ActiveOrderID != nil ||
@@ -578,11 +598,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				}
 			}
 			if completed {
-				var completedOrders int64
-				if err := f.db.Model(&orderdomain.Order{}).Where("id IN ? AND status = ?", ids, constants.OrderStatusCompleted).
-					Count(&completedOrders).Error; err != nil || completedOrders != 2 {
-					t.Fatalf("create response did not complete both orders: %d, %v", completedOrders, err)
-				}
+				assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusCompleted, now)
 			}
 			if scenario.stage == kafudadomain.StageManualReview {
 				attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
@@ -591,14 +607,15 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				}
 			}
 			if scenario.name == "response_lost" {
-				testReconcileUnknownDirectOrder(t, f, childID, reservation.Attempt)
+				testReconcileUnknownDirectOrder(t, f, order, now, reservation.Attempt)
 			}
 		})
 	}
 }
 
-func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, childID uint, attempt *kafudadomain.Attempt) {
+func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, order *orderdomain.Order, paidAt time.Time, attempt *kafudadomain.Attempt) {
 	t.Helper()
+	childID := order.Children[0].ID
 	const upstreamID = uint64(9_007_199_254_740_993)
 	calls := 0
 	gateway := directCreateGateway{get: func(ctx context.Context, id uint64) (*kafudacontract.OrderResult, error) {
@@ -643,6 +660,7 @@ func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, chil
 	if err != nil || stored == nil || stored.UpstreamOrderID != nil || stored.Status != kafudadomain.AttemptReview {
 		t.Fatalf("mismatch changed the original attempt: %+v, %v", stored, err)
 	}
+	assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusFulfilling, paidAt)
 	request(attempt.ID, true)
 	request(attempt.ID, false)
 	stored, err = f.store.GetAttempt(context.Background(), attempt.ID)
@@ -651,6 +669,7 @@ func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, chil
 		stored.Status != kafudadomain.AttemptProcessing || calls != 2 {
 		t.Fatalf("verified ID did not restore scheduled lookups: %+v, %v, calls=%d", stored, err, calls)
 	}
+	assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusFulfilling, paidAt)
 }
 
 func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
@@ -731,14 +750,19 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 	request(order.OrderNo, staleToken, main, response.CodeUnauthorized, "", "")
 	request(order.OrderNo, "not-a-token", main, response.CodeUnauthorized, "", "")
 	request(order.Children[0].OrderNo, ownerToken, main, response.CodeNotFound, "", "")
+	ids := []uint{order.ID, childID}
+	setStatus := func(status string) {
+		t.Helper()
+		if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", ids).Update("status", status).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, stage := range []kafudadomain.Stage{
 		kafudadomain.StageWaiting, kafudadomain.StageChecking, kafudadomain.StageSubmitting, kafudadomain.StageProcessing,
 		kafudadomain.StageManualReview, kafudadomain.StageManualDelivery, kafudadomain.StageCompleted,
 	} {
 		if stage == kafudadomain.StageCompleted {
-			if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).Update("status", constants.OrderStatusCompleted).Error; err != nil {
-				t.Fatal(err)
-			}
+			setStatus(constants.OrderStatusCompleted)
 		}
 		if err := f.db.Model(&kafudadomain.Recharge{}).Where("order_id = ?", childID).
 			Updates(map[string]any{"stage": stage, "reason_code": "private-reason", "version": 5}).Error; err != nil {
@@ -749,6 +773,24 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 			wantStage = kafudadomain.StageManualReview
 		}
 		request(order.OrderNo, ownerToken, main, 0, string(wantStage), "")
+		if wantStage == kafudadomain.StageManualReview {
+			setStatus(constants.OrderStatusFulfilling)
+			request(order.OrderNo, ownerToken, main, 0, string(wantStage), "")
+			request(order.OrderNo, otherToken, main, response.CodeNotFound, "", "")
+			if err := f.db.Model(&orderdomain.Order{}).Where("id = ?", childID).Update("status", constants.OrderStatusPaid).Error; err != nil {
+				t.Fatal(err)
+			}
+			request(order.OrderNo, ownerToken, main, response.CodeNotFound, "", "")
+			if err := f.db.Model(&orderdomain.Order{}).Where("id = ?", childID).
+				Updates(map[string]any{"status": constants.OrderStatusFulfilling, "paid_at": nil}).Error; err != nil {
+				t.Fatal(err)
+			}
+			request(order.OrderNo, ownerToken, main, response.CodeNotFound, "", "")
+			if err := f.db.Model(&orderdomain.Order{}).Where("id = ?", childID).Update("paid_at", now).Error; err != nil {
+				t.Fatal(err)
+			}
+			setStatus(constants.OrderStatusPaid)
+		}
 		record, err := f.store.GetRecharge(context.Background(), childID)
 		if err != nil || record == nil || record.Version != 5 {
 			t.Fatalf("status read changed the recharge: %+v, %v", record, err)
@@ -854,7 +896,7 @@ func testControlledDirectManualAction(t *testing.T, f directCheckoutFixture, act
 		t.Fatal(err)
 	}
 	stopped := stoppedDirectSalesContainer(t, f)
-	records := kafudaapp.New(f.store)
+	records := kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), f.options.OrderStore)
 	reserved, err := records.Reserve(ctx, childID, now, now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -866,6 +908,7 @@ func testControlledDirectManualAction(t *testing.T, f directCheckoutFixture, act
 	if err := records.MarkUnknown(ctx, id, now, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusFulfilling, now)
 	const adminID = 9
 	emailQueue := &directCompletionEmailQueue{t: t, store: f.options.OrderStore, parentID: order.ID}
 	apply := func(attemptID uint, confirmed bool) error {
@@ -884,6 +927,7 @@ func testControlledDirectManualAction(t *testing.T, f directCheckoutFixture, act
 	if _, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, id, result, now, now, 0); err != nil {
 		t.Fatal(err)
 	}
+	assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusFulfilling, now)
 	if err := apply(id, false); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("missing confirmation allowed manual completion: %v", err)
 	}
@@ -916,18 +960,17 @@ func testControlledDirectManualAction(t *testing.T, f directCheckoutFixture, act
 		if err != nil || record == nil || record.Stage != kafudadomain.StageWaiting || record.CurrentAttemptID == nil || *record.CurrentAttemptID != id || record.CompletedAt != nil {
 			t.Fatalf("release did not preserve attempt history: %+v, %v", record, err)
 		}
-		var paidOrders, deliveries int64
-		if err := f.db.Model(&orderdomain.Order{}).Where("id IN ? AND status = ?", ids, constants.OrderStatusPaid).Count(&paidOrders).Error; err != nil || paidOrders != 2 {
-			t.Fatalf("release changed paid orders: %d, %v", paidOrders, err)
-		}
+		assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusFulfilling, now)
+		var deliveries int64
 		if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&deliveries).Error; err != nil || deliveries != 0 {
 			t.Fatalf("release created delivery: %d, %v", deliveries, err)
 		}
 		retryAt := time.Now().UTC()
-		retry, err := records.Reserve(ctx, childID, retryAt, retryAt.Add(time.Minute))
-		if err != nil || retry.Attempt.Sequence != 2 || retry.Attempt.Reference == reserved.Attempt.Reference {
+		retry, err := kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, ordercontract.TenantScope{}, order.OrderNo, order.UserID, retryAt, retryAt.Add(time.Minute))
+		if err != nil || retry == nil || !retry.Created || retry.Attempt.Sequence != 2 || retry.Attempt.Reference == reserved.Attempt.Reference {
 			t.Fatalf("release did not allow a fresh attempt: %+v, %v", retry, err)
 		}
+		assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusFulfilling, now)
 		return
 	}
 	if notify && emailQueue.calls != 1 {
@@ -937,15 +980,119 @@ func testControlledDirectManualAction(t *testing.T, f directCheckoutFixture, act
 	if err := f.db.Where("order_id = ?", childID).First(&delivery).Error; err != nil || delivery.DeliveredBy == nil || *delivery.DeliveredBy != adminID || delivery.Payload != "" {
 		t.Fatalf("invalid manual delivery audit: %+v, %v", delivery, err)
 	}
-	for _, orderID := range ids {
-		var stored orderdomain.Order
-		if err := f.db.First(&stored, orderID).Error; err != nil || stored.Status != constants.OrderStatusCompleted {
-			t.Fatalf("manual completion did not update order %d: %+v, %v", orderID, stored, err)
-		}
-	}
+	assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusCompleted, now)
 	record, err := f.store.GetRecharge(ctx, childID)
 	if err != nil || record == nil || record.Stage != kafudadomain.StageCompleted || record.CompletedAt == nil {
 		t.Fatalf("manual completion did not update recharge: %+v, %v", record, err)
+	}
+}
+
+func assertDirectShopOrderStatus(t *testing.T, orders ordercontract.Store, original *orderdomain.Order, status string, paidAt time.Time) {
+	t.Helper()
+	parent, err := orders.GetByID(original.ID)
+	if err != nil || parent == nil || len(parent.Children) != 1 || parent.Children[0].ID != original.Children[0].ID {
+		t.Fatalf("direct order lost its child association: %+v, %v", parent, err)
+	}
+	child, originalChild := parent.Children[0], original.Children[0]
+	for i, row := range []orderdomain.Order{*parent, child} {
+		before := []orderdomain.Order{*original, originalChild}[i]
+		if row.Status != status || row.PaidAt == nil || !row.PaidAt.Truncate(time.Microsecond).Equal(paidAt.Truncate(time.Microsecond)) ||
+			!row.TotalAmount.Decimal.Equal(before.TotalAmount.Decimal) || row.Currency != before.Currency || !row.RefundedAmount.IsZero() {
+			t.Fatalf("order %d did not preserve payment facts in status %s: %+v", row.ID, status, row)
+		}
+	}
+	if len(child.Items) != 1 || child.Items[0].FulfillmentType != constants.FulfillmentTypeKafudaGPT ||
+		child.Items[0].SKUID != originalChild.Items[0].SKUID || child.Items[0].ProductID != originalChild.Items[0].ProductID {
+		t.Fatalf("direct order changed its original fulfillment item: %+v", child.Items)
+	}
+}
+
+func TestDirectManualOutcomeUpdatesParentAndChildAtomically(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		stage kafudadomain.Stage
+	}{
+		{"unidentified_result", kafudadomain.StageManualReview},
+		{"needs_review", kafudadomain.StageManualReview},
+		{"failed", kafudadomain.StageManualDelivery},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDirectCheckoutFixture(t)
+			if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+				t.Fatal(err)
+			}
+			order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+			if err != nil || order == nil || len(order.Children) != 1 {
+				t.Fatalf("create checkout: %+v, %v", order, err)
+			}
+			childID := order.Children[0].ID
+			orders, ctx, now := f.options.OrderStore, context.Background(), time.Now().UTC()
+			if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
+				Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": now}).Error; err != nil {
+				t.Fatal(err)
+			}
+			reservation, err := kafudaworkflow.ReserveBuyerAttempt(orders, ordercontract.TenantScope{}, order.OrderNo, order.UserID, now, now.Add(time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := reservation.Attempt.ID
+			records := kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), orders)
+			if err := records.MarkSubmitting(ctx, id, "test-quote", now, now.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			before, err := f.store.GetRecharge(ctx, childID)
+			if err != nil || before == nil {
+				t.Fatalf("load original recharge: %+v, %v", before, err)
+			}
+			originalAttempt, err := f.store.GetAttempt(ctx, id)
+			if err != nil || originalAttempt == nil {
+				t.Fatalf("load original attempt: %+v, %v", originalAttempt, err)
+			}
+			observedAt := now.Add(time.Second)
+			apply := func() error {
+				if test.name == "unidentified_result" {
+					return records.MarkUnknown(ctx, id, observedAt, observedAt.Add(time.Minute))
+				}
+				result := kafudacontract.OrderResult{ID: 101, Reference: originalAttempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: test.name}
+				completed, err := kafudaworkflow.ApplyResult(orders, childID, id, result, observedAt, observedAt, time.Minute)
+				if completed {
+					t.Fatal("manual outcome completed the order")
+				}
+				return err
+			}
+			trigger := fmt.Sprintf("CREATE TRIGGER reject_manual_parent BEFORE UPDATE ON orders WHEN OLD.id = %d AND NEW.status = 'fulfilling' BEGIN SELECT RAISE(ABORT, 'manual parent update failed'); END", order.ID)
+			if err := f.db.Exec(trigger).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := apply(); err == nil || !strings.Contains(err.Error(), "manual parent update failed") {
+				t.Fatalf("expected the parent status write error, got %v", err)
+			}
+			assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusPaid, now)
+			record, err := f.store.GetRecharge(ctx, childID)
+			if err != nil || !reflect.DeepEqual(record, before) {
+				t.Fatalf("failed transition did not roll back recharge: %+v, %v", record, err)
+			}
+			attempt, err := f.store.GetAttempt(ctx, id)
+			if err != nil || !reflect.DeepEqual(attempt, originalAttempt) {
+				t.Fatalf("failed transition did not roll back attempt: %+v, %v", attempt, err)
+			}
+			if err := f.db.Exec("DROP TRIGGER reject_manual_parent").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := apply(); err != nil {
+				t.Fatalf("retry manual transition: %v", err)
+			}
+			assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusFulfilling, now)
+			record, err = f.store.GetRecharge(ctx, childID)
+			if err != nil || record == nil || record.Stage != test.stage || record.CurrentAttemptID == nil || *record.CurrentAttemptID != id ||
+				!reflect.DeepEqual(record.Snapshot, before.Snapshot) {
+				t.Fatalf("manual transition lost the original recharge data: %+v, %v", record, err)
+			}
+			attempt, err = f.store.GetAttempt(ctx, id)
+			if err != nil || attempt == nil || attempt.Reference != originalAttempt.Reference || attempt.QuoteID != originalAttempt.QuoteID {
+				t.Fatalf("manual transition lost the original attempt data: %+v, %v", attempt, err)
+			}
+		})
 	}
 }
 

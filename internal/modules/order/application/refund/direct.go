@@ -14,8 +14,8 @@ func validateDirectRefund(tx ordercontract.Transaction, parent *orderdomain.Orde
 		return nil
 	}
 	if confirmedAttemptID == 0 || parent.ParentID != nil || parent.ResellerID != nil ||
-		parent.UserID == 0 || len(parent.Children) != 1 ||
-		parent.Status != constants.OrderStatusPaid {
+		parent.UserID == 0 || parent.PaidAt == nil || !parent.RefundedAmount.IsZero() || len(parent.Children) != 1 ||
+		(parent.Status != constants.OrderStatusPaid && parent.Status != constants.OrderStatusFulfilling) {
 		return ErrOrderStatusInvalid
 	}
 	child, err := tx.Orders().GetByIDForUpdateWithChildren(parent.Children[0].ID)
@@ -23,7 +23,7 @@ func validateDirectRefund(tx ordercontract.Transaction, parent *orderdomain.Orde
 		return err
 	}
 	if child == nil || child.ParentID == nil || *child.ParentID != parent.ID || child.ResellerID != nil ||
-		child.UserID != parent.UserID || child.PaidAt == nil || child.Status != parent.Status ||
+		child.UserID != parent.UserID || child.PaidAt == nil || !child.RefundedAmount.IsZero() || child.Status != parent.Status ||
 		len(child.Children) != 0 || len(child.Items) != 1 || child.Items[0].FulfillmentType != constants.FulfillmentTypeKafudaGPT {
 		return ErrOrderStatusInvalid
 	}

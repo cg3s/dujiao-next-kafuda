@@ -51,7 +51,7 @@ func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			records := kafudaapp.New(f.store)
+			records := kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), orders)
 			attemptID := reservation.Attempt.ID
 			if err := records.MarkSubmitting(ctx, attemptID, "quote", now, now.Add(time.Minute)); err != nil {
 				t.Fatal(err)
@@ -59,6 +59,7 @@ func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testin
 			if err := records.MarkUnknown(ctx, attemptID, now, now.Add(time.Minute)); err != nil {
 				t.Fatal(err)
 			}
+			assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusFulfilling, now)
 			result := kafudacontract.OrderResult{ID: 173, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "failed"}
 			if alternative != "late_supplier_success" && alternative != "late_success_vs_manual_delivery" {
 				if _, err := kafudaworkflow.ApplyResult(orders, childID, attemptID, result, now, now, 0); err != nil {
@@ -137,7 +138,7 @@ func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testin
 				case "manual_delivery":
 					wantStatus, wantStage, wantDeliveries = constants.OrderStatusCompleted, kafudadomain.StageCompleted, 1
 				case "release_and_reserve":
-					wantStatus, wantStage = constants.OrderStatusPaid, kafudadomain.StageChecking
+					wantStatus, wantStage = constants.OrderStatusFulfilling, kafudadomain.StageChecking
 				case "late_supplier_success", "late_success_vs_manual_delivery":
 					wantStatus, wantStage, wantDeliveries = constants.OrderStatusCompleted, kafudadomain.StageCompleted, 1
 				}

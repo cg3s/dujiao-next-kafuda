@@ -53,7 +53,7 @@ func newDirectStatusReader(c *container.Container) ordertransport.DirectStatusRe
 		if err != nil || order == nil {
 			return nil, err
 		}
-		if userID == 0 || order.UserID != userID || order.ResellerID != nil || order.PaidAt == nil ||
+		if userID == 0 || order.UserID != userID || order.ParentID != nil || order.ResellerID != nil || order.PaidAt == nil ||
 			len(order.Children) != 1 {
 			return nil, nil
 		}
@@ -66,7 +66,7 @@ func newDirectStatusReader(c *container.Container) ordertransport.DirectStatusRe
 		if order.Status == constants.OrderStatusRefunded && order.RefundedAmount.IsPositive() {
 			return &ordertransport.DirectStatus{Stage: constants.OrderStatusRefunded, UpdatedAt: order.UpdatedAt}, nil
 		}
-		if (order.Status != constants.OrderStatusPaid && order.Status != constants.OrderStatusCompleted) ||
+		if (order.Status != constants.OrderStatusPaid && order.Status != constants.OrderStatusFulfilling && order.Status != constants.OrderStatusCompleted) ||
 			!order.RefundedAmount.IsZero() || !child.RefundedAmount.IsZero() {
 			return nil, nil
 		}
