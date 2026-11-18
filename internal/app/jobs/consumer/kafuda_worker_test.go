@@ -199,3 +199,59 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestKafudaPollStopsCurrentBatchWhenUpstreamRateLimits(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = pool.Close() })
+	if err := db.AutoMigrate(&kafudadomain.Recharge{}, &kafudadomain.Attempt{}); err != nil {
+		t.Fatal(err)
+	}
+	store := gormstore.New(db)
+	records := kafudaapp.New(store)
+	ctx := t.Context()
+	past := time.Now().UTC().Add(-time.Hour)
+	due := past.Add(time.Minute)
+	snapshot := kafudadomain.Snapshot{
+		ProductID: 1, SKUID: 1, Plan: "plus", Product: "gpt", Country: "PH",
+		PayMode: "auto_card", ProductCode: "test-card", PaymentProfile: "default",
+		Currency: "CNY", SellPrice: money.FromDecimal(decimal.NewFromInt(1)), MaxCostCents: 2000,
+	}
+	for _, orderID := range []uint{1, 2} {
+		if _, err := records.Prepare(ctx, orderID, snapshot, past); err != nil {
+			t.Fatal(err)
+		}
+		reserved, err := records.Reserve(ctx, orderID, past, due)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := records.MarkSubmitting(ctx, reserved.Attempt.ID, "quote", past, due); err != nil {
+			t.Fatal(err)
+		}
+		result := kafudacontract.OrderResult{
+			ID: uint64(orderID), Reference: reserved.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing",
+		}
+		if err := records.RecordResult(ctx, reserved.Attempt.ID, result, past, due); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gateway := &kafudaPollTestGateway{err: &kafudacontract.APIError{HTTPStatus: 429, RetryAfter: 5 * time.Minute}}
+	c := New(&container.Container{KafudaGPT: &kafudawiring.Module{Store: store, Records: records, Gateway: gateway}})
+	if err := c.pollKnownKafudaOrders(ctx); !errors.Is(err, kafudaapp.ErrKnownOrderRateLimited) {
+		t.Fatalf("missing rate-limit classification: %v", err)
+	}
+	if len(gateway.ids) != 1 {
+		t.Fatalf("supplier requests after rate limit: %v", gateway.ids)
+	}
+	remaining, err := store.DueKnownOrderPolls(ctx, time.Now().UTC(), 10)
+	if err != nil || len(remaining) != 1 || remaining[0].UpstreamOrderID == nil || *remaining[0].UpstreamOrderID == gateway.ids[0] || !remaining[0].NextPollAt.Equal(due) {
+		t.Fatalf("rate limit changed an unqueried attempt: %+v, %v", remaining, err)
+	}
+}

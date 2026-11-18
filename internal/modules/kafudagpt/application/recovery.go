@@ -3,13 +3,17 @@ package application
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 )
 
-var ErrKnownOrderLookupFailed = errors.New("kafuda known order lookup failed")
+var (
+	ErrKnownOrderLookupFailed = errors.New("kafuda known order lookup failed")
+	ErrKnownOrderRateLimited  = errors.New("kafuda known order lookup rate limited")
+)
 
 const DefaultPollReviewAfter = 24 * time.Hour
 
@@ -52,7 +56,8 @@ func (s *Service) PollKnownOrder(ctx context.Context, gateway kafudacontract.Gat
 	// The supplier reset can extend local backoff. Anchor the duration at the
 	// response so a slow lookup does not consume part of the reset window.
 	var apiErr *kafudacontract.APIError
-	if errors.As(err, &apiErr) && apiErr != nil && apiErr.HTTPStatus == 429 && apiErr.RetryAfter > 0 {
+	rateLimited := errors.As(err, &apiErr) && apiErr != nil && apiErr.HTTPStatus == http.StatusTooManyRequests
+	if rateLimited && apiErr.RetryAfter > 0 {
 		resetAt := now.Add(time.Since(started)).Add(apiErr.RetryAfter)
 		if resetAt.After(retryAt) {
 			retryAt = resetAt
@@ -62,7 +67,11 @@ func (s *Service) PollKnownOrder(ctx context.Context, gateway kafudacontract.Gat
 	if reviewAfter <= 0 {
 		reviewAfter = DefaultPollReviewAfter
 	}
-	return nil, errors.Join(ErrKnownOrderLookupFailed, s.rescheduleKnownOrderPoll(ctx, attemptID, *attempt.NextPollAt, now, retryAt, reviewAfter))
+	rescheduleErr := s.rescheduleKnownOrderPoll(ctx, attemptID, *attempt.NextPollAt, now, retryAt, reviewAfter)
+	if rateLimited {
+		return nil, errors.Join(ErrKnownOrderLookupFailed, ErrKnownOrderRateLimited, rescheduleErr)
+	}
+	return nil, errors.Join(ErrKnownOrderLookupFailed, rescheduleErr)
 }
 
 // RescheduleKnownOrderPoll defers a failed numeric lookup. A worker that read

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
 	"github.com/hibiken/asynq"
@@ -71,6 +72,9 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 		if err != nil {
 			if !errors.Is(err, kafudadomain.ErrConflict) && !errors.Is(err, kafudadomain.ErrNotFound) {
 				failures = append(failures, err)
+			}
+			if errors.Is(err, kafudaapp.ErrKnownOrderRateLimited) {
+				break
 			}
 			continue
 		}
