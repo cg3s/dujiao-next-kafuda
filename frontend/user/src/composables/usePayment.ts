@@ -120,6 +120,15 @@ export function usePayment() {
     if (orderNo !== '') return orderNo
     return readRouteQueryValue('out_trade_no')
   })
+  const hasPaymentReturnMarker = computed(() => paymentReturnMarkers.some(marker => readRouteQueryValue(marker).toLowerCase() === '1'))
+  const paymentOrderContext = computed(() => `${isGuest.value ? 'guest' : 'member'}:${orderNoQuery.value}`)
+  let returnedPaymentContext: string | null = null
+  // 同步后会清理回跳参数，同一笔订单应继续在商城等待支付确认。
+  watch([paymentOrderContext, hasPaymentReturnMarker], ([context, hasMarker]) => {
+    if (hasMarker) returnedPaymentContext = context
+    else if (returnedPaymentContext !== context) returnedPaymentContext = null
+  }, { immediate: true })
+
   const orderNoResolved = computed(() => {
     return order.value?.order_no || orderNoQuery.value || ''
   })
@@ -785,18 +794,21 @@ export function usePayment() {
     if (!order.value || order.value.status !== 'pending_payment') return
     if (paymentResult.value) return
     if (isGuest.value && !hasGuestAuth.value) return
-    if (!orderNoResolved.value) return
+    const orderNo = orderNoResolved.value
+    if (!orderNo) return
+    const context = paymentOrderContext.value
     try {
       let response
       if (isGuest.value) {
         response = await guestOrderAPI.latestPayment({
-          order_no: orderNoResolved.value,
+          order_no: orderNo,
           email: guestAuth.value.email,
           order_password: guestAuth.value.order_password,
         })
       } else {
-        response = await paymentAPI.latest({ order_no: orderNoResolved.value })
+        response = await paymentAPI.latest({ order_no: orderNo })
       }
+      if (paymentOrderContext.value !== context || orderNoResolved.value !== orderNo || order.value?.status !== 'pending_payment' || paymentResult.value) return
       const data = response.data.data
       if (data && (data.pay_url || data.qr_code)) {
         cachedPayment.value = data
@@ -805,8 +817,8 @@ export function usePayment() {
         startPolling()
         void captureCurrentPayment({ silent: true })
         startCountdown()
-        // 对 redirect / WAP / page 跳转类模式自动进入收银台。
-        if (shouldAutoOpenPaymentLink(data)) {
+        const returningFromGateway = hasPaymentReturnMarker.value || returnedPaymentContext === context
+        if (shouldAutoOpenPaymentLink(data, returningFromGateway)) {
           openPayLinkInCompatibleWindow(true)
         }
       }
@@ -934,9 +946,7 @@ export function usePayment() {
 
   const syncPaymentReturnIfNeeded = async () => {
     // 支持所有支付方式的回调同步跳转
-    const hasReturn = paymentReturnMarkers.some(marker => readRouteQueryValue(marker).toLowerCase() === '1')
-
-    if (!hasReturn) return
+    if (!hasPaymentReturnMarker.value) return
     if (!orderNoQuery.value) return
 
     try {

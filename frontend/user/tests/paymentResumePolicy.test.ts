@@ -35,6 +35,12 @@ test('cached payment restore resumes status watching without opening a cashier',
   })
 })
 
+test('resuming a redirect payment after a gateway return keeps the cashier closed', () => {
+  const payment = { interaction_mode: 'redirect', pay_url: 'https://pay.example.com' }
+  assert.equal(shouldAutoOpenPaymentLink(payment, true), false)
+  assert.equal(shouldAutoOpenPaymentLink(payment), true)
+})
+
 test('Alipay page and WAP modes use redirect presentation while QR stays scannable', () => {
   assert.equal(resolvePaymentPresentationMode('qr'), 'qr')
   assert.equal(resolvePaymentPresentationMode('redirect'), 'redirect')

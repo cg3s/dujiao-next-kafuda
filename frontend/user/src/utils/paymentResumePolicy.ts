@@ -93,8 +93,11 @@ export const getCachedPaymentRestorePolicy = (): CachedPaymentRestorePolicy => (
   autoOpenPayLink: false,
 })
 
-export const shouldAutoOpenPaymentLink = (payment?: { interaction_mode?: unknown; pay_url?: unknown; fee_policy?: unknown } | null) => {
-  if (!payment || isCustomerSurchargePayment(payment)) return false
+export const shouldAutoOpenPaymentLink = (
+  payment?: { interaction_mode?: unknown; pay_url?: unknown; fee_policy?: unknown } | null,
+  returningFromGateway = false,
+) => {
+  if (returningFromGateway || !payment || isCustomerSurchargePayment(payment)) return false
   const payURL = String(payment.pay_url || '').trim()
   return isRedirectPaymentInteractionMode(payment.interaction_mode) && payURL !== ''
 }
