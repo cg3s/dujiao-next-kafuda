@@ -8,10 +8,12 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"sort"
@@ -24,16 +26,29 @@ import (
 	"github.com/dujiao-next/internal/authz"
 	databasemigrations "github.com/dujiao-next/internal/bootstrap/database/migrations"
 	"github.com/dujiao-next/internal/config"
+	"github.com/dujiao-next/internal/constants"
+	"github.com/dujiao-next/internal/i18n"
 	"github.com/dujiao-next/internal/logger"
+	categorydomain "github.com/dujiao-next/internal/modules/catalog/category/domain"
+	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
+	productpresenter "github.com/dujiao-next/internal/modules/catalog/product/transport/presenter"
 	admindomain "github.com/dujiao-next/internal/modules/identity/admin/domain"
+	userdomain "github.com/dujiao-next/internal/modules/identity/user/domain"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
+	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
+	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
+	walletdomain "github.com/dujiao-next/internal/modules/wallet/domain"
 	"github.com/dujiao-next/internal/platform/database/gormdb"
 	"github.com/dujiao-next/internal/platform/http/response"
+	"github.com/dujiao-next/internal/shared/jsonmap"
+	"github.com/dujiao-next/internal/shared/money"
 
 	"github.com/casbin/casbin/v3/util"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -227,8 +242,8 @@ func (g *kafudaCatalogAccessGateway) Catalog(context.Context) (json.RawMessage, 
 	return json.RawMessage(`{"enabled":true,"plans":[],"auto_card_products":[]}`), nil
 }
 
-func TestKafudaAdminRoutesEnforceScopedPermissions(t *testing.T) {
-	const jwtSecret = "kafuda-catalog-test-admin-jwt-secret"
+func openKafudaHTTPTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	previousLogger := logger.L
 	logger.L = zap.NewNop()
@@ -250,6 +265,12 @@ func TestKafudaAdminRoutesEnforceScopedPermissions(t *testing.T) {
 	if err := databasemigrations.AutoMigrate(); err != nil {
 		t.Fatal(err)
 	}
+	return db
+}
+
+func TestKafudaAdminRoutesEnforceScopedPermissions(t *testing.T) {
+	const jwtSecret = "kafuda-catalog-test-admin-jwt-secret"
+	openKafudaHTTPTestDB(t)
 
 	cfg := &config.Config{
 		App: config.AppConfig{SecretKey: jwtSecret}, JWT: config.JWTConfig{SecretKey: jwtSecret}, Server: config.ServerConfig{Mode: gin.TestMode},
@@ -359,6 +380,171 @@ func TestKafudaAdminRoutesEnforceScopedPermissions(t *testing.T) {
 				t.Fatalf("expected business status %d, got %s (%v)", actor.want, recorder.Body.String(), err)
 			}
 		})
+	}
+}
+
+func TestKafudaProductionStartupBlocksDirectCheckoutUntilFulfillmentWired(t *testing.T) {
+	db := openKafudaHTTPTestDB(t)
+	// Order creation requires an enabled queue. A blocked checkout never connects to it.
+	endpoint, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := endpoint.Addr().(*net.TCPAddr).Port
+	if err := endpoint.Close(); err != nil {
+		t.Fatal(err)
+	}
+	const jwtSecret, cardCode = "kafuda-startup-test-jwt-secret-only", "catalog-test-card"
+	cfg := &config.Config{
+		App: config.AppConfig{SecretKey: jwtSecret}, JWT: config.JWTConfig{SecretKey: jwtSecret}, UserJWT: config.JWTConfig{SecretKey: jwtSecret},
+		Server: config.ServerConfig{Mode: gin.TestMode}, Web: config.WebConfig{AdminPath: "/admin"},
+		Queue: config.QueueConfig{Enabled: true, Host: "127.0.0.1", Port: port},
+		KafudaGPT: config.KafudaGPTConfig{
+			APIBaseURL: "https://supplier.example.test", APIKey: "test-catalog-api-key", ProductCode: cardCode,
+			SalesEnabled: true, ReferenceLookupVerified: true, MaxCostCents: 2500, AllowedKinds: []string{"new"}, CatalogTTLSeconds: 3600,
+		},
+	}
+	deps, err := container.NewContainer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deps.QueueClient == nil || !deps.QueueClient.Enabled() {
+		t.Fatal("startup did not enable the queue client")
+	}
+	t.Cleanup(func() { _ = deps.QueueClient.Close() })
+	const plan, country = "plus", "PH"
+	now := time.Now().UTC()
+	if err := deps.KafudaGPT.Store.SaveCatalog(t.Context(), &kafudadomain.Catalog{
+		Profile: "default", Enabled: true, SyncedAt: now, ExpiresAt: now.Add(time.Hour),
+		Options: []kafudadomain.CatalogOption{{Plan: plan, Country: country, Product: "gpt", Available: true}},
+		Cards:   []kafudadomain.CardProduct{{ProductCode: cardCode}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operator := &admindomain.Admin{Username: "catalog-startup-operator", PasswordHash: "fixture"}
+	if err := deps.AdminStore.Create(operator); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.AuthzService.SetAdminRoles(operator.ID, []string{"operations"}); err != nil {
+		t.Fatal(err)
+	}
+	operatorToken := signAdminRouteToken(t, jwtSecret, operator)
+	buyer := &userdomain.User{Email: "catalog-startup-buyer@example.test", PasswordHash: "fixture", Status: constants.UserStatusActive}
+	if err := deps.UserStore.Create(buyer); err != nil {
+		t.Fatal(err)
+	}
+	buyerToken, _, err := deps.UserAuthService.GenerateUserJWT(buyer, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	category := &categorydomain.Category{Slug: "startup-catalog", NameJSON: jsonmap.JSON{"en-US": "Startup catalog"}, IsActive: true}
+	if err := deps.CategoryRepo.Create(category); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&walletdomain.Account{UserID: buyer.ID, Balance: money.FromDecimal(decimal.NewFromInt(200))}).Error; err != nil {
+		t.Fatal(err)
+	}
+	loadWallet := func() walletdomain.Account {
+		t.Helper()
+		var wallet walletdomain.Account
+		if err := db.Where("user_id = ?", buyer.ID).First(&wallet).Error; err != nil {
+			t.Fatal(err)
+		}
+		return wallet
+	}
+	beforeWallet := loadWallet()
+	router := SetupRouter(cfg, deps)
+	request := func(method, path, token, body string, wantCode int, data any) string {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(t.Context())
+		req.Header.Set("Accept-Language", "en-US")
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		var res struct {
+			StatusCode int             `json:"status_code"`
+			Message    string          `json:"msg"`
+			Data       json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &res); err != nil || recorder.Code != http.StatusOK || res.StatusCode != wantCode {
+			t.Fatalf("%s %s: HTTP %d, API %d, want API %d: %s (%v)", method, path, recorder.Code, res.StatusCode, wantCode, recorder.Body.String(), err)
+		}
+		if data != nil {
+			if err := json.Unmarshal(res.Data, data); err != nil {
+				t.Fatalf("decode %s data: %v", path, err)
+			}
+		}
+		return res.Message
+	}
+	var catalog struct {
+		Configured bool                       `json:"configured"`
+		Enabled    bool                       `json:"enabled"`
+		Stale      bool                       `json:"stale"`
+		Reason     string                     `json:"sales_block_reason"`
+		Options    []kafudacontract.SKUOption `json:"options"`
+	}
+	request(http.MethodGet, "/api/v1/admin/kafuda-gpt/catalog", operatorToken, "", response.CodeOK, &catalog)
+	if !catalog.Configured || !catalog.Enabled || catalog.Stale || catalog.Reason != "fulfillment_not_wired" ||
+		len(catalog.Options) != 1 || !catalog.Options[0].Available {
+		t.Fatalf("production startup did not isolate its fulfillment gate: %+v", catalog)
+	}
+	const adminProducts = "/api/v1/admin/products"
+	var direct productdomain.Product
+	request(http.MethodPost, adminProducts, operatorToken, fmt.Sprintf(`{
+		"category_id":%d,"slug":"startup-direct","title":{"en-US":"Direct"},"fulfillment_type":"kafuda_gpt_direct",
+		"purchase_type":"member","stock_display_mode":"hidden","is_active":true,
+		"skus":[{"sku_code":%q,"direct_catalog_revision":%d,"price_amount":100,"cost_price_amount":45,"is_active":true}]
+	}`, category.ID, catalog.Options[0].SKUCode, catalog.Options[0].CatalogRevision), response.CodeOK, &direct)
+	var savedSKU productdomain.ProductSKU
+	if err := db.Where("product_id = ?", direct.ID).First(&savedSKU).Error; err != nil || !direct.IsActive || !savedSKU.IsActive ||
+		!savedSKU.DirectCostConfigured || savedSKU.DirectCatalogRevision != catalog.Options[0].CatalogRevision || savedSKU.PriceAmount.String() != "100.00" {
+		t.Fatalf("expected an enabled, fully configured direct SKU: %+v (%v)", savedSKU, err)
+	}
+	var public productpresenter.Product
+	request(http.MethodGet, "/api/v1/public/products/"+direct.Slug, "", "", response.CodeOK, &public)
+	if public.ID != direct.ID || public.FulfillmentType != constants.FulfillmentTypeKafudaGPT || !public.IsSoldOut ||
+		len(public.SKUs) != 1 || public.SKUs[0].ID != savedSKU.ID || !public.SKUs[0].IsSoldOut || !public.SKUs[0].IsActive {
+		t.Fatalf("storefront did not keep the configured SKU visible and sold out: %+v", public)
+	}
+	const previewPath = "/api/v1/orders/preview"
+	items := fmt.Sprintf(`{"items":[{"product_id":%d,"sku_id":%d,"quantity":1}]}`, direct.ID, savedSKU.ID)
+	purchase := strings.TrimSuffix(items, "}") + `,"use_balance":true}`
+	for _, check := range []struct{ path, body string }{{previewPath, items}, {"/api/v1/orders/create-and-pay", purchase}} {
+		if msg := request(http.MethodPost, check.path, buyerToken, check.body, response.CodeBadRequest, nil); msg != i18n.T("en-US", "error.product_not_available") {
+			t.Fatalf("%s was rejected for a different reason: %q", check.path, msg)
+		}
+	}
+
+	var ordinary productdomain.Product
+	request(http.MethodPost, adminProducts, operatorToken, fmt.Sprintf(`{
+		"category_id":%d,"slug":"startup-ordinary","title":{"en-US":"Ordinary"},"fulfillment_type":"manual",
+		"purchase_type":"member","stock_display_mode":"exact","price_amount":20,"manual_stock_total":2,"is_active":true
+	}`, category.ID), response.CodeOK, &ordinary)
+	var ordinarySKU productdomain.ProductSKU
+	if err := db.Where("product_id = ?", ordinary.ID).First(&ordinarySKU).Error; err != nil {
+		t.Fatal(err)
+	}
+	items = fmt.Sprintf(`{"items":[{"product_id":%d,"sku_id":%d,"quantity":1}]}`, ordinary.ID, ordinarySKU.ID)
+	var ordinaryPreview struct {
+		Total money.Amount `json:"total_amount"`
+	}
+	request(http.MethodPost, previewPath, buyerToken, items, response.CodeOK, &ordinaryPreview)
+	if ordinaryPreview.Total.String() != "20.00" {
+		t.Fatalf("ordinary checkout preview amount = %s, want 20.00", ordinaryPreview.Total)
+	}
+	for _, model := range []any{&orderdomain.Order{}, &orderdomain.OrderItem{}, &paymentdomain.Payment{}, &kafudadomain.Recharge{}, &kafudadomain.Attempt{}, &walletdomain.Transaction{}} {
+		var count int64
+		if err := db.Model(model).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("startup purchase rejection left %d %T rows: %v", count, model, err)
+		}
+	}
+	if current := loadWallet(); !reflect.DeepEqual(current, beforeWallet) {
+		t.Fatal("startup purchase rejection changed the buyer wallet")
 	}
 }
 
