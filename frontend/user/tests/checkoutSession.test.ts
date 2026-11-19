@@ -54,7 +54,9 @@ test('checkout keeps order settlement within the correct browser session', { tim
   const { useBuyNowStore } = await vite.ssrLoadModule('/src/stores/buyNow.ts')
   const { default: i18n } = await vite.ssrLoadModule('/src/i18n/index.ts')
 
-  const mountCheckout = async (scenario: TestContext, guest = false) => {
+  const mountCheckout = async (scenario: TestContext, {
+    guest = false, direct = !guest, online = guest,
+  }: { guest?: boolean; direct?: boolean; online?: boolean } = {}) => {
     Object.assign(globalThis, { localStorage: memoryStorage(), sessionStorage: memoryStorage() })
     let reloads = 0
     Object.assign(browserWindow, { localStorage, sessionStorage, location: { reload: () => { reloads++ } } })
@@ -62,12 +64,18 @@ test('checkout keeps order settlement within the correct browser session', { tim
     const submitted = Promise.withResolvers<string | undefined>()
     const result = Promise.withResolvers<Response>()
     const response = (data: unknown) => Response.json({ status_code: 0, data })
+    const requests: string[] = []
     const orderRequests: string[] = []
     const orderPath = guest ? '/api/v1/guest/orders' : '/api/v1/orders'
+    const channel = { id: 12, provider_type: 'epay', channel_type: 'alipay' }
+    let unavailablePath = ''
     scenario.mock.method(globalThis, 'fetch', async (input: string, opts: RequestInit) => {
       const path = new URL(input, 'http://shop.test').pathname
+      requests.push(path)
+      if (path === unavailablePath) return Response.json({ status_code: 500, msg: 'Test service unavailable' }, { status: 503 })
       if (path === `${orderPath}/preview`) return response({ total_amount: '100.00', currency: 'CNY' })
       if (path === '/api/v1/wallet') return response({ balance: '300.00' })
+      if (path === '/api/v1/order/payment-channels') return response([channel])
       if (path === `${orderPath}/create-and-pay`) {
         orderRequests.push(path)
         submitted.resolve(new Headers(opts.headers).get('Authorization') ?? undefined)
@@ -82,11 +90,10 @@ test('checkout keeps order settlement within the correct browser session', { tim
     await router.push('/checkout?mode=buynow')
     let checkout!: ReturnType<typeof CheckoutFactory>
     let buyNow!: ReturnType<typeof BuyNowStoreFactory>
-    const channel = { id: 12, provider_type: 'epay', channel_type: 'alipay' }
     const app = renderer.createApp({ setup() {
-      useAppStore().config = { wallet_only_payment: !guest, site_currency: 'CNY', payment_channels: [channel] }
+      useAppStore().config = { wallet_only_payment: !online, site_currency: 'CNY', payment_channels: [channel] }
       buyNow = useBuyNowStore()
-      buyNow.setItem({ productId: 1, skuId: 7, slug: 'demo', title: { 'zh-CN': 'Test product' }, priceAmount: '100.00', quantity: 1, fulfillmentType: guest ? 'manual' : 'kafuda_gpt_direct' })
+      buyNow.setItem({ productId: 1, skuId: 7, slug: 'demo', title: { 'zh-CN': 'Test product' }, priceAmount: '100.00', quantity: 1, fulfillmentType: direct ? 'kafuda_gpt_direct' : 'manual' })
       checkout = useCheckout()
       return () => h('div')
     } })
@@ -95,12 +102,17 @@ test('checkout keeps order settlement within the correct browser session', { tim
     if (guest) {
       checkout.guestEmail.value = 'buyer@example.test'
       checkout.guestPassword.value = 'test-order-password'
+    }
+    if (online) {
+      for (let attempt = 0; checkout.paymentChannels.value.length === 0 && attempt < 500; attempt++) await delay(10)
+      assert.equal(checkout.paymentChannels.value.length, 1)
       checkout.handleSelectChannel(channel)
     }
     for (let attempt = 0; !checkout.canSubmit.value && attempt < 500; attempt++) await delay(10)
     assert.equal(checkout.canSubmit.value, true)
     return {
-      checkout, buyNow, router, submitted: submitted.promise, orderRequests,
+      checkout, buyNow, router, submitted: submitted.promise, requests, orderRequests,
+      failRequestsTo: (path: string) => { unavailablePath = path },
       acceptOrder: () => result.resolve(response({ order_no: 'ORDER-1' })),
       replaceBuyer: () => {
         localStorage.setItem('user_token', 'next-buyer-test-token')
@@ -110,21 +122,53 @@ test('checkout keeps order settlement within the correct browser session', { tim
     }
   }
 
-  await t.test('late Direct settlement cannot clear selection or navigate after a sibling tab switches buyers', async (scenario) => {
-    const page = await mountCheckout(scenario)
-    const submit = page.checkout.handleSubmit()
-    assert.equal(await page.submitted, 'Bearer initial-buyer-test-token')
-    page.replaceBuyer()
-    assert.equal(page.reloads(), 1)
-    assert.equal(page.checkout.walletBalance.value, '0')
-    assert.equal(page.checkout.canSubmit.value, false)
-    await page.checkout.handleSubmit()
-    page.acceptOrder()
-    await submit
-    assert.equal(page.orderRequests.length, 1)
-    assert.equal(page.buyNow.item?.skuId, 7)
-    assert.equal(page.router.currentRoute.value.path, '/checkout')
-  })
+  for (const direct of [true, false]) {
+    await t.test(`late ${direct ? 'Direct' : 'ordinary'} settlement cannot clear selection or navigate after a sibling tab switches buyers`, async (scenario) => {
+      const page = await mountCheckout(scenario, { direct })
+      const submit = page.checkout.handleSubmit()
+      assert.equal(await page.submitted, 'Bearer initial-buyer-test-token')
+      page.replaceBuyer()
+      assert.equal(page.reloads(), 1)
+      assert.equal(page.checkout.walletBalance.value, '0')
+      assert.equal(page.checkout.canSubmit.value, false)
+      await page.checkout.handleSubmit()
+      page.acceptOrder()
+      await submit
+      assert.equal(page.orderRequests.length, 1)
+      assert.equal(page.buyNow.item?.skuId, 7)
+      assert.equal(page.router.currentRoute.value.path, '/checkout')
+    })
+  }
+
+  for (const [payment, unavailablePath] of [
+    ['wallet', '/api/v1/wallet'],
+    ['online', '/api/v1/order/payment-channels'],
+  ] as const) {
+    await t.test(`ordinary ${payment} checkout submits after preview without a second blocking payment check`, async (scenario) => {
+      const page = await mountCheckout(scenario, { direct: false, online: payment === 'online' })
+      page.failRequestsTo(unavailablePath)
+      const first = page.requests.length
+      const submit = page.checkout.handleSubmit()
+      const authorization = await Promise.race([page.submitted, submit.then(() => undefined)])
+      assert.equal(authorization, 'Bearer initial-buyer-test-token')
+      assert.deepEqual(page.requests.slice(first), ['/api/v1/orders/preview', '/api/v1/orders/create-and-pay'])
+      page.acceptOrder()
+      await submit
+      for (let attempt = 0; page.router.currentRoute.value.path !== '/pay' && attempt < 30; attempt++) await delay(10)
+      assert.equal(page.router.currentRoute.value.fullPath, '/pay?order_no=ORDER-1')
+    })
+
+    await t.test(`Direct ${payment} checkout requires a successful payment recheck`, async (scenario) => {
+      const page = await mountCheckout(scenario, { online: payment === 'online' })
+      page.failRequestsTo(unavailablePath)
+      const first = page.requests.length
+      await page.checkout.handleSubmit()
+      assert.deepEqual(page.requests.slice(first), ['/api/v1/orders/preview', unavailablePath])
+      assert.equal(page.orderRequests.length, 0)
+      assert.equal(page.buyNow.item?.skuId, 7)
+      assert.equal(page.router.currentRoute.value.path, '/checkout')
+    })
+  }
 
   await t.test('a successful order still opens payment after the same buyer edits the coupon', async (scenario) => {
     const page = await mountCheckout(scenario)
@@ -140,7 +184,7 @@ test('checkout keeps order settlement within the correct browser session', { tim
   })
 
   await t.test('ordinary guest checkout retains the order lookup in the current tab and opens payment', async (scenario) => {
-    const page = await mountCheckout(scenario, true)
+    const page = await mountCheckout(scenario, { guest: true })
     const submit = page.checkout.handleSubmit()
     assert.equal(await page.submitted, undefined)
     page.acceptOrder()
