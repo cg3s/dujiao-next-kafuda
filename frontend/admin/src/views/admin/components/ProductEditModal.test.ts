@@ -6,6 +6,7 @@ const api = vi.hoisted(() => ({
   getProduct: vi.fn(),
   getPaymentChannels: vi.fn(),
   getKafudaCatalog: vi.fn(),
+  syncKafudaCatalog: vi.fn(),
   updateProduct: vi.fn(),
 }))
 const notifyError = vi.hoisted(() => vi.fn())
@@ -67,6 +68,12 @@ const productResponse = (id: number, country: string) => ({
   },
 })
 
+const catalogOptions = [
+  { sku_code: 'KGPT_PH', plan: 'plus', country: 'PH', available: true, catalog_revision: 0 },
+  { sku_code: 'KGPT_US', plan: 'plus', country: 'US', available: true, catalog_revision: 0 },
+]
+const catalogResponse = (options = catalogOptions) => ({ data: { data: { options } } })
+
 let app: App | undefined
 let host: HTMLDivElement
 
@@ -75,10 +82,8 @@ beforeEach(() => {
   host = document.createElement('div')
   document.body.append(host)
   api.getPaymentChannels.mockResolvedValue({ data: { data: [] } })
-  api.getKafudaCatalog.mockResolvedValue({ data: { data: { options: [
-    { sku_code: 'KGPT_PH', plan: 'plus', country: 'PH', available: true },
-    { sku_code: 'KGPT_US', plan: 'plus', country: 'US', available: true },
-  ] } } })
+  api.getKafudaCatalog.mockResolvedValue(catalogResponse())
+  api.syncKafudaCatalog.mockResolvedValue(catalogResponse())
   api.updateProduct.mockResolvedValue({})
 })
 
@@ -112,8 +117,16 @@ const flushRequests = async () => {
   await nextTick()
 }
 
+const submitUpdate = () => {
+  const form = host.querySelector('form')
+  expect(form).not.toBeNull()
+  form!.dispatchEvent(new Event('submit', { cancelable: true }))
+  expect(api.updateProduct).toHaveBeenCalledOnce()
+  return JSON.parse(JSON.stringify(api.updateProduct.mock.calls[0]?.[1]))
+}
+
 describe('ProductEditModal product loading', () => {
-  it('ignores a late response after switching products and submits the current Direct SKUs', async () => {
+  it('ignores a late response and omits unchanged Direct product and SKU activation', async () => {
     const first = deferredProduct()
     const second = deferredProduct()
     api.getProduct.mockImplementation((id) => id === 1 ? first.promise : second.promise)
@@ -134,10 +147,11 @@ describe('ProductEditModal product loading', () => {
 
     expect(api.getKafudaCatalog).toHaveBeenCalledTimes(1)
     expect(host.querySelector<HTMLInputElement>('input[placeholder="admin.products.form.slugPlaceholder"]')?.value).toBe('product-2')
-    host.querySelector('form')?.dispatchEvent(new Event('submit', { cancelable: true }))
-    expect(api.updateProduct).toHaveBeenCalledWith(2, expect.objectContaining({
-      skus: expect.arrayContaining([expect.objectContaining({ id: 2, sku_code: 'KGPT_US', is_active: true })]),
-    }))
+    const payload = submitUpdate()
+    expect(api.updateProduct.mock.calls[0]?.[0]).toBe(2)
+    expect(payload).toMatchObject({ slug: 'product-2', fulfillment_type: 'kafuda_gpt_direct' })
+    expect(payload).not.toHaveProperty('skus')
+    expect(payload).not.toHaveProperty('is_active')
   })
 
   it('ignores a stale failure after closing and reopening the same product', async () => {
@@ -161,5 +175,79 @@ describe('ProductEditModal product loading', () => {
     second.resolve(productResponse(1, 'PH'))
     await flushRequests()
     expect(host.querySelector('form')).not.toBeNull()
+  })
+})
+
+describe('ProductEditModal Direct SKU edits', () => {
+  it('submits only edited fields from each region after refreshing the catalog', async () => {
+    const product = productResponse(1, 'PH')
+    product.data.data.skus.push(productResponse(2, 'US').data.data.skus[0]!)
+    api.getProduct.mockResolvedValue(product)
+    const context = mountModal()
+    context.productId = 1
+    context.open = true
+    await flushRequests()
+
+    const changeInput = async (placeholder: string, value: string) => {
+      const input = host.querySelector<HTMLInputElement>(`input[placeholder="admin.products.form.${placeholder}"]`)
+      expect(input).not.toBeNull()
+      input!.value = value
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+    }
+    const selectRegion = async (index: number) => {
+      const tab = host.querySelectorAll('[role="tab"]')[index]
+      expect(tab).toBeDefined()
+      tab!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+      await nextTick()
+      expect(tab!.getAttribute('aria-selected')).toBe('true')
+    }
+    await selectRegion(0)
+    await changeInput('skuPricePlaceholder', '15')
+    await selectRegion(1)
+    await changeInput('skuCostPricePlaceholder', '5')
+    const refresh = [...host.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'kafuda.sync')
+    expect(refresh).toBeDefined()
+    refresh!.click()
+    await flushRequests()
+    expect(api.syncKafudaCatalog).toHaveBeenCalledOnce()
+
+    const payload = submitUpdate()
+    expect(payload.skus).toHaveLength(2)
+    const [philippines, unitedStates] = payload.skus
+    expect(philippines).toMatchObject({ id: 1, sku_code: 'KGPT_PH', price_amount: 15, direct_catalog_revision: 0 })
+    expect(philippines).not.toHaveProperty('cost_price_amount')
+    expect(unitedStates).toMatchObject({ id: 2, sku_code: 'KGPT_US', cost_price_amount: 5, direct_catalog_revision: 0 })
+    expect(unitedStates).not.toHaveProperty('price_amount')
+    for (const sku of payload.skus) {
+      expect(sku).not.toHaveProperty('is_active')
+      expect(sku).not.toHaveProperty('sort_order')
+    }
+    expect(payload).not.toHaveProperty('is_active')
+  })
+
+  it('submits intentional activation using the revision shown for review', async () => {
+    api.getProduct.mockResolvedValue(productResponse(1, 'PH'))
+    api.getKafudaCatalog.mockResolvedValue(catalogResponse([{ ...catalogOptions[0]!, catalog_revision: 2 }]))
+    const context = mountModal()
+    context.productId = 1
+    context.open = true
+    await flushRequests()
+    expect(host.textContent).toContain('kafuda.review')
+
+    const price = host.querySelector<HTMLInputElement>('input[placeholder="admin.products.form.skuPricePlaceholder"]')
+    const activate = price?.closest('.rounded-lg')?.querySelector<HTMLButtonElement>('button[role="switch"]')
+    expect(activate?.getAttribute('aria-checked')).toBe('false')
+    activate!.click()
+    host.querySelector<HTMLButtonElement>('#is_active')?.click()
+    await nextTick()
+
+    const payload = submitUpdate()
+    expect(payload.is_active).toBe(false)
+    expect(payload.skus).toHaveLength(1)
+    expect(payload.skus[0]).toMatchObject({ id: 1, sku_code: 'KGPT_PH', is_active: true, direct_catalog_revision: 2 })
+    for (const field of ['price_amount', 'cost_price_amount', 'sort_order']) {
+      expect(payload.skus[0]).not.toHaveProperty(field)
+    }
   })
 })

@@ -132,13 +132,14 @@ type CreateProductInput struct {
 	SortOrder           int
 }
 
-// ProductSKUInput 描述商品 SKU 的完整写入值。
+// ProductSKUInput 描述商品 SKU 的写入值。
 type ProductSKUInput struct {
 	DirectCatalogRevision *uint64
 	ID                    uint
 	SKUCode               string
 	SpecValuesJSON        map[string]interface{}
 	PriceAmount           decimal.Decimal
+	KeepPriceAmount       bool // 直充编辑省略售价时保留锁内读取的值。
 	CostPriceAmount       decimal.Decimal
 	CostPriceProvided     bool
 	// ManualStockTotal 为 nil 表示保持该 SKU 现有的实时库存（新建 SKU 视为 0），
@@ -146,6 +147,7 @@ type ProductSKUInput struct {
 	ManualStockTotal *int
 	IsActive         *bool
 	SortOrder        int
+	KeepSortOrder    bool // 直充编辑省略排序时保留锁内读取的值。
 }
 
 func (s *WriteService) filterAvailablePaymentChannelIDs(ids []uint) ([]uint, error) {

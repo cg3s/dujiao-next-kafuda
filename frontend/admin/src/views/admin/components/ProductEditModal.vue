@@ -113,6 +113,9 @@ type SKUFormItem = {
   sort_order: number
 }
 
+const originalDirectSKUs = new Map<string, Pick<SKUFormItem, 'price_amount' | 'cost_price_amount' | 'is_active' | 'sort_order' | 'direct_catalog_revision'>>()
+let originalDirectProductActive: boolean | undefined
+
 type ManualFormField = {
   key: string
   type: string
@@ -461,7 +464,7 @@ const removeSKU = (index: number) => {
 
 const normalizeSKUsForSubmit = () => {
   if (!form.skus.length) {
-    return [] as Array<Record<string, unknown>>
+    return []
   }
 
   const seenCode = new Set<string>()
@@ -514,6 +517,26 @@ const normalizeSKUsForSubmit = () => {
   return normalized
 }
 
+type NormalizedSKU = ReturnType<typeof normalizeSKUsForSubmit>[number]
+
+const directSKUChanges = (skus: NormalizedSKU[]) => skus.flatMap<Partial<NormalizedSKU>>((sku) => {
+  const original = originalDirectSKUs.get(sku.sku_code)
+  if (!original) return [sku]
+  const activeChanged = sku.is_active !== original.is_active
+  const costChanged = sku.cost_price_amount !== (original.cost_price_amount === '' ? undefined : original.cost_price_amount)
+  const priceChanged = sku.price_amount !== original.price_amount
+  const sortChanged = sku.sort_order !== original.sort_order
+  if (!activeChanged && !costChanged && !priceChanged && !sortChanged) return []
+  if (!sku.id) return [sku]
+  return [{
+    ...sku,
+    is_active: activeChanged ? sku.is_active : undefined,
+    cost_price_amount: costChanged ? sku.cost_price_amount : undefined,
+    price_amount: priceChanged ? sku.price_amount : undefined,
+    sort_order: sortChanged ? sku.sort_order : undefined,
+  }]
+})
+
 const isTextLikeField = (fieldType: string) => {
   return fieldType === 'text' || fieldType === 'textarea' || fieldType === 'phone' || fieldType === 'email'
 }
@@ -532,6 +555,8 @@ const resetDirectCatalog = () => {
 const resetForm = () => {
   initialCategoryID.value = null
   originalManualStockTotal.value = null
+  originalDirectProductActive = undefined
+  originalDirectSKUs.clear()
   Object.assign(form, {
     id: 0,
     title: { 'zh-CN': '', 'zh-TW': '', 'en-US': '' },
@@ -607,6 +632,10 @@ const populateForm = (product: AdminProduct) => {
     sort_order: Number(product.sort_order || 0),
     manual_form_schema: parseManualFormSchemaForEdit(product.manual_form_schema),
   })
+  if (product.fulfillment_type === 'kafuda_gpt_direct') {
+    originalDirectProductActive = form.is_active
+    for (const sku of form.skus) originalDirectSKUs.set(sku.sku_code, { ...sku })
+  }
 }
 
 const isDirect = computed(() => form.fulfillment_type === 'kafuda_gpt_direct')
@@ -659,15 +688,29 @@ const loadDirectCatalog = async (sync: boolean) => {
       const revision = Number(option.catalog_revision || 0)
       reviewRequired[option.sku_code] = Boolean(existing && existing.direct_catalog_revision !== revision)
       old.delete(option.sku_code)
+      const defaults = createSKUFormItem({ sku_code: option.sku_code, is_active: false }, true)
+      if (originalDirectProductActive !== undefined) {
+        // Advance the catalog view of the baseline without absorbing form edits.
+        const original = originalDirectSKUs.get(option.sku_code) ?? defaults
+        originalDirectSKUs.set(option.sku_code, {
+          ...original,
+          is_active: original.is_active && option.available && original.direct_catalog_revision === revision,
+          direct_catalog_revision: revision,
+        })
+      }
       return {
-        ...createSKUFormItem({ sku_code: option.sku_code, is_active: false }, true),
+        ...defaults,
         ...existing,
         spec_values: { ...createEmptyLocaleText(), plan: option.plan, country: option.country },
         is_active: Boolean(existing?.is_active && option.available && existing.direct_catalog_revision === revision),
         direct_catalog_revision: revision,
       }
     })
-    for (const item of old.values()) merged.push({ ...item, is_active: false })
+    for (const item of old.values()) {
+      const original = originalDirectSKUs.get(item.sku_code)
+      if (original) original.is_active = false
+      merged.push({ ...item, is_active: false })
+    }
     form.skus = merged
     directAvailability.value = available
     directReviewRequired.value = reviewRequired
@@ -710,6 +753,8 @@ const handleSubmit = async () => {
     }
 
     const normalizedSKUs = normalizeSKUsForSubmit()
+    const editingDirect = isDirect.value && originalDirectProductActive !== undefined
+    const submittedSKUs = editingDirect ? directSKUChanges(normalizedSKUs) : normalizedSKUs
     const activeSKU = normalizedSKUs.find((item) => item.is_active)
     let effectivePrice = Number(form.price_amount)
     let effectiveCostPrice = Number(form.cost_price_amount)
@@ -760,10 +805,10 @@ const handleSubmit = async () => {
       stock_display_mode: form.stock_display_mode,
       fulfillment_type: form.fulfillment_type,
       manual_stock_total: productStockUnchanged ? undefined : effectiveManualStockTotal,
-      skus: normalizedSKUs,
+      skus: editingDirect && submittedSKUs.length === 0 ? undefined : submittedSKUs,
       payment_channel_ids: form.payment_channel_ids.length > 0 ? form.payment_channel_ids : [],
       is_affiliate_enabled: form.is_affiliate_enabled,
-      is_active: form.is_active,
+      is_active: editingDirect && form.is_active === originalDirectProductActive ? undefined : form.is_active,
       sort_order: Number(form.sort_order) || 0,
       manual_form_schema: normalizeManualFormSchemaForSubmit(),
     }

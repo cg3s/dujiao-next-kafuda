@@ -92,7 +92,12 @@ func prepareDirectSKUs(inputs []ProductSKUInput, existing map[uint]productdomain
 			if item.ID != 0 && input.ID != 0 && item.ID != input.ID {
 				return nil, productcontract.ErrProductSKUInvalid
 			}
-			item.PriceAmount, item.SortOrder = input.PriceAmount, input.SortOrder
+			if !input.KeepPriceAmount {
+				item.PriceAmount = input.PriceAmount
+			}
+			if !input.KeepSortOrder {
+				item.SortOrder = input.SortOrder
+			}
 			if input.CostPriceProvided {
 				item.CostPriceAmount, item.CostPriceProvided = input.CostPriceAmount, true
 			}

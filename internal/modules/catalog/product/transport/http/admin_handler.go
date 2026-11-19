@@ -197,11 +197,11 @@ type ProductSKURequest struct {
 	ID                    uint                   `json:"id"`
 	SKUCode               string                 `json:"sku_code" binding:"required"`
 	SpecValuesJSON        map[string]interface{} `json:"spec_values"`
-	PriceAmount           float64                `json:"price_amount"`
+	PriceAmount           *float64               `json:"price_amount"`
 	CostPriceAmount       *float64               `json:"cost_price_amount"`
 	ManualStockTotal      *int                   `json:"manual_stock_total"`
 	IsActive              *bool                  `json:"is_active"`
-	SortOrder             int                    `json:"sort_order"`
+	SortOrder             *int                   `json:"sort_order"`
 }
 
 type WholesalePriceRequest struct {
@@ -263,21 +263,31 @@ func toProductSKUInputs(items []ProductSKURequest) []productwrite.ProductSKUInpu
 	}
 	result := make([]productwrite.ProductSKUInput, 0, len(items))
 	for _, item := range items {
+		price := decimal.Zero
+		if item.PriceAmount != nil {
+			price = decimal.NewFromFloat(*item.PriceAmount)
+		}
 		cost := decimal.Zero
 		if item.CostPriceAmount != nil {
 			cost = decimal.NewFromFloat(*item.CostPriceAmount)
+		}
+		sortOrder := 0
+		if item.SortOrder != nil {
+			sortOrder = *item.SortOrder
 		}
 		result = append(result, productwrite.ProductSKUInput{
 			ID:                    item.ID,
 			SKUCode:               item.SKUCode,
 			SpecValuesJSON:        item.SpecValuesJSON,
-			PriceAmount:           decimal.NewFromFloat(item.PriceAmount),
+			PriceAmount:           price,
+			KeepPriceAmount:       item.PriceAmount == nil,
 			CostPriceAmount:       cost,
 			CostPriceProvided:     item.CostPriceAmount != nil,
 			DirectCatalogRevision: item.DirectCatalogRevision,
 			ManualStockTotal:      item.ManualStockTotal,
 			IsActive:              item.IsActive,
-			SortOrder:             item.SortOrder,
+			SortOrder:             sortOrder,
+			KeepSortOrder:         item.SortOrder == nil,
 		})
 	}
 	return result

@@ -2,10 +2,14 @@ package integrationtest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +19,7 @@ import (
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productgormstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
+	producthttp "github.com/dujiao-next/internal/modules/catalog/product/transport/http"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
@@ -24,10 +29,13 @@ import (
 	ordergormstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
 
 	categorydomain "github.com/dujiao-next/internal/modules/catalog/category/domain"
+	categorygormstore "github.com/dujiao-next/internal/modules/catalog/category/infrastructure/gormstore"
 
 	"github.com/dujiao-next/internal/constants"
+	"github.com/dujiao-next/internal/platform/http/response"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
+	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 )
 
@@ -45,11 +53,13 @@ func TestDirectProductEditPreservesConcurrentSKUConfiguration(t *testing.T) {
 	for _, scenario := range []struct {
 		name         string
 		explicitSale bool
+		costOnly     bool
 		wantSale     int64
 		wantSort     int
 	}{
 		{name: "omitted_sku_list", wantSale: 130, wantSort: 34},
 		{name: "explicit_sale_omitted_cost", explicitSale: true, wantSale: 120, wantSort: 26},
+		{name: "http_cost_only_preserves_latest_sale_and_sort", costOnly: true, wantSale: 130, wantSort: 34},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			svc, db := newProductServiceForTest(t)
@@ -77,6 +87,13 @@ func TestDirectProductEditPreservesConcurrentSKUConfiguration(t *testing.T) {
 					{SKUCode: fallbackCode, PriceAmount: decimal.NewFromInt(180), CostPriceAmount: decimal.NewFromInt(90), CostPriceProvided: true,
 						IsActive: &active, DirectCatalogRevision: &revision, SortOrder: 24},
 				},
+			}
+			if scenario.costOnly {
+				category := categorydomain.Category{Slug: "direct-edit", NameJSON: jsonmap.JSON{"zh-CN": "直充"}, IsActive: true}
+				if err := db.Create(&category).Error; err != nil {
+					t.Fatalf("create edit category: %v", err)
+				}
+				input.CategoryID = category.ID
 			}
 			product, err := svc.Write.Create(input)
 			if err != nil || product == nil {
@@ -108,7 +125,7 @@ func TestDirectProductEditPreservesConcurrentSKUConfiguration(t *testing.T) {
 			}}
 			editor := productwrite.NewWriteService(productwrite.Options{
 				Products: productgormstore.NewProductStore(db), SKUs: productgormstore.NewSKUStore(db),
-				CardSecrets: cardsecretgormstore.New(db), Orders: orders,
+				Categories: categorygormstore.NewCategoryStore(db), CardSecrets: cardsecretgormstore.New(db), Orders: orders,
 			})
 			editor.SetDirectCatalog(catalog)
 			input.TitleJSON = jsonmap.JSON{"zh-CN": "已编辑"}
@@ -119,7 +136,23 @@ func TestDirectProductEditPreservesConcurrentSKUConfiguration(t *testing.T) {
 					DirectCatalogRevision: &revision, SortOrder: scenario.wantSort,
 				}}
 			}
-			if _, err := editor.Update(id, input); err != nil {
+			wantCost := newCost
+			if scenario.costOnly {
+				wantCost = decimal.NewFromInt(61)
+				handler := producthttp.NewAdminProductHandler(svc.Read, editor, svc.Admin, nil, nil, nil)
+				router := gin.New()
+				router.PUT("/api/v1/admin/products/:id", handler.UpdateProduct)
+				body := fmt.Sprintf(`{"category_id":%d,"slug":%q,"title":{"zh-CN":"已编辑"},"fulfillment_type":%q,"skus":[{"id":%d,"sku_code":%q,"direct_catalog_revision":%d,"cost_price_amount":61}]}`,
+					input.CategoryID, input.Slug, input.FulfillmentType, skuIDs[targetCode], targetCode, revision)
+				req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/products/"+id, strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				res := httptest.NewRecorder()
+				router.ServeHTTP(res, req)
+				var result response.Response
+				if err := json.Unmarshal(res.Body.Bytes(), &result); err != nil || res.Code != http.StatusOK || result.StatusCode != response.CodeOK {
+					t.Fatalf("save a cost-only edit: HTTP %d, API code %d, %v", res.Code, result.StatusCode, err)
+				}
+			} else if _, err := editor.Update(id, input); err != nil {
 				t.Fatalf("save the first edit: %v", err)
 			}
 			product, err = svc.Read.GetAdminByID(id)
@@ -127,7 +160,7 @@ func TestDirectProductEditPreservesConcurrentSKUConfiguration(t *testing.T) {
 				t.Fatalf("load saved direct product: %+v, %v", product, err)
 			}
 			wantSale := decimal.NewFromInt(scenario.wantSale)
-			if !product.PriceAmount.Equal(wantSale) || !product.CostPriceAmount.Equal(newCost) || product.IsActive ||
+			if !product.PriceAmount.Equal(wantSale) || !product.CostPriceAmount.Equal(wantCost) || product.IsActive ||
 				product.TitleJSON["zh-CN"] != "已编辑" {
 				t.Errorf("edit lost the new aggregate SKU prices, disabled state, or requested title: %+v", product)
 			}
@@ -137,7 +170,7 @@ func TestDirectProductEditPreservesConcurrentSKUConfiguration(t *testing.T) {
 				}
 				switch sku.SKUCode {
 				case targetCode:
-					if !sku.IsActive || !sku.PriceAmount.Equal(wantSale) || !sku.CostPriceAmount.Equal(newCost) || sku.SortOrder != scenario.wantSort {
+					if !sku.IsActive || !sku.PriceAmount.Equal(wantSale) || !sku.CostPriceAmount.Equal(wantCost) || sku.SortOrder != scenario.wantSort {
 						t.Errorf("edit replaced the target SKU configuration: %+v", sku)
 					}
 				case fallbackCode:
