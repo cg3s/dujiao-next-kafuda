@@ -59,7 +59,7 @@ func ParseCatalog(data json.RawMessage, profile string, syncedAt, expiresAt time
 		Plans   []struct {
 			Plan    string `json:"plan"`
 			Label   string `json:"label"`
-			Credit  bool   `json:"credit"`
+			Credit  *bool  `json:"credit"`
 			Regions []struct {
 				Country           string `json:"country"`
 				Currency          string `json:"currency"`
@@ -68,12 +68,12 @@ func ParseCatalog(data json.RawMessage, profile string, syncedAt, expiresAt time
 			} `json:"regions"`
 		} `json:"plans"`
 		Cards []struct {
-			ProductCode       string  `json:"product_code"`
-			Name              string  `json:"name"`
-			RestrictionReason *string `json:"restriction_reason"`
-			GPTRecommended    bool    `json:"gpt_recommended"`
-			OpenFeeCents      int64   `json:"open_fee_cents"`
-			MinAmountCents    int64   `json:"min_amount_cents"`
+			ProductCode       string          `json:"product_code"`
+			Name              string          `json:"name"`
+			RestrictionReason json.RawMessage `json:"restriction_reason"`
+			GPTRecommended    bool            `json:"gpt_recommended"`
+			OpenFeeCents      int64           `json:"open_fee_cents"`
+			MinAmountCents    int64           `json:"min_amount_cents"`
 		} `json:"auto_card_products"`
 	}
 	if json.Unmarshal(data, &wire) != nil || wire.Enabled == nil || wire.Plans == nil || wire.Cards == nil {
@@ -81,11 +81,11 @@ func ParseCatalog(data json.RawMessage, profile string, syncedAt, expiresAt time
 	}
 	catalog := &kafudadomain.Catalog{Profile: profile, Enabled: *wire.Enabled, SyncedAt: syncedAt, ExpiresAt: expiresAt, Options: []kafudadomain.CatalogOption{}, Cards: []kafudadomain.CardProduct{}}
 	for _, plan := range wire.Plans {
-		if plan.Plan == "" || plan.Label == "" || plan.Regions == nil {
+		if plan.Plan == "" || plan.Label == "" || plan.Credit == nil || plan.Regions == nil {
 			return nil, kafudadomain.ErrInvalidCatalog
 		}
 		product := "gpt"
-		if plan.Credit {
+		if *plan.Credit {
 			product = "gpt_credits"
 		}
 		for _, region := range plan.Regions {
@@ -98,11 +98,14 @@ func ParseCatalog(data json.RawMessage, profile string, syncedAt, expiresAt time
 	}
 	seenCards := make(map[string]bool)
 	for _, card := range wire.Cards {
-		if card.ProductCode == "" || seenCards[card.ProductCode] || card.OpenFeeCents < 0 || card.MinAmountCents < 0 {
+		// An explicit null declares an unrestricted card. An omitted field has no such declaration.
+		var restrictionReason *string
+		if card.ProductCode == "" || seenCards[card.ProductCode] || card.OpenFeeCents < 0 || card.MinAmountCents < 0 ||
+			json.Unmarshal(card.RestrictionReason, &restrictionReason) != nil {
 			return nil, kafudadomain.ErrInvalidCatalog
 		}
 		seenCards[card.ProductCode] = true
-		catalog.Cards = append(catalog.Cards, kafudadomain.CardProduct{ProductCode: card.ProductCode, Name: card.Name, Restricted: card.RestrictionReason != nil && *card.RestrictionReason != "", GPTRecommended: card.GPTRecommended, OpenFeeCents: card.OpenFeeCents, MinAmountCents: card.MinAmountCents})
+		catalog.Cards = append(catalog.Cards, kafudadomain.CardProduct{ProductCode: card.ProductCode, Name: card.Name, Restricted: restrictionReason != nil && *restrictionReason != "", GPTRecommended: card.GPTRecommended, OpenFeeCents: card.OpenFeeCents, MinAmountCents: card.MinAmountCents})
 	}
 	if err := catalog.Validate(); err != nil {
 		return nil, err

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -43,8 +44,8 @@ func (s *singleReadCatalogStore) GetCatalog(ctx context.Context, profile string)
 	return s.Store.GetCatalog(ctx, profile)
 }
 
-func TestAdminCatalogRefreshUsesPersistedSnapshotWithoutSecondRead(t *testing.T) {
-	_, store, _ := database(t)
+func recordedCatalogData(t *testing.T) json.RawMessage {
+	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "docs", "gpt_catalog_data.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -53,10 +54,15 @@ func TestAdminCatalogRefreshUsesPersistedSnapshotWithoutSecondRead(t *testing.T)
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		t.Fatal(err)
 	}
+	return envelope.Data
+}
+
+func TestAdminCatalogRefreshUsesPersistedSnapshotWithoutSecondRead(t *testing.T) {
+	_, store, _ := database(t)
 	// The first valid read comes from the committed cache and must also be
 	// sufficient to build the response if the database is briefly unavailable.
 	reads := &singleReadCatalogStore{Store: store}
-	service := kafudaapp.NewCatalogService(reads, failingCatalogGateway{data: envelope.Data}, "default", time.Hour)
+	service := kafudaapp.NewCatalogService(reads, failingCatalogGateway{data: recordedCatalogData(t)}, "default", time.Hour)
 	router := gin.New()
 	commerce := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
 		Catalog: service, SalesEnabled: true, ReferenceLookupVerified: true,
@@ -100,6 +106,114 @@ func TestAdminCatalogRefreshUsesPersistedSnapshotWithoutSecondRead(t *testing.T)
 		if option.Plan != entry.Plan || option.Country != entry.Country || option.Available != (saved.Enabled && entry.Available) || option.CatalogRevision != saved.Revision(entry.Plan, entry.Country) {
 			t.Fatalf("response option does not match the saved catalog: %+v", option)
 		}
+	}
+}
+
+func TestIncompleteCatalogRefreshPreservesLastValidEligibility(t *testing.T) {
+	fixture := recordedCatalogData(t)
+	for _, scenario := range []struct {
+		name, collection, key, value, field string
+		replacement                         json.RawMessage
+	}{
+		{name: "missing_credit", collection: "plans", key: "plan", value: "credit250", field: "credit"},
+		{name: "null_credit", collection: "plans", key: "plan", value: "credit250", field: "credit", replacement: json.RawMessage(`null`)},
+		{name: "missing_restriction", collection: "auto_card_products", key: "product_code", value: "PP5450RC", field: "restriction_reason"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(fixture, &payload); err != nil {
+				t.Fatal(err)
+			}
+			var entries []map[string]json.RawMessage
+			if err := json.Unmarshal(payload[scenario.collection], &entries); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, entry := range entries {
+				var key string
+				if err := json.Unmarshal(entry[scenario.key], &key); err != nil {
+					t.Fatal(err)
+				}
+				if key != scenario.value {
+					continue
+				}
+				if _, defined := entry[scenario.field]; !defined {
+					t.Fatalf("fixture %s is already missing %s", key, scenario.field)
+				}
+				if scenario.replacement == nil {
+					delete(entry, scenario.field)
+				} else {
+					entry[scenario.field] = scenario.replacement
+				}
+				found = true
+				break
+			}
+			if !found {
+				t.Fatalf("fixture does not include %s", scenario.value)
+			}
+			mutatedEntries, err := json.Marshal(entries)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload[scenario.collection] = mutatedEntries
+			malformed, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, store, _ := database(t)
+			ctx, syncedAt := t.Context(), time.Now().UTC().Add(-time.Minute)
+			original, err := kafudaapp.ParseCatalog(fixture, "default", syncedAt, syncedAt.Add(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SaveCatalog(ctx, original); err != nil {
+				t.Fatal(err)
+			}
+			service := kafudaapp.NewCatalogService(store, failingCatalogGateway{data: malformed}, original.Profile, time.Hour)
+			before, err := service.Cached(ctx)
+			if err != nil || before == nil {
+				t.Fatalf("read original supplier catalog: %v", err)
+			}
+			options := kafudaapp.CommerceOptions{
+				Catalog: service, SalesEnabled: true, ReferenceLookupVerified: true, ProductCode: "XL537872", MaxCostCents: 2500,
+				AllowedKinds: []string{"new"}, WorkerReady: func(context.Context) bool { return true },
+			}
+			allowed := kafudaapp.NewCommerceService(options)
+			options.ProductCode = "PP5450RC"
+			restricted := kafudaapp.NewCommerceService(options)
+			assertEligibility := func() {
+				t.Helper()
+				const country = "PH"
+				for plan, product := range map[string]string{"credit250": "gpt_credits", "plus": "gpt"} {
+					revision := before.Revision(plan, country)
+					if terms, err := allowed.PurchaseTerms(ctx, plan, country, revision); err != nil || terms == nil || terms.Product != product {
+						t.Fatalf("approved terms for %s changed from %s: %+v, %v", plan, product, terms, err)
+					}
+					if terms, err := restricted.PurchaseTerms(ctx, plan, country, revision); terms != nil || !errors.Is(err, kafudaapp.ErrQuotePolicy) {
+						t.Fatalf("restricted card was eligible for %s: %+v, %v", plan, terms, err)
+					}
+				}
+			}
+			assertEligibility()
+
+			router := gin.New()
+			kafudahttp.RegisterAdminRoutes(router.Group("/admin"), &kafudahttp.AdminHandler{Catalog: service, Configured: true})
+			req := httptest.NewRequest(http.MethodPost, "/admin/kafuda-gpt/catalog/sync", nil).WithContext(ctx)
+			req.Header.Set("Accept-Language", "en-US")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, req)
+			var result response.Response
+			if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil || recorder.Code != http.StatusOK ||
+				result.StatusCode != response.CodeInternal || result.Msg != i18n.T("en-US", "error.kafuda_catalog_invalid_response") {
+				t.Fatalf("refresh of incomplete catalog returned HTTP %d, API %d %q: %v", recorder.Code, result.StatusCode, result.Msg, err)
+			}
+			after, err := service.Cached(ctx)
+			if err != nil || !reflect.DeepEqual(after, before) {
+				t.Fatalf("incomplete refresh changed the last valid directory: %v", err)
+			}
+			assertEligibility()
+		})
 	}
 }
 
