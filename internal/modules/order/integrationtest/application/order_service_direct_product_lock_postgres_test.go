@@ -157,6 +157,99 @@ func TestPostgresDirectCheckoutAndTypeSwitchShareProductLock(t *testing.T) {
 	}
 }
 
+func TestPostgresDirectTypeSwitchAndManualInventoryEditShareProductLock(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	for _, first := range []string{constants.FulfillmentTypeManual, constants.FulfillmentTypeKafudaGPT} {
+		t.Run(first, func(t *testing.T) {
+			db := openPostgresDirectRaceDB(t, dsn)
+			f := seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-manual-stock-lock", 0, 0))
+			if err := db.AutoMigrate(&cardsecretdomain.Secret{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Model(&f.product).Update("fulfillment_type", constants.FulfillmentTypeManual).Error; err != nil {
+				t.Fatal(err)
+			}
+			lockPIDs := observeProductLockPIDs(t, db)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			orders := orderstore.New(db.WithContext(ctx), "test-guest-credential-secret-with-32-bytes")
+			beforeCommit, release := make(chan struct{}), make(chan struct{})
+			commit := sync.OnceFunc(func() { close(release) })
+			defer commit()
+			id := strconv.FormatUint(uint64(f.product.ID), 10)
+			edit := func(kind string, store ordercontract.Store) error {
+				writer := productwrite.NewWriteService(productwrite.Options{
+					Products: productstore.NewProductStore(db), SKUs: productstore.NewSKUStore(db),
+					CardSecrets: cardsecretstore.New(db), Orders: store,
+				})
+				writer.SetDirectCatalog(orderProductChangeCatalog{})
+				input := productwrite.CreateProductInput{
+					CategoryID: f.product.CategoryID, Slug: f.product.Slug, TitleJSON: f.product.TitleJSON,
+					FulfillmentType: kind, PriceAmount: f.product.PriceAmount.Decimal,
+				}
+				if kind == constants.FulfillmentTypeManual {
+					stock := 7
+					input.SKUs = []productwrite.ProductSKUInput{{ID: f.sku.ID, SKUCode: f.sku.SKUCode, PriceAmount: f.sku.PriceAmount.Decimal, ManualStockTotal: &stock}}
+				}
+				_, err := writer.Update(id, input)
+				return err
+			}
+			second := constants.FulfillmentTypeManual
+			if first == second {
+				second = constants.FulfillmentTypeKafudaGPT
+			}
+			firstResult, secondResult := make(chan error, 1), make(chan error, 1)
+			go func() {
+				firstResult <- edit(first, directProductLockStore{Store: orders, beforeCommit: beforeCommit, release: release})
+			}()
+			select {
+			case <-beforeCommit:
+			case err := <-firstResult:
+				t.Fatalf("first edit returned before commit: %v", err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			var holder int
+			select {
+			case holder = <-lockPIDs:
+			case <-ctx.Done():
+				t.Fatal("first edit did not issue a product lock query")
+			}
+			go func() { secondResult <- edit(second, orders) }()
+			select {
+			case waiter := <-lockPIDs:
+				assertProductLockBlocked(t, ctx, db, waiter, holder)
+			case err := <-secondResult:
+				t.Fatalf("second edit returned before taking the product lock: %v", err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			commit()
+			if err := <-firstResult; err != nil {
+				t.Fatal(err)
+			}
+			if err := <-secondResult; !errors.Is(err, productcontract.ErrFulfillmentInvalid) {
+				t.Fatalf("competing edit error = %v", err)
+			}
+			product, err := productstore.NewProductStore(db).GetByID(id)
+			if err != nil || product == nil || product.FulfillmentType != first {
+				t.Fatalf("winning fulfillment type was not preserved: %+v, %v", product, err)
+			}
+			wantStock := 0
+			if first == constants.FulfillmentTypeManual {
+				wantStock = 7
+			}
+			sku, err := productstore.NewSKUStore(db).GetByID(f.sku.ID)
+			if err != nil || sku == nil || sku.ManualStockTotal != wantStock || product.ManualStockTotal != wantStock {
+				t.Fatalf("winning stock was not preserved on the product and SKU: product=%d sku=%+v err=%v", product.ManualStockTotal, sku, err)
+			}
+		})
+	}
+}
+
 func TestPostgresDirectCatalogOnlyEditPreservesConcurrentSKUChanges(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 	if dsn == "" {
