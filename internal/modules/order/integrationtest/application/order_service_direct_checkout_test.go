@@ -1638,6 +1638,109 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 	request(order.OrderNo, otherToken, main, response.CodeNotFound, "", "")
 }
 
+type directStatusOrderStore struct {
+	ordercontract.Store
+	afterRead func(*orderdomain.Order)
+}
+
+func (s *directStatusOrderStore) GetByOrderNoAndUserScoped(orderNo string, userID uint, scope ordercontract.TenantScope) (*orderdomain.Order, error) {
+	order, err := s.Store.GetByOrderNoAndUserScoped(orderNo, userID, scope)
+	if err == nil && order != nil && s.afterRead != nil {
+		afterRead := s.afterRead
+		s.afterRead = nil
+		afterRead(order)
+	}
+	return order, err
+}
+
+func TestBuyerDirectStatusIncludesRenewalDuringCompletion(t *testing.T) {
+	testBuyerDirectStatusIncludesRenewalDuringCompletion(t, newDirectCheckoutFixture(t))
+}
+
+func testBuyerDirectStatusIncludesRenewalDuringCompletion(t *testing.T, f directCheckoutFixture) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+		t.Fatal(err)
+	}
+	service := orderapp.NewOrderService(f.options)
+	order, err := service.CreateOrder(f.input)
+	if err != nil || order == nil || len(order.Children) != 1 {
+		t.Fatalf("create checkout: %+v, %v", order, err)
+	}
+	childID := order.Children[0].ID
+	ctx, paidAt := t.Context(), time.Now().UTC().Truncate(time.Microsecond)
+	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
+		Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": paidAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	orders := f.options.OrderStore
+	reservation, err := kafudaworkflow.ReserveBuyerAttempt(orders, ordercontract.TenantScope{}, order.OrderNo, order.UserID, paidAt, paidAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), orders)
+	attempt := reservation.Attempt
+	if err := records.MarkSubmitting(ctx, attempt.ID, "quote-renewal-race", paidAt, paidAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	renewalCancelled := false
+	completedAt := paidAt.Add(time.Second)
+	result := kafudacontract.OrderResult{
+		ID: 123, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH",
+		Status: string(kafudadomain.AttemptCompleted), RenewalCancelled: &renewalCancelled,
+	}
+	store := &directStatusOrderStore{Store: orders, afterRead: func(stale *orderdomain.Order) {
+		if stale.ID != order.ID || stale.Status != constants.OrderStatusPaid || len(stale.Children) != 1 ||
+			stale.Children[0].ID != childID || stale.Children[0].Status != constants.OrderStatusPaid {
+			t.Fatalf("completion hook did not observe the paid order and child: %+v", stale)
+		}
+		completed, err := kafudaworkflow.ApplyResult(orders, childID, attempt.ID, result, completedAt, completedAt, 10*time.Second)
+		if err != nil || !completed {
+			t.Fatalf("commit supplier completion during buyer status request: %t, %v", completed, err)
+		}
+	}}
+	handler := orderwiring.New(&container.Container{
+		OrderService: service, OrderStore: store, KafudaGPT: &kafudawiring.Module{Store: f.store},
+	}).User
+	const userJWTSecret = "orders-direct-status-integration-test-key"
+	auth := userauthapp.NewService(&config.Config{UserJWT: config.JWTConfig{SecretKey: userJWTSecret}}, f.options.UserStore, nil, nil, nil, nil, nil)
+	token, _, err := auth.GenerateUserJWT(&f.users[0], 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.Use(middleware.UserJWTAuthMiddleware(userJWTSecret, f.options.UserStore))
+	orderhttp.RegisterUserReadRoutes(router, handler)
+	request := func() orderhttp.DirectStatus {
+		t.Helper()
+		requestCtx := resellercontract.WithTenantContext(ctx, resellercontract.MainTenantContext("shop.example"))
+		req := httptest.NewRequest(http.MethodGet, "/orders/"+order.OrderNo+"/direct-status", nil).WithContext(requestCtx)
+		req.Header.Set("Authorization", "Bearer "+token)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		var body struct {
+			Code int                    `json:"status_code"`
+			Data orderhttp.DirectStatus `json:"data"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || recorder.Code != http.StatusOK || body.Code != 0 ||
+			body.Data.Stage != string(kafudadomain.StageCompleted) || !body.Data.UpdatedAt.Equal(completedAt) ||
+			body.Data.RenewalCancelled == nil || *body.Data.RenewalCancelled {
+			t.Fatalf("buyer status must include the confirmed false renewal result: HTTP %d %s, %v", recorder.Code, recorder.Body.String(), err)
+		}
+		return body.Data
+	}
+	first := request()
+	if followUp := request(); !reflect.DeepEqual(followUp, first) {
+		t.Fatalf("completion overlap changed the buyer projection: first=%+v follow-up=%+v", first, followUp)
+	}
+	assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusCompleted, paidAt)
+	var fulfillments int64
+	if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&fulfillments).Error; err != nil || fulfillments != 1 {
+		t.Fatalf("expected one completed fulfillment, got %d, %v", fulfillments, err)
+	}
+}
+
 func TestControlledDirectManualCompletionRequiresTerminalAttempt(t *testing.T) {
 	t.Run("http", func(t *testing.T) {
 		testControlledDirectManualAction(t, newDirectCheckoutFixture(t), "direct-complete", false)

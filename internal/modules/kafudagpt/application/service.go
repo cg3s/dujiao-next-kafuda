@@ -332,7 +332,8 @@ func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll ti
 		if result.ChargedUSDCents != nil {
 			attempt.ChargedUSDCents = result.ChargedUSDCents
 		}
-		if result.RenewalCancelled != nil {
+		// The completed response is authoritative, including an omitted result.
+		if reported == kafudadomain.AttemptCompleted || result.RenewalCancelled != nil {
 			attempt.RenewalCancelled = result.RenewalCancelled
 		}
 		attempt.NextPollAt = nil

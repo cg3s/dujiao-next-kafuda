@@ -251,6 +251,62 @@ func TestStalePollCannotRegressScheduleAndLateCompletionStillConverges(t *testin
 	}
 }
 
+func TestCompletionUsesSupplierRenewalResultFromCompletedResponse(t *testing.T) {
+	cancelled, notCancelled := true, false
+	for _, test := range []struct {
+		name              string
+		processingRenewal bool
+		completedRenewal  *bool
+	}{
+		{name: "missing", processingRenewal: false},
+		{name: "not_cancelled", processingRenewal: true, completedRenewal: &notCancelled},
+		{name: "cancelled", processingRenewal: false, completedRenewal: &cancelled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const orderID = 10
+			_, store, service := database(t)
+			ctx, now := t.Context(), time.Now().UTC()
+			prepare(t, service, orderID, now)
+			attempt := reserve(t, service, orderID, now).Attempt
+			if err := service.MarkSubmitting(ctx, attempt.ID, "quo_1", now, now.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			result := kafudacontract.OrderResult{
+				ID: 101, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH",
+				Status: string(kafudadomain.AttemptProcessing), RenewalCancelled: &test.processingRenewal,
+			}
+			apply := func(at, nextPoll time.Time, wantCompleted bool) {
+				t.Helper()
+				err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
+					completed, err := kafudaapp.RecordResultInTransaction(tx, orderID, attempt.ID, result, at, at, nextPoll, 0)
+					if err == nil && completed != wantCompleted {
+						t.Errorf("apply %s result completed = %t, want %t", result.Status, completed, wantCompleted)
+					}
+					return err
+				})
+				if err != nil {
+					t.Fatalf("apply %s result: %v", result.Status, err)
+				}
+			}
+			apply(now.Add(time.Second), now.Add(time.Minute), false)
+
+			result.Status, result.RenewalCancelled = string(kafudadomain.AttemptCompleted), test.completedRenewal
+			apply(now.Add(2*time.Second), time.Time{}, true)
+			stored, err := store.GetAttempt(ctx, attempt.ID)
+			if err != nil || stored == nil || stored.Status != kafudadomain.AttemptCompleted {
+				t.Fatalf("read completed attempt: %+v, %v", stored, err)
+			}
+			if got := stored.RenewalCancelled; test.completedRenewal == nil {
+				if got != nil {
+					t.Fatalf("completed response omitted renewal result but stored %t from processing", *got)
+				}
+			} else if got == nil || *got != *test.completedRenewal {
+				t.Fatalf("completed response renewal result %t was not stored: %+v", *test.completedRenewal, stored)
+			}
+		})
+	}
+}
+
 func TestOverCapChargeRequiresReviewAndKeepsSupplierOutcome(t *testing.T) {
 	for _, initialStatus := range []string{"processing", "completed"} {
 		t.Run(initialStatus, func(t *testing.T) {

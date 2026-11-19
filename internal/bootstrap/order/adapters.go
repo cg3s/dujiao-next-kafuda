@@ -86,8 +86,9 @@ func newDirectStatusReader(c *container.Container) ordertransport.DirectStatusRe
 			return nil, nil
 		}
 		status := &ordertransport.DirectStatus{Stage: string(stage), UpdatedAt: record.UpdatedAt}
-		if stage == kafudadomain.StageCompleted && order.Status == constants.OrderStatusCompleted &&
-			record.Snapshot.Product == "gpt" && record.CurrentAttemptID != nil {
+		// Completion commits the recharge, fulfillment and shop order statuses
+		// together. The order read above may have occurred before that commit.
+		if stage == kafudadomain.StageCompleted && record.Snapshot.Product == "gpt" && record.CurrentAttemptID != nil {
 			attempt, err := c.KafudaGPT.Store.GetAttempt(ctx, *record.CurrentAttemptID)
 			if err != nil {
 				return nil, err
