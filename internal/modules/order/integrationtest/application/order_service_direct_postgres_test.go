@@ -79,6 +79,16 @@ func TestPostgresDirectAfterSalesRejectsInFlightAndCompleted(t *testing.T) {
 	testDirectAfterSalesRejectsInFlightAndCompleted(t, seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-refund-guard", 0, 0)))
 }
 
+func TestPostgresDirectSupplierPrivacyAndRefundBoundary(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	db := openPostgresDirectRaceDB(t, dsn)
+	f := seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-supplier-privacy", 0, 0))
+	testDirectSupplierPrivacyAndRefundBoundary(t, f)
+}
+
 func TestPostgresAdminDirectReviewFilterAndProjection(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 	if dsn == "" {

@@ -1,6 +1,7 @@
 package application_test
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,17 +13,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dujiao-next/internal/app/container"
 	"github.com/dujiao-next/internal/app/httpserver/middleware"
+	"github.com/dujiao-next/internal/authz"
 	orderwiring "github.com/dujiao-next/internal/bootstrap/order"
+	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/constants"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	admindomain "github.com/dujiao-next/internal/modules/identity/admin/domain"
 	adminstore "github.com/dujiao-next/internal/modules/identity/admin/infrastructure/gormstore"
 	adminauthapp "github.com/dujiao-next/internal/modules/identity/adminauth/application"
-	"github.com/dujiao-next/internal/modules/identity/jwttoken"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
+	kafudaclient "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/kafuda"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	orderrefund "github.com/dujiao-next/internal/modules/order/application/refund"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
@@ -37,7 +41,7 @@ import (
 	"github.com/dujiao-next/internal/shared/money"
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/shopspring/decimal"
 )
 
 func TestConfirmOverCapDirectCompletion(t *testing.T) {
@@ -130,38 +134,257 @@ func testConfirmOverCapDirectCompletion(t *testing.T, fixture func(*testing.T) d
 	})
 }
 
-func testOverCapDirectCompletionHTTP(t *testing.T, f overCapDirectFixture) {
+const directAdminRoutePrefix = "/api/v1/admin"
+
+func newDirectSupportRouter(t *testing.T, f directCheckoutFixture, deps *container.Container) (*gin.Engine, string, *admindomain.Admin) {
 	t.Helper()
-	if err := f.db.AutoMigrate(&admindomain.Admin{}, &paymentdomain.Payment{}, &orderdomain.OrderRefundRecord{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
+	if err := f.db.AutoMigrate(&admindomain.Admin{}); err != nil {
 		t.Fatal(err)
 	}
 	admins := adminstore.New(f.db)
-	admin := &admindomain.Admin{Username: "direct-cost-reviewer", PasswordHash: "hash"}
+	admin := &admindomain.Admin{Username: "direct-support", PasswordHash: "fixture-login-disabled"}
 	if err := admins.Create(admin); err != nil {
 		t.Fatal(err)
 	}
-	const secret = "direct-cost-review-test-signing-key"
-	claims := adminauthapp.JWTClaims{AdminID: admin.ID, Username: admin.Username, TokenVersion: admin.TokenVersion, Typ: jwttoken.TypeAccess,
-		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)), IssuedAt: jwt.NewNumericDate(time.Now())}}
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+	permissions, err := authz.NewService(f.db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const routePrefix = "/api/v1/admin"
+	if err := permissions.BootstrapBuiltinRoles(); err != nil {
+		t.Fatal(err)
+	}
+	if err := permissions.SetAdminRoles(admin.ID, []string{"support"}); err != nil {
+		t.Fatal(err)
+	}
+	secret := rand.Text()
+	adminAuth := adminauthapp.NewService(&config.Config{JWT: config.JWTConfig{SecretKey: secret, ExpireHours: 1}}, admins)
+	token, _, err := adminAuth.GenerateJWT(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handlers := orderwiring.New(deps)
+	router := gin.New()
+	adminRoutes := router.Group(directAdminRoutePrefix, middleware.JWTAuthMiddleware(secret, admins), middleware.AdminRBACMiddleware(permissions))
+	orderhttp.RegisterAdminRoutes(adminRoutes, handlers.Admin)
+	orderhttp.RegisterAdminRefundWriteRoutes(adminRoutes, handlers.AdminRefund)
+	return router, token, admin
+}
+
+func TestDirectSupplierPrivacyAndRefundBoundary(t *testing.T) {
+	testDirectSupplierPrivacyAndRefundBoundary(t, newDirectCheckoutFixture(t))
+}
+
+func testDirectSupplierPrivacyAndRefundBoundary(t *testing.T, f directCheckoutFixture) {
+	t.Helper()
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &paymentdomain.Payment{}, &orderdomain.OrderRefundRecord{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, orders := t.Context(), f.options.OrderStore
+	order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+	if err != nil || order == nil || len(order.Children) != 1 {
+		t.Fatalf("create direct checkout: %+v, %v", order, err)
+	}
+	childID, paidAt := order.Children[0].ID, time.Now().UTC().Truncate(time.Microsecond)
+	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
+		Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": paidAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	records := kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), orders)
+	reserved, err := records.Reserve(ctx, childID, paidAt, paidAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptID := reserved.Attempt.ID
+	if err := records.MarkSubmitting(ctx, attemptID, "privacy-test-quote", paidAt, paidAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := records.MarkUnknown(ctx, attemptID, paidAt, paidAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := f.store.GetAttempt(ctx, attemptID)
+	if err != nil || unknown == nil || unknown.Status != kafudadomain.AttemptReview {
+		t.Fatalf("expected an unknown supplier attempt: %+v, %v", unknown, err)
+	}
+	initialBalance := money.FromDecimal(decimal.NewFromInt(7))
+	account := walletdomain.Account{UserID: order.UserID, Balance: initialBalance}
+	if err := f.db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	const upstreamID = uint64(9_007_199_254_740_993)
+	const supplierToken = "privacy-test-supplier-token"
+	const supplierEmail = "private-activation@example.test"
+	const supplierSession = "privacy-test-supplier-session"
+	const supplierError = "privacy-test-raw-upstream-error"
+	const supplierRefundCents = 137
+	const chargedCents = 923
+	const maskedEmail = "p***@***"
+	var lookups atomic.Int32
+	supplier := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.RequestURI() != fmt.Sprintf("/api/v1/gpt/orders/%d", upstreamID) ||
+			r.Header.Get("Authorization") != "Bearer "+supplierToken {
+			t.Error("unexpected supplier lookup method, target or credential")
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		status := "failed"
+		switch lookups.Add(1) {
+		case 1:
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": supplierError, "message": supplierEmail + " " + supplierSession}})
+			return
+		case 2:
+			status = "refunded"
+		}
+		snapshot := reserved.Recharge.Snapshot
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+			"id": upstreamID, "reference": reserved.Attempt.Reference, "product": snapshot.Product,
+			"plan": snapshot.Plan, "country": snapshot.Country, "status": status,
+			"account_email": supplierEmail, "session": supplierSession, "api_token": supplierToken,
+			"failure_message": supplierError, "charged_usd_cents": chargedCents, "refund_usd_cents": supplierRefundCents,
+		}})
+	}))
+	t.Cleanup(supplier.Close)
+	// Keep production TLS verification and route only this exact loopback origin
+	// through the transport that trusts the fixture certificate. This test is serial.
+	originalTransport := http.DefaultTransport
+	supplierTransport := supplier.Client().Transport
+	supplierHost := strings.TrimPrefix(supplier.URL, "https://")
+	http.DefaultTransport = directTestRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Scheme == "https" && r.URL.Host == supplierHost {
+			return supplierTransport.RoundTrip(r)
+		}
+		return originalTransport.RoundTrip(r)
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	gateway, err := kafudaclient.New(supplier.URL, supplierToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := stoppedDirectSalesContainer(t, f)
+	deps.KafudaGPT.Gateway = gateway
+	deps.UserStore = f.options.UserStore
+	deps.PaymentStore = paymentstore.New(f.db, "test-guest-credential-secret-with-32-bytes")
+	wallets := walletstore.New(f.db)
+	deps.OrderRefundService = orderrefund.New(orders, nil, nil, nil, walletapp.NewService(walletapp.Options{Repository: wallets, Transactions: wallets}), nil)
+	router, supportToken, _ := newDirectSupportRouter(t, f, deps)
+	request := func(method, path, payload string, wantCode int) json.RawMessage {
+		t.Helper()
+		req := httptest.NewRequestWithContext(ctx, method, directAdminRoutePrefix+path, strings.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer "+supportToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		for _, secret := range []string{supplierEmail, supplierToken, supplierSession, supplierError, "session-must-not-persist", `"refund_usd_cents"`} {
+			if strings.Contains(rec.Body.String(), secret) {
+				t.Fatalf("supplier data escaped into %s %s", method, path)
+			}
+		}
+		var envelope struct {
+			Code int             `json:"status_code"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil || envelope.Code != wantCode {
+			t.Fatalf("%s %s returned code %d, want %d, decode error %v", method, path, envelope.Code, wantCode, err)
+		}
+		return envelope.Data
+	}
+	assertUnrefunded := func() {
+		t.Helper()
+		assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusFulfilling, paidAt)
+		for _, model := range []any{&orderdomain.OrderRefundRecord{}, &walletdomain.Transaction{}, &fulfillmentdomain.Fulfillment{}} {
+			var count int64
+			if err := f.db.Model(model).Count(&count).Error; err != nil || count != 0 {
+				t.Fatalf("unexpected %T rows after supplier lookup: %d, %v", model, count, err)
+			}
+		}
+		var stored walletdomain.Account
+		if err := f.db.First(&stored, account.ID).Error; err != nil || !stored.Balance.Equal(initialBalance.Decimal) {
+			t.Fatalf("supplier lookup changed buyer balance: %s, %v", stored.Balance, err)
+		}
+	}
+	reconcilePath := fmt.Sprintf("/orders/%d/direct-reconcile", childID)
+	lookupBody := fmt.Sprintf(`{"attempt_id":%d,"upstream_order_id":"%d"}`, attemptID, upstreamID)
+	for range 2 {
+		request(http.MethodPost, reconcilePath, lookupBody, response.CodeInternal)
+		assertUnrefunded()
+		stored, err := f.store.GetAttempt(ctx, attemptID)
+		if err != nil || !reflect.DeepEqual(stored, unknown) {
+			t.Fatalf("rejected supplier response changed the unknown attempt: %v", err)
+		}
+	}
+	request(http.MethodPost, reconcilePath, lookupBody, response.CodeOK)
+	if lookups.Load() != 3 {
+		t.Fatalf("supplier received %d numeric lookups, want 3", lookups.Load())
+	}
+	assertUnrefunded()
+	for _, orderID := range []uint{order.ID, childID} {
+		raw := request(http.MethodGet, fmt.Sprintf("/orders/%d", orderID), "", response.CodeOK)
+		var detail orderhttp.AdminOrderDetail
+		if err := json.Unmarshal(raw, &detail); err != nil {
+			t.Fatal(err)
+		}
+		direct := detail.DirectRecharge
+		if direct == nil || direct.Stage != string(kafudadomain.StageManualDelivery) || direct.Reason != "upstream_failed" ||
+			direct.Attempt == nil || direct.Attempt.Active || direct.Attempt.MaskedEmail != maskedEmail ||
+			direct.Attempt.UpstreamOrderID != fmt.Sprint(upstreamID) || direct.Attempt.CardChargedUSD == nil || direct.Attempt.CardChargedUSD.String() != "9.23" {
+			t.Fatalf("incorrect sanitized supplier projection for order %d", orderID)
+		}
+	}
+	failed, err := f.store.GetAttempt(ctx, attemptID)
+	if err != nil || failed == nil || failed.Status != kafudadomain.AttemptFailed || failed.MaskedEmail != maskedEmail {
+		t.Fatalf("supplier failure was not stored with the masked account: %v", err)
+	}
+	refundPath := fmt.Sprintf("/orders/%d/direct-refund-to-wallet", order.ID)
+	refundBody := func(amount string) string {
+		return fmt.Sprintf(`{"attempt_id":%d,"confirmed":true,"amount":%q}`, attemptID, amount)
+	}
+	request(http.MethodPost, refundPath, refundBody(decimal.New(supplierRefundCents, -2).StringFixed(2)), response.CodeBadRequest)
+	assertUnrefunded()
+	request(http.MethodPost, refundPath, refundBody(order.TotalAmount.String()), response.CodeOK)
+	refunded, err := orders.GetByID(order.ID)
+	if err != nil || refunded == nil || refunded.Status != constants.OrderStatusRefunded || len(refunded.Children) != 1 ||
+		refunded.Children[0].Status != constants.OrderStatusRefunded || !refunded.RefundedAmount.Equal(order.TotalAmount.Decimal) {
+		t.Fatalf("explicit shop refund did not settle both orders for the local amount: %v", err)
+	}
+	var refunds []orderdomain.OrderRefundRecord
+	if err := f.db.Find(&refunds).Error; err != nil || len(refunds) != 1 || refunds[0].OrderID != order.ID || refunds[0].UserID != order.UserID ||
+		refunds[0].Type != constants.OrderRefundTypeWallet || refunds[0].Currency != order.Currency || !refunds[0].Amount.Equal(order.TotalAmount.Decimal) {
+		t.Fatalf("expected one shop refund record for the local paid amount: count=%d, %v", len(refunds), err)
+	}
+	var ledger []walletdomain.Transaction
+	finalBalance := initialBalance.Add(order.TotalAmount.Decimal)
+	if err := f.db.Find(&ledger).Error; err != nil || len(ledger) != 1 || ledger[0].UserID != order.UserID || ledger[0].OrderID == nil ||
+		*ledger[0].OrderID != order.ID || ledger[0].Type != constants.WalletTxnTypeAdminRefund || ledger[0].Direction != constants.WalletTxnDirectionIn ||
+		ledger[0].Currency != order.Currency || !ledger[0].Amount.Equal(order.TotalAmount.Decimal) || !ledger[0].BalanceAfter.Equal(finalBalance) {
+		t.Fatalf("expected one wallet credit for the actual shop refund: count=%d, %v", len(ledger), err)
+	}
+	if err := f.db.First(&account, account.ID).Error; err != nil || !account.Balance.Equal(finalBalance) {
+		t.Fatalf("shop refund did not credit the local paid amount: %s, %v", account.Balance, err)
+	}
+}
+
+type directTestRoundTripper func(*http.Request) (*http.Response, error)
+
+func (transport directTestRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return transport(r)
+}
+
+func testOverCapDirectCompletionHTTP(t *testing.T, f overCapDirectFixture) {
+	t.Helper()
+	if err := f.db.AutoMigrate(&paymentdomain.Payment{}, &orderdomain.OrderRefundRecord{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
+		t.Fatal(err)
+	}
 	container := stoppedDirectSalesContainer(t, f.directCheckoutFixture)
 	container.UserStore = f.options.UserStore
 	container.PaymentStore = paymentstore.New(f.db, "test-guest-credential-secret-with-32-bytes")
 	wallets := walletstore.New(f.db)
 	container.OrderRefundService = orderrefund.New(f.options.OrderStore, nil, nil, nil, walletapp.NewService(walletapp.Options{Repository: wallets, Transactions: wallets}), nil)
-	handlers := orderwiring.New(container)
-	router := gin.New()
-	adminRoutes := router.Group(routePrefix, middleware.JWTAuthMiddleware(secret, admins))
-	orderhttp.RegisterAdminRoutes(adminRoutes, handlers.Admin)
-	orderhttp.RegisterAdminRefundWriteRoutes(adminRoutes, handlers.AdminRefund)
+	router, token, admin := newDirectSupportRouter(t, f.directCheckoutFixture, container)
 	send := func(method, path, body string) response.Response {
 		t.Helper()
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(method, routePrefix+path, strings.NewReader(body))
+		req := httptest.NewRequest(method, directAdminRoutePrefix+path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(rec, req)
