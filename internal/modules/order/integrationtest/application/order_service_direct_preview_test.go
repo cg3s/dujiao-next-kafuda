@@ -5,19 +5,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dujiao-next/internal/app/container"
-	orderwiring "github.com/dujiao-next/internal/bootstrap/order"
-	"github.com/dujiao-next/internal/i18n"
-	"github.com/dujiao-next/internal/platform/http/response"
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dujiao-next/internal/app/container"
+	catalogproductbootstrap "github.com/dujiao-next/internal/bootstrap/catalogproduct"
+	orderwiring "github.com/dujiao-next/internal/bootstrap/order"
 	"github.com/dujiao-next/internal/constants"
+	"github.com/dujiao-next/internal/i18n"
+	categorystore "github.com/dujiao-next/internal/modules/catalog/category/infrastructure/gormstore"
+	productapp "github.com/dujiao-next/internal/modules/catalog/product/application"
+	productwrite "github.com/dujiao-next/internal/modules/catalog/product/application/write"
+	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
+	producthttp "github.com/dujiao-next/internal/modules/catalog/product/transport/http"
+	productpresenter "github.com/dujiao-next/internal/modules/catalog/product/transport/presenter"
+	contentcontract "github.com/dujiao-next/internal/modules/content/contract"
 	coupondomain "github.com/dujiao-next/internal/modules/coupon/domain"
 	userstore "github.com/dujiao-next/internal/modules/identity/user/infrastructure/gormstore"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
@@ -25,11 +32,24 @@ import (
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
+	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
+	paymentapp "github.com/dujiao-next/internal/modules/payment/application"
+	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
+	paymentstore "github.com/dujiao-next/internal/modules/payment/infrastructure/gormstore"
 	promotionstore "github.com/dujiao-next/internal/modules/promotion/infrastructure/gormstore"
 	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
+	walletapp "github.com/dujiao-next/internal/modules/wallet/application"
+	walletdomain "github.com/dujiao-next/internal/modules/wallet/domain"
+	walletstore "github.com/dujiao-next/internal/modules/wallet/infrastructure/gormstore"
+	"github.com/dujiao-next/internal/platform/http/response"
 	"github.com/dujiao-next/internal/shared/jsonmap"
+	"github.com/dujiao-next/internal/shared/money"
+	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
+
+	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 type previewPolicySpy struct {
@@ -257,6 +277,215 @@ func assertDirectPreviewHTTP(t *testing.T, svc *orderapp.OrderService, input ord
 					}
 				}
 			})
+		}
+	}
+}
+
+func TestDirectRegionalSKUStopPreservesPaidSnapshot(t *testing.T) {
+	testDirectRegionalSKUStopPreservesPaidSnapshot(t, newDirectCheckoutFixture(t))
+}
+
+func testDirectRegionalSKUStopPreservesPaidSnapshot(t *testing.T, f directCheckoutFixture) {
+	t.Helper()
+	ctx := t.Context()
+	const siblingCountry, replacementCard = "US", "replacement-card"
+	f.catalog.Options = append(f.catalog.Options, kafudadomain.CatalogOption{Plan: "plus", Country: siblingCountry, Product: "gpt", Available: true})
+	f.catalog.Cards = append(f.catalog.Cards, kafudadomain.CardProduct{ProductCode: replacementCard})
+	f.catalog.SyncedAt = time.Now().UTC()
+	if err := f.store.SaveCatalog(ctx, f.catalog); err != nil {
+		t.Fatal(err)
+	}
+	sibling := productdomain.ProductSKU{
+		ProductID: f.product.ID, SKUCode: kafudacontract.SKUCode("plus", siblingCountry),
+		SpecValuesJSON: jsonmap.JSON{"plan": "plus", "country": siblingCountry},
+		PriceAmount:    money.FromDecimal(decimal.NewFromInt(160)), CostPriceAmount: money.FromDecimal(decimal.NewFromInt(60)),
+		DirectCostConfigured: true, IsActive: true,
+	}
+	if err := productstore.NewSKUStore(f.db).Create(&sibling); err != nil {
+		t.Fatal(err)
+	}
+	orders := f.options.OrderStore
+	assertDirectRegionalPublicSKUs(t, f, directCheckoutCommerce(f.store, true), f.sku.ID, sibling.ID)
+	checkout, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+	if err != nil || checkout == nil || len(checkout.Children) != 1 {
+		t.Fatalf("create original region order: %v", err)
+	}
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &paymentdomain.Payment{}, &paymentdomain.PaymentChannel{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
+		t.Fatal(err)
+	}
+	wallets := walletstore.New(f.db)
+	if err := f.db.Create(&walletdomain.Account{UserID: checkout.UserID, Balance: checkout.TotalAmount}).Error; err != nil {
+		t.Fatal(err)
+	}
+	payments := paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{
+		OrderStore: orders, PaymentStore: paymentstore.New(f.db, "test-guest-credential-secret-with-32-bytes"), WalletRepo: wallets,
+		WalletService: walletapp.NewService(walletapp.Options{Repository: wallets, Transactions: wallets}),
+	})
+	settled, err := payments.CreatePayment(paymentapp.CreatePaymentInput{OrderID: checkout.ID, UseBalance: true, Context: ctx})
+	if err != nil || settled == nil || !settled.OrderPaid || !settled.WalletPaidAmount.Equal(checkout.TotalAmount.Decimal) || !settled.OnlinePayAmount.IsZero() {
+		t.Fatalf("settle original region order: %v", err)
+	}
+	paid, err := orders.GetByID(checkout.ID)
+	if err != nil || paid == nil || paid.PaidAt == nil {
+		t.Fatalf("load paid original order: %v", err)
+	}
+	loadPayment := func() paymentdomain.Payment {
+		t.Helper()
+		var rows []paymentdomain.Payment
+		if err := f.db.Where("order_id = ?", checkout.ID).Find(&rows).Error; err != nil || len(rows) != 1 ||
+			rows[0].Status != constants.PaymentStatusSuccess || rows[0].ProviderType != constants.PaymentProviderWallet ||
+			rows[0].Currency != paid.Currency || !rows[0].Amount.Equal(paid.TotalAmount.Decimal) {
+			t.Fatalf("expected one successful wallet payment for original order: %v", err)
+		}
+		return rows[0]
+	}
+	originalPayment := loadPayment()
+	assertDirectShopOrderStatus(t, orders, checkout, constants.OrderStatusPaid, *paid.PaidAt)
+	childID := checkout.Children[0].ID
+	initial, err := f.store.GetRecharge(ctx, childID)
+	if err != nil || initial == nil || initial.Stage != kafudadomain.StageWaiting || initial.Snapshot.Country != "PH" ||
+		initial.Snapshot.ProductCode != "checkout-card" || initial.Snapshot.SellPrice.String() != "100.00" || initial.Snapshot.Currency != checkout.Currency {
+		t.Fatalf("unexpected original snapshot: %+v, %v", initial, err)
+	}
+	updatedCommerce := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+		Catalog: kafudaapp.NewCatalogService(f.store, nil, f.catalog.Profile, time.Hour), SalesEnabled: true,
+		ReferenceLookupVerified: true, ProductCode: replacementCard, MaxCostCents: 2500, AllowedKinds: []string{"new"},
+		WorkerReady: func(context.Context) bool { return true },
+	})
+	writer := productwrite.NewWriteService(productwrite.Options{
+		Products: productstore.NewProductStore(f.db), SKUs: productstore.NewSKUStore(f.db),
+		Categories: categorystore.NewCategoryStore(f.db), Orders: orders,
+	})
+	writer.SetDirectCatalog(updatedCommerce)
+	inactive := false
+	edited, err := writer.Update(fmt.Sprint(f.product.ID), productwrite.CreateProductInput{
+		CategoryID: f.product.CategoryID, Slug: f.product.Slug, TitleJSON: f.product.TitleJSON,
+		FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+		SKUs: []productwrite.ProductSKUInput{{
+			ID: f.sku.ID, SKUCode: kafudacontract.SKUCode("plus", "PH"), IsActive: &inactive,
+			PriceAmount: decimal.NewFromInt(130), CostPriceAmount: decimal.NewFromInt(55), CostPriceProvided: true,
+		}},
+	})
+	if err != nil || edited == nil || !edited.IsActive || len(edited.SKUs) != 1 || edited.SKUs[0].ID != sibling.ID {
+		t.Fatalf("retire original SKU via product edit: %v", err)
+	}
+	retired, err := f.options.ProductSKUStore.GetByID(f.sku.ID)
+	if err != nil || retired == nil || retired.IsActive || retired.PriceAmount.String() != "130.00" || retired.CostPriceAmount.String() != "55.00" {
+		t.Fatalf("retired SKU configuration was not retained: %+v, %v", retired, err)
+	}
+	assertDirectRegionalPublicSKUs(t, f, updatedCommerce, sibling.ID)
+	f.options.DirectCatalog = updatedCommerce
+	checkoutService := orderapp.NewOrderService(f.options)
+	if preview, err := checkoutService.PreviewOrder(f.input); preview != nil || !errors.Is(err, orderapp.ErrProductSKUInvalid) {
+		t.Fatalf("retired region remains previewable: %v", err)
+	}
+	if order, err := checkoutService.CreateOrder(f.input); order != nil || !errors.Is(err, orderapp.ErrProductSKUInvalid) {
+		t.Fatalf("retired region remains purchasable from a stale SKU ID: %v", err)
+	}
+	var count int64
+	if err := f.db.Model(&orderdomain.Order{}).Count(&count).Error; err != nil || count != 2 {
+		t.Fatalf("rejected order changed persisted checkout count: %d, %v", count, err)
+	}
+	otherInput := f.input
+	otherInput.Items = []orderapp.CreateOrderItem{{ProductID: f.product.ID, SKUID: sibling.ID, Quantity: 1}}
+	if preview, err := checkoutService.PreviewOrder(otherInput); err != nil || preview == nil || !preview.TotalAmount.Equal(sibling.PriceAmount.Decimal) {
+		t.Fatalf("sibling region preview lost its own price: %v", err)
+	}
+	otherOrder, err := checkoutService.CreateOrder(otherInput)
+	if err != nil || otherOrder == nil || len(otherOrder.Children) != 1 {
+		t.Fatalf("sibling region checkout: %v", err)
+	}
+	other, err := f.store.GetRecharge(ctx, otherOrder.Children[0].ID)
+	if err != nil || other == nil || other.Snapshot.SKUID != sibling.ID || other.Snapshot.Country != siblingCountry ||
+		other.Snapshot.ProductCode != replacementCard || !other.Snapshot.SellPrice.Equal(sibling.PriceAmount.Decimal) {
+		t.Fatalf("unexpected sibling snapshot: %+v, %v", other, err)
+	}
+
+	now := time.Now().UTC()
+	reservation, err := kafudaworkflow.ReserveBuyerAttempt(orders, ordercontract.TenantScope{}, checkout.OrderNo, checkout.UserID, now, now.Add(time.Minute))
+	if err != nil || reservation == nil || !reservation.Created || !reflect.DeepEqual(reservation.Recharge.Snapshot, initial.Snapshot) {
+		t.Fatalf("old order could not reserve the original snapshot: %v", err)
+	}
+	snapshot := reservation.Recharge.Snapshot
+	quote := kafudacontract.Quote{Plan: snapshot.Plan, Status: "available", Kind: "new", QuoteID: "original-region-quote",
+		PriceCents: 900, ExpiresAt: now.Add(time.Minute), AutoCard: &kafudacontract.AutoCard{ProductCode: snapshot.ProductCode, LoadCents: 100, TotalCents: 1000}}
+	check := kafudacontract.CheckResult{Country: siblingCountry, PayMode: snapshot.PayMode, Plans: []kafudacontract.Quote{quote}}
+	if selected, err := kafudaapp.SelectQuote(check, snapshot, now); selected != nil || !errors.Is(err, kafudaapp.ErrQuotePolicy) {
+		t.Fatalf("old order accepted a quote for the sibling region: %v", err)
+	}
+	check.Country = snapshot.Country
+	check.Plans[0].AutoCard = &kafudacontract.AutoCard{ProductCode: replacementCard, LoadCents: 100, TotalCents: 1000}
+	if selected, err := kafudaapp.SelectQuote(check, snapshot, now); selected != nil || !errors.Is(err, kafudaapp.ErrQuotePolicy) {
+		t.Fatalf("old order accepted a quote using the replacement card: %v", err)
+	}
+	check.Plans[0] = quote
+	calls := 0
+	gateway := directCreateGateway{create: func(_ context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
+		calls++
+		if req.QuoteID != quote.QuoteID || req.Reference != reservation.Attempt.Reference {
+			t.Fatalf("old order submitted with unexpected quote or reference: %+v", req)
+		}
+		return &kafudacontract.OrderResult{ID: 701, Reference: req.Reference, Product: snapshot.Product, Plan: snapshot.Plan, Country: snapshot.Country, Status: "completed"}, nil
+	}}
+	completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, orders, kafudaapp.New(f.store), gateway, reservation, check, time.Minute)
+	if err != nil || !completed || calls != 1 {
+		t.Fatalf("retired region order could not fulfill from its original quote: calls=%d, %v", calls, err)
+	}
+	assertDirectShopOrderStatus(t, orders, checkout, constants.OrderStatusCompleted, *paid.PaidAt)
+	final, err := f.store.GetRecharge(ctx, childID)
+	if err != nil || final == nil || final.Stage != kafudadomain.StageCompleted || !reflect.DeepEqual(final.Snapshot, initial.Snapshot) {
+		t.Fatalf("retired region fulfillment changed the original snapshot: %+v, %v", final, err)
+	}
+	if payment := loadPayment(); !reflect.DeepEqual(payment, originalPayment) {
+		t.Fatal("retired region fulfillment changed payment facts")
+	}
+}
+
+type directRegionalRelatedPosts struct{}
+
+func (directRegionalRelatedPosts) ListPostsForProduct(context.Context, uint, int) ([]contentcontract.RelatedPost, error) {
+	return nil, nil
+}
+
+func assertDirectRegionalPublicSKUs(t *testing.T, f directCheckoutFixture, commerce *kafudaapp.CommerceService, wantIDs ...uint) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	producthttp.RegisterPublicRoutes(router.Group("/api/v1/public"), catalogproductbootstrap.NewPublicHTTP(catalogproductbootstrap.PublicHTTPDependencies{
+		Products:     productapp.NewService(productapp.Options{Products: productstore.NewProductStore(f.db), Categories: categorystore.NewCategoryStore(f.db)}),
+		RelatedPosts: directRegionalRelatedPosts{}, Direct: commerce,
+	}))
+	request := func(path string, data any) {
+		t.Helper()
+		ctx := resellercontract.WithTenantContext(t.Context(), f.input.Tenant)
+		result := httptest.NewRecorder()
+		router.ServeHTTP(result, httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx))
+		var envelope struct {
+			Code int             `json:"status_code"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(result.Body.Bytes(), &envelope); err != nil || result.Code != http.StatusOK || envelope.Code != 0 {
+			t.Fatalf("read public route %s: %s, %v", path, result.Body.String(), err)
+		}
+		if err := json.Unmarshal(envelope.Data, data); err != nil {
+			t.Fatalf("decode public route %s: %v", path, err)
+		}
+	}
+	var products []productpresenter.Product
+	request("/api/v1/public/products", &products)
+	if len(products) != 1 {
+		t.Fatalf("public list contains %d products, want one Direct product", len(products))
+	}
+	var detail productpresenter.Product
+	request("/api/v1/public/products/"+f.product.Slug, &detail)
+	for _, product := range []productpresenter.Product{products[0], detail} {
+		if product.ID != f.product.ID || product.IsSoldOut || len(product.SKUs) != len(wantIDs) {
+			t.Fatalf("unexpected public Direct availability: %+v", product)
+		}
+		for i, sku := range product.SKUs {
+			if sku.ID != wantIDs[i] || sku.IsSoldOut || !sku.IsActive {
+				t.Fatalf("expected active public SKU %d, got %+v", wantIDs[i], sku)
+			}
 		}
 	}
 }

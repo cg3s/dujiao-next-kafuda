@@ -27,6 +27,15 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestPostgresDirectRegionalSKUStopPreservesPaidSnapshot(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	db := openPostgresDirectRaceDB(t, dsn)
+	testDirectRegionalSKUStopPreservesPaidSnapshot(t, seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-regional-stop", 0, 0)))
+}
+
 func TestPostgresDirectCheckoutAndTypeSwitchShareProductLock(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 	if dsn == "" {
