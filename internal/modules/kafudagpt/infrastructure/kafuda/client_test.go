@@ -122,6 +122,54 @@ func TestOrderFailureIsNotRetriedAndDoesNotExposePII(t *testing.T) {
 	}
 }
 
+func TestCreateOrderClassifiesDefinitiveRejections(t *testing.T) {
+	const expired = `{"error":{"code":"quote_expired","message":"buyer@example.test","details":{"text":"private_fixture"}}}`
+	for _, scenario := range []struct {
+		name, body string
+		status     int
+		lookup     bool
+		want       error
+	}{
+		{name: "expired_quote", body: expired, status: 400, want: kafudacontract.ErrCreateQuoteExpired},
+		{name: "merchant_balance", body: `{"error":{"code":"insufficient_balance","message":"buyer@example.test"}}`, status: 400, want: kafudacontract.ErrMerchantBalanceInsufficient},
+		{name: "quote_used", body: `{"error":{"code":"quote_used"}}`, status: 400},
+		{name: "unknown_code", body: `{"error":{"code":"private_fixture","message":"quote_expired"}}`, status: 400},
+		{name: "contradictory_data", body: `{"error":{"code":"quote_expired"},"data":{"id":1}}`, status: 400},
+		{name: "truncated", body: expired[:len(expired)-1], status: 400},
+		{name: "oversized", body: expired + strings.Repeat(" ", 8192), status: 400},
+		{name: "different_status", body: expired, status: 409},
+		{name: "lookup", body: expired, status: 400, lookup: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var calls atomic.Int32
+			c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(scenario.status)
+				fmt.Fprint(w, scenario.body)
+			})
+			var err error
+			if scenario.lookup {
+				_, err = c.GetOrder(t.Context(), 1)
+			} else {
+				_, err = c.CreateOrder(t.Context(), kafudacontract.CreateOrderRequest{QuoteID: "quo_1", Reference: "order-1"})
+			}
+			if scenario.want != nil {
+				if !errors.Is(err, scenario.want) {
+					t.Fatalf("order rejection = %v, want %v", err, scenario.want)
+				}
+			} else {
+				var apiErr *kafudacontract.APIError
+				if !errors.As(err, &apiErr) || apiErr.Code != "upstream_error" || apiErr.HTTPStatus != scenario.status {
+					t.Fatalf("ambiguous response classified as definitive: %v", err)
+				}
+			}
+			if calls.Load() != 1 || strings.Contains(err.Error(), "private_fixture") || strings.Contains(err.Error(), "buyer@example.test") {
+				t.Fatalf("unexpected retry or upstream details in error: %v, calls=%d", err, calls.Load())
+			}
+		})
+	}
+}
+
 func TestRejectsRedirectsWithoutForwardingSession(t *testing.T) {
 	forwarded := 0
 	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded++ }))

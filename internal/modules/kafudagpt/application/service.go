@@ -144,7 +144,25 @@ func (s *Service) MarkSubmitting(ctx context.Context, attemptID uint, quoteID st
 // ExpireUndispatchedQuote may only be called before the gateway was invoked.
 // Preserve the committed quote and reference while releasing the active slot.
 func (s *Service) ExpireUndispatchedQuote(ctx context.Context, attemptID uint, quoteID, reference string, expiresAt, now time.Time) error {
-	if strings.TrimSpace(quoteID) == "" || reference == "" || expiresAt.IsZero() || now.IsZero() || now.Before(expiresAt) {
+	if expiresAt.IsZero() || now.Before(expiresAt) {
+		return kafudadomain.ErrInvalidTransition
+	}
+	return s.RejectOrderSubmission(ctx, attemptID, quoteID, reference, kafudadomain.ReasonQuoteExpired, now)
+}
+
+// RejectOrderSubmission releases an undispatched or definitively rejected
+// submission. An attempt already moved to review keeps its active slot.
+func (s *Service) RejectOrderSubmission(ctx context.Context, attemptID uint, quoteID, reference, reason string, now time.Time) error {
+	if strings.TrimSpace(quoteID) == "" || reference == "" || now.IsZero() {
+		return kafudadomain.ErrInvalidTransition
+	}
+	var stage kafudadomain.Stage
+	switch reason {
+	case kafudadomain.ReasonQuoteExpired:
+		stage = kafudadomain.StageWaiting
+	case kafudadomain.ReasonMerchantBalanceInsufficient:
+		stage = kafudadomain.StageManualDelivery
+	default:
 		return kafudadomain.ErrInvalidTransition
 	}
 	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
@@ -155,7 +173,7 @@ func (s *Service) ExpireUndispatchedQuote(ctx context.Context, attemptID uint, q
 			return kafudadomain.ErrInvalidTransition
 		}
 		attempt.Status, attempt.ActiveOrderID, attempt.NextPollAt, attempt.UpdatedAt = kafudadomain.AttemptFailed, nil, nil, now
-		record.Stage, record.ReasonCode, record.UpdatedAt = kafudadomain.StageWaiting, kafudadomain.ReasonQuoteExpired, now
+		record.Stage, record.ReasonCode, record.UpdatedAt = stage, reason, now
 		return nil
 	})
 }

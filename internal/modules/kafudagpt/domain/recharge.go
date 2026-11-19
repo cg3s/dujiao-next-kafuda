@@ -22,12 +22,13 @@ const (
 )
 
 const (
-	ReasonQuoteRegionLocked = "quote_region_locked"
-	ReasonQuoteExpired      = "quote_expired"
-	ReasonQuoteUnavailable  = "quote_unavailable"
-	ReasonQuotePolicy       = "quote_policy"
-	ReasonCostLimitExceeded = "cost_limit_exceeded"
-	ReasonResultApplyFailed = "result_apply_failed"
+	ReasonQuoteRegionLocked           = "quote_region_locked"
+	ReasonQuoteExpired                = "quote_expired"
+	ReasonQuoteUnavailable            = "quote_unavailable"
+	ReasonQuotePolicy                 = "quote_policy"
+	ReasonCostLimitExceeded           = "cost_limit_exceeded"
+	ReasonResultApplyFailed           = "result_apply_failed"
+	ReasonMerchantBalanceInsufficient = "merchant_balance_insufficient"
 )
 
 var (

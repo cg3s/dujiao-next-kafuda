@@ -52,22 +52,34 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 		QuoteID: quote.QuoteID, Reference: attempt.Reference,
 	})
 	cancelSubmit()
-	if err == nil && result == nil {
-		err = errCreateResultMissing
-	}
-	if err == nil {
+	var rejectionReason string
+	switch {
+	case err == nil && result != nil:
 		observedAt := time.Now().UTC()
 		completed, applyErr := ApplyResult(orders, attempt.OrderID, attempt.ID, *result, observedAt, observedAt, pollInterval)
 		if applyErr == nil {
 			return completed, nil
 		}
 		err = applyErr
+	case err == nil:
+		err = errCreateResultMissing
+	case result == nil && errors.Is(err, kafudacontract.ErrCreateQuoteExpired):
+		rejectionReason = kafudadomain.ReasonQuoteExpired
+		err = kafudaapp.ErrQuoteExpired
+	case result == nil && errors.Is(err, kafudacontract.ErrMerchantBalanceInsufficient):
+		rejectionReason = kafudadomain.ReasonMerchantBalanceInsufficient
 	}
 
-	// If this update also fails, the persisted submitting lease is recoverable.
-	// The request may have succeeded upstream, so keep the active attempt.
 	recoveryCtx, cancelRecovery := context.WithTimeout(context.WithoutCancel(ctx), submissionRecoveryTimeout)
 	defer cancelRecovery()
 	observedAt := time.Now().UTC()
+	if rejectionReason != "" {
+		if rejectErr := records.RejectOrderSubmission(recoveryCtx, attempt.ID, quote.QuoteID, attempt.Reference, rejectionReason, observedAt); rejectErr != nil {
+			return false, rejectErr
+		}
+		return false, err
+	}
+	// When the request may have succeeded upstream, keep the original attempt.
+	// The persisted submitting lease is recoverable if this update fails.
 	return false, errors.Join(err, records.MarkUnknown(recoveryCtx, attempt.ID, observedAt, observedAt.Add(pollInterval)))
 }

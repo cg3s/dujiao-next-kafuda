@@ -495,6 +495,10 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 	}{
 		{"region_locked", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuoteRegionLocked},
 		{"quote_expired", kafudadomain.StageWaiting, false, kafudadomain.ReasonQuoteExpired},
+		{"upstream_quote_expired", kafudadomain.StageWaiting, true, kafudadomain.ReasonQuoteExpired},
+		{"upstream_quote_expired_after_recovery", kafudadomain.StageManualReview, true, "outcome_unknown"},
+		{"upstream_balance_insufficient", kafudadomain.StageManualDelivery, true, kafudadomain.ReasonMerchantBalanceInsufficient},
+		{"ambiguous_bad_request", kafudadomain.StageManualReview, true, "outcome_unknown"},
 		{"quote_unavailable", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuoteUnavailable},
 		{"policy_rejected", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuotePolicy},
 		{"processing", kafudadomain.StageProcessing, true, ""},
@@ -572,6 +576,21 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 					return nil, errors.New("supplier response lost")
 				case "response_mismatch":
 					result.Reference = "other-reference"
+				case "upstream_quote_expired":
+					return nil, kafudacontract.ErrCreateQuoteExpired
+				case "upstream_quote_expired_after_recovery":
+					if attempt.NextPollAt == nil {
+						t.Fatal("committed submission has no recovery time")
+					}
+					recovery := kafudaworkflow.WithShopOrderTransitions(records, f.options.OrderStore)
+					if err := recovery.RecoverUnidentifiedSubmissions(ctx, *attempt.NextPollAt, 1); err != nil {
+						t.Fatal(err)
+					}
+					return nil, kafudacontract.ErrCreateQuoteExpired
+				case "upstream_balance_insufficient":
+					return nil, kafudacontract.ErrMerchantBalanceInsufficient
+				case "ambiguous_bad_request":
+					return nil, &kafudacontract.APIError{HTTPStatus: http.StatusBadRequest, Code: "upstream_error"}
 				}
 				return result, nil
 			}, get: func(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
@@ -585,8 +604,19 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 			if completed != (scenario.stage == kafudadomain.StageCompleted) || (err != nil) != wantError {
 				t.Fatalf("unexpected outcome: completed=%v, err=%v", completed, err)
 			}
-			if scenario.name == "quote_expired" && !errors.Is(err, kafudaapp.ErrQuoteExpired) {
-				t.Fatalf("expected locally expired quote, got %v", err)
+			switch scenario.name {
+			case "quote_expired", "upstream_quote_expired":
+				if !errors.Is(err, kafudaapp.ErrQuoteExpired) {
+					t.Fatalf("expected refreshable expired quote, got %v", err)
+				}
+			case "upstream_quote_expired_after_recovery":
+				if !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+					t.Fatalf("expected late rejection to preserve the review state, got %v", err)
+				}
+			case "upstream_balance_insufficient":
+				if !errors.Is(err, kafudacontract.ErrMerchantBalanceInsufficient) {
+					t.Fatalf("expected merchant balance rejection, got %v", err)
+				}
 			}
 			wantReplayErr := kafudadomain.ErrInvalidTransition
 			if scenario.stage == kafudadomain.StageCompleted {
@@ -611,12 +641,22 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				wantStatus = constants.OrderStatusCompleted
 			}
 			assertDirectShopOrderStatus(t, f.options.OrderStore, order, wantStatus, now)
-			if scenario.name == "quote_expired" {
+			if scenario.wantReason == kafudadomain.ReasonQuoteExpired || scenario.wantReason == kafudadomain.ReasonMerchantBalanceInsufficient {
 				previous, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
+				var wantQuoteID string
+				if scenario.wantCall {
+					wantQuoteID = "quote_checkout"
+				}
 				if err != nil || previous == nil || previous.Status != kafudadomain.AttemptFailed || previous.ActiveOrderID != nil ||
-					previous.QuoteID != "" || previous.NextPollAt != nil || previous.Reference != reservation.Attempt.Reference ||
+					previous.QuoteID != wantQuoteID || previous.NextPollAt != nil || previous.UpstreamOrderID != nil || previous.Reference != reservation.Attempt.Reference ||
 					record.CurrentAttemptID == nil || *record.CurrentAttemptID != previous.ID {
-					t.Fatalf("expired quote left an active attempt or lost history: %+v, %v", previous, err)
+					t.Fatalf("rejected quote left an active attempt or lost history: %+v, %v", previous, err)
+				}
+				if scenario.wantReason == kafudadomain.ReasonMerchantBalanceInsufficient {
+					if !kafudacontract.CanResolveManualAttempt(record, previous) {
+						t.Fatal("definitive merchant rejection did not open controlled after-sales")
+					}
+					return
 				}
 				retryAt := time.Now().UTC()
 				retry, err := kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, ordercontract.TenantScope{}, order.OrderNo, order.UserID, retryAt, retryAt.Add(time.Minute))

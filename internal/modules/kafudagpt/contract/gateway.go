@@ -3,8 +3,14 @@ package contract
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+)
+
+var (
+	ErrCreateQuoteExpired          = errors.New("kafuda rejected an expired order quote")
+	ErrMerchantBalanceInsufficient = errors.New("kafuda rejected an order for insufficient merchant balance")
 )
 
 // Gateway is the server-side Kafuda API boundary. Session must never be persisted

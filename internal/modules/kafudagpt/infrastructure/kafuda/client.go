@@ -17,7 +17,11 @@ import (
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 )
 
-const maxResponseBytes = 2 << 20
+const (
+	maxResponseBytes       = 2 << 20
+	maxOrderRejectionBytes = 4 << 10
+	orderPath              = "/api/v1/gpt/orders"
+)
 
 var safeKey = regexp.MustCompile(`^[a-zA-Z0-9._:-]{1,80}$`)
 
@@ -90,7 +94,7 @@ func (c *Client) CreateOrder(ctx context.Context, input kafudacontract.CreateOrd
 	if !safeKey.MatchString(input.Reference) || strings.TrimSpace(input.QuoteID) == "" {
 		return nil, apiError(0, "invalid_request")
 	}
-	return c.order(ctx, http.MethodPost, "/api/v1/gpt/orders", input, input.Reference)
+	return c.order(ctx, http.MethodPost, orderPath, input, input.Reference)
 }
 
 func (c *Client) GetOrder(ctx context.Context, id uint64) (*kafudacontract.OrderResult, error) {
@@ -105,7 +109,7 @@ func (c *Client) GetOrder(ctx context.Context, id uint64) (*kafudacontract.Order
 	if retryAfter > 0 {
 		return nil, &kafudacontract.APIError{HTTPStatus: http.StatusTooManyRequests, Code: "rate_limited", RetryAfter: retryAfter}
 	}
-	result, err := c.order(ctx, http.MethodGet, "/api/v1/gpt/orders/"+strconv.FormatUint(id, 10), nil, "")
+	result, err := c.order(ctx, http.MethodGet, orderPath+"/"+strconv.FormatUint(id, 10), nil, "")
 	var limit *kafudacontract.APIError
 	if errors.As(err, &limit) && limit.HTTPStatus == http.StatusTooManyRequests && limit.RetryAfter > 0 {
 		resumeAt := time.Now().Add(limit.RetryAfter)
@@ -171,8 +175,12 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// The error body is upstream-controlled, including fields named code.
-		// Classify from HTTP status so no part of the body reaches diagnostics.
+		if method == http.MethodPost && path == orderPath && resp.StatusCode == http.StatusBadRequest {
+			if rejection := readOrderRejection(resp.Body); rejection != nil {
+				return rejection
+			}
+		}
+		// No supplier error value is allowed to reach diagnostics.
 		code := "upstream_error"
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests:
@@ -200,6 +208,32 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 		return apiError(resp.StatusCode, "invalid_response")
 	}
 	return nil
+}
+
+// readOrderRejection recognizes only documented reasons that reject creation.
+// Return a local sentinel, never the supplier's code, message, or details.
+func readOrderRejection(body io.Reader) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxOrderRejectionBytes+1))
+	if err != nil || len(data) > maxOrderRejectionBytes {
+		return nil
+	}
+	var wire struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+		Data json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(data, &wire) != nil || len(wire.Data) > 0 && !bytes.Equal(wire.Data, []byte("null")) {
+		return nil
+	}
+	switch wire.Error.Code {
+	case "quote_expired":
+		return kafudacontract.ErrCreateQuoteExpired
+	case "insufficient_balance":
+		return kafudacontract.ErrMerchantBalanceInsufficient
+	default:
+		return nil
+	}
 }
 
 func apiError(status int, code string) *kafudacontract.APIError {

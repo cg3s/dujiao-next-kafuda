@@ -150,7 +150,7 @@ func newAdminDirectStatusReader(c *container.Container) ordertransport.AdminDire
 		switch record.ReasonCode {
 		case "check_rejected", "session_invalid", "outcome_unknown", "upstream_review", "upstream_failed", "upstream_cancelled",
 			kafudadomain.ReasonQuoteRegionLocked, kafudadomain.ReasonQuoteExpired, kafudadomain.ReasonQuoteUnavailable, kafudadomain.ReasonQuotePolicy,
-			"cost_limit_exceeded", "lookup_deadline_exceeded", "check_interrupted", kafudadomain.ReasonResultApplyFailed:
+			"cost_limit_exceeded", "lookup_deadline_exceeded", "check_interrupted", kafudadomain.ReasonResultApplyFailed, kafudadomain.ReasonMerchantBalanceInsufficient:
 			status.Reason = record.ReasonCode
 		}
 		if record.CurrentAttemptID == nil {
