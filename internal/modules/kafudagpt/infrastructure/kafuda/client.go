@@ -231,9 +231,13 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 		return apiError(resp.StatusCode, "invalid_response")
 	}
 	var envelope struct {
-		Data json.RawMessage `json:"data"`
+		Data  json.RawMessage `json:"data"`
+		Error json.RawMessage `json:"error"`
 	}
-	if json.Unmarshal(data, &envelope) != nil || len(envelope.Data) == 0 || bytes.Equal(bytes.TrimSpace(envelope.Data), []byte("null")) || json.Unmarshal(envelope.Data, target) != nil {
+	// A success status with an error payload cannot confirm a catalog or order result.
+	if json.Unmarshal(data, &envelope) != nil ||
+		(len(envelope.Error) != 0 && !bytes.Equal(bytes.TrimSpace(envelope.Error), []byte("null"))) ||
+		len(envelope.Data) == 0 || bytes.Equal(bytes.TrimSpace(envelope.Data), []byte("null")) || json.Unmarshal(envelope.Data, target) != nil {
 		return apiError(resp.StatusCode, "invalid_response")
 	}
 	return nil

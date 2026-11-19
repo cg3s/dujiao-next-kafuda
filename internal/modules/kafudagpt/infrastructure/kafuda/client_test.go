@@ -287,10 +287,46 @@ func TestRejectsMalformedOversizedOrMismatchedResponses(t *testing.T) {
 	}
 }
 
+func TestRejectsContradictorySuccessResponses(t *testing.T) {
+	const supplierError = `"error":{"code":"quote_expired","message":"supplier-private-fixture"}`
+	const order = `{"id":1,"reference":"order-1","product":"gpt","plan":"plus","country":"PH","status":"completed"}`
+	for _, scenario := range []struct {
+		name, data string
+		request    func(context.Context, *Client) error
+	}{
+		{"catalog", `{"enabled":false,"plans":[],"auto_card_products":[]}`, func(ctx context.Context, client *Client) error {
+			_, err := client.Catalog(ctx)
+			return err
+		}},
+		{"create", order, func(ctx context.Context, client *Client) error {
+			_, err := client.CreateOrder(ctx, kafudacontract.CreateOrderRequest{QuoteID: "quo_1", Reference: "order-1"})
+			return err
+		}},
+		{"lookup", order, func(ctx context.Context, client *Client) error {
+			_, err := client.GetOrder(ctx, 1)
+			return err
+		}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var calls atomic.Int32
+			c := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				fmt.Fprintf(w, `{"data":%s,%s}`, scenario.data, supplierError)
+			})
+			err := scenario.request(t.Context(), c)
+			var apiErr *kafudacontract.APIError
+			if !errors.As(err, &apiErr) || apiErr.Code != "invalid_response" || apiErr.HTTPStatus != http.StatusOK ||
+				errors.Is(err, kafudacontract.ErrCreateQuoteExpired) || strings.Contains(err.Error(), "supplier-private-fixture") || calls.Load() != 1 {
+				t.Fatalf("contradictory envelope was not rejected safely: %v, calls=%d", err, calls.Load())
+			}
+		})
+	}
+}
+
 func TestCatalogAndNullableResultFields(t *testing.T) {
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/gpt/catalog" {
-			fmt.Fprint(w, `{"data":{"plans":[],"regions":[]}}`)
+			fmt.Fprint(w, `{"data":{"plans":[],"regions":[]},"error":null}`)
 			return
 		}
 		fmt.Fprint(w, `{"data":{"id":1,"status":"completed","account_email":"buyer@example.com","charged_usd_cents":null,"renewal_cancelled":false,"completed_at":"2026-11-16T10:00:00Z"}}`)
