@@ -7,6 +7,7 @@ const messages = {
       unknownRegion: '未指定地区',
       salesBlockReasons: {
         gateway_not_configured: '站点暂不可购买：未配置 Kafuda API。',
+        gateway_config_invalid: '直充暂停销售。请检查 Kafuda API 的 HTTPS 地址和 API 密钥。',
         sales_disabled: '站点暂不可购买：部署配置未开启直充销售。',
         reference_lookup_unverified: '站点暂不可购买：尚未确认按 reference 核对订单的渠道。',
         merchant_policy_incomplete: '站点暂不可购买：请检查卡头、成本上限和允许的业务类型。',
@@ -4691,6 +4692,7 @@ const messages = {
       unknownRegion: '未指定地區',
       salesBlockReasons: {
         gateway_not_configured: '站點暫不可購買：未設定 Kafuda API。',
+        gateway_config_invalid: '直充暫停銷售。請檢查 Kafuda API 的 HTTPS 位址和 API 密鑰。',
         sales_disabled: '站點暫不可購買：部署設定未開啟直充銷售。',
         reference_lookup_unverified: '站點暫不可購買：尚未確認依 reference 核對訂單的管道。',
         merchant_policy_incomplete: '站點暫不可購買：請檢查卡頭、成本上限和允許的業務類型。',
@@ -9375,6 +9377,7 @@ const messages = {
       unknownRegion: 'Unspecified region',
       salesBlockReasons: {
         gateway_not_configured: 'Unavailable for purchase: the Kafuda API is not configured.',
+        gateway_config_invalid: 'Direct sales are paused. Check the Kafuda API HTTPS origin and API key.',
         sales_disabled: 'Unavailable for purchase: direct sales are disabled in deployment settings.',
         reference_lookup_unverified: 'Unavailable for purchase: order reconciliation by reference has not been verified.',
         merchant_policy_incomplete: 'Unavailable for purchase: check the card product, cost limit and allowed operation types.',

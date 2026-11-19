@@ -37,6 +37,7 @@ import (
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
+	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
 	walletdomain "github.com/dujiao-next/internal/modules/wallet/domain"
@@ -384,6 +385,22 @@ func TestKafudaAdminRoutesEnforceScopedPermissions(t *testing.T) {
 }
 
 func TestKafudaProductionStartupBlocksDirectCheckoutUntilFulfillmentWired(t *testing.T) {
+	testKafudaProductionStartupDirectGate(t, "https://supplier.example.test", "test-catalog-api-key", "fulfillment_not_wired")
+}
+
+func TestKafudaProductionStartupKeepsShopAvailableWithInvalidGateway(t *testing.T) {
+	for _, tc := range []struct{ name, origin, apiKey string }{
+		{"insecure_origin", "http://supplier.example.test", "test-catalog-api-key"},
+		{"invalid_key", "https://supplier.example.test", "test-catalog\nkey"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testKafudaProductionStartupDirectGate(t, tc.origin, tc.apiKey, "gateway_config_invalid")
+		})
+	}
+}
+
+func testKafudaProductionStartupDirectGate(t *testing.T, apiURL, apiKey, wantReason string) {
+	t.Helper()
 	db := openKafudaHTTPTestDB(t)
 	// Order creation requires an enabled queue. A blocked checkout never connects to it.
 	endpoint, err := net.Listen("tcp", "127.0.0.1:0")
@@ -400,9 +417,18 @@ func TestKafudaProductionStartupBlocksDirectCheckoutUntilFulfillmentWired(t *tes
 		Server: config.ServerConfig{Mode: gin.TestMode}, Web: config.WebConfig{AdminPath: "/admin"},
 		Queue: config.QueueConfig{Enabled: true, Host: "127.0.0.1", Port: port},
 		KafudaGPT: config.KafudaGPTConfig{
-			APIBaseURL: "https://supplier.example.test", APIKey: "test-catalog-api-key", ProductCode: cardCode,
+			APIBaseURL: apiURL, APIKey: apiKey, ProductCode: cardCode,
 			SalesEnabled: true, ReferenceLookupVerified: true, MaxCostCents: 2500, AllowedKinds: []string{"new"}, CatalogTTLSeconds: 3600,
 		},
+	}
+	const plan, country = "plus", "PH"
+	now := time.Now().UTC()
+	if err := kafudastore.New(db).SaveCatalog(t.Context(), &kafudadomain.Catalog{
+		Profile: "default", Enabled: true, SyncedAt: now, ExpiresAt: now.Add(time.Hour),
+		Options: []kafudadomain.CatalogOption{{Plan: plan, Country: country, Product: "gpt", Available: true}},
+		Cards:   []kafudadomain.CardProduct{{ProductCode: cardCode}},
+	}); err != nil {
+		t.Fatal(err)
 	}
 	deps, err := container.NewContainer(cfg)
 	if err != nil {
@@ -412,15 +438,6 @@ func TestKafudaProductionStartupBlocksDirectCheckoutUntilFulfillmentWired(t *tes
 		t.Fatal("startup did not enable the queue client")
 	}
 	t.Cleanup(func() { _ = deps.QueueClient.Close() })
-	const plan, country = "plus", "PH"
-	now := time.Now().UTC()
-	if err := deps.KafudaGPT.Store.SaveCatalog(t.Context(), &kafudadomain.Catalog{
-		Profile: "default", Enabled: true, SyncedAt: now, ExpiresAt: now.Add(time.Hour),
-		Options: []kafudadomain.CatalogOption{{Plan: plan, Country: country, Product: "gpt", Available: true}},
-		Cards:   []kafudadomain.CardProduct{{ProductCode: cardCode}},
-	}); err != nil {
-		t.Fatal(err)
-	}
 	operator := &admindomain.Admin{Username: "catalog-startup-operator", PasswordHash: "fixture"}
 	if err := deps.AdminStore.Create(operator); err != nil {
 		t.Fatal(err)
@@ -481,17 +498,33 @@ func TestKafudaProductionStartupBlocksDirectCheckoutUntilFulfillmentWired(t *tes
 		}
 		return res.Message
 	}
-	var catalog struct {
+	type catalogView struct {
 		Configured bool                       `json:"configured"`
 		Enabled    bool                       `json:"enabled"`
 		Stale      bool                       `json:"stale"`
 		Reason     string                     `json:"sales_block_reason"`
 		Options    []kafudacontract.SKUOption `json:"options"`
 	}
+	var catalog catalogView
 	request(http.MethodGet, "/api/v1/admin/kafuda-gpt/catalog", operatorToken, "", response.CodeOK, &catalog)
-	if !catalog.Configured || !catalog.Enabled || catalog.Stale || catalog.Reason != "fulfillment_not_wired" ||
+	wantConfigured := wantReason != "gateway_config_invalid"
+	if catalog.Configured != wantConfigured || !catalog.Enabled || catalog.Stale || catalog.Reason != wantReason ||
 		len(catalog.Options) != 1 || !catalog.Options[0].Available {
 		t.Fatalf("production startup did not isolate its fulfillment gate: %+v", catalog)
+	}
+	if !wantConfigured {
+		if deps.KafudaGPT.Gateway != nil {
+			t.Fatal("invalid configuration created an upstream gateway")
+		}
+		msg := request(http.MethodPost, "/api/v1/admin/kafuda-gpt/catalog/sync", operatorToken, "", response.CodeBadRequest, nil)
+		if msg != i18n.T("en-US", "error.kafuda_config_invalid") {
+			t.Fatalf("invalid gateway refresh returned an unexpected message: %q", msg)
+		}
+		var after catalogView
+		request(http.MethodGet, "/api/v1/admin/kafuda-gpt/catalog", operatorToken, "", response.CodeOK, &after)
+		if !reflect.DeepEqual(catalog, after) {
+			t.Fatal("invalid gateway refresh changed the cached catalog")
+		}
 	}
 	const adminProducts = "/api/v1/admin/products"
 	var direct productdomain.Product

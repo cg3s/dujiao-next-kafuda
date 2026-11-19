@@ -19,17 +19,26 @@ type CatalogUseCase interface {
 }
 
 type AdminHandler struct {
-	Catalog          CatalogUseCase
-	Configured       bool
-	SalesBlockReason func(context.Context) string
+	Catalog              CatalogUseCase
+	Configured           bool
+	GatewayConfigInvalid bool
+	SalesBlockReason     func(context.Context) string
 }
 
 func (h *AdminHandler) GetCatalog(c *gin.Context)  { h.catalog(c, false) }
 func (h *AdminHandler) SyncCatalog(c *gin.Context) { h.catalog(c, true) }
 
 func (h *AdminHandler) catalog(c *gin.Context, sync bool) {
-	if h == nil || h.Catalog == nil || (sync && !h.Configured) {
+	if h == nil || h.Catalog == nil {
 		ginutil.RespondError(c, response.CodeBadRequest, "error.kafuda_not_configured", nil)
+		return
+	}
+	if sync && !h.Configured {
+		key := "error.kafuda_not_configured"
+		if h.GatewayConfigInvalid {
+			key = "error.kafuda_config_invalid"
+		}
+		ginutil.RespondError(c, response.CodeBadRequest, key, nil)
 		return
 	}
 	var catalog *kafudadomain.Catalog
@@ -44,7 +53,9 @@ func (h *AdminHandler) catalog(c *gin.Context, sync bool) {
 		return
 	}
 	data := gin.H{"options": []kafudacontract.SKUOption{}, "cards": []kafudadomain.CardProduct{}, "stale": true, "configured": h.Configured}
-	if !h.Configured {
+	if h.GatewayConfigInvalid {
+		data["sales_block_reason"] = "gateway_config_invalid"
+	} else if !h.Configured {
 		data["sales_block_reason"] = "gateway_not_configured"
 	} else if h.SalesBlockReason != nil {
 		if reason := h.SalesBlockReason(c.Request.Context()); reason != "" {

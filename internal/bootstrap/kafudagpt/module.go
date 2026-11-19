@@ -6,6 +6,7 @@ import (
 
 	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/constants"
+	"github.com/dujiao-next/internal/logger"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
@@ -21,31 +22,45 @@ import (
 // Module is assembled independently of the app container, so transports and
 // workers can consume module contracts without a container dependency.
 type Module struct {
-	Store    kafudacontract.Store
-	Records  *kafudaapp.Service
-	Catalog  *kafudaapp.CatalogService
-	Gateway  kafudacontract.Gateway
-	Commerce *kafudaapp.CommerceService
+	Store                kafudacontract.Store
+	Records              *kafudaapp.Service
+	Catalog              *kafudaapp.CatalogService
+	Gateway              kafudacontract.Gateway
+	Commerce             *kafudaapp.CommerceService
+	gatewayConfigInvalid bool
 }
 
 func New(db *gorm.DB, cfg config.KafudaGPTConfig, orders ordercontract.Store) (*Module, error) {
 	store := kafudastore.New(db)
 	var gateway kafudacontract.Gateway
+	gatewayConfigInvalid := false
 	if cfg.APIKey != "" {
 		client, err := kafuda.New(cfg.APIBaseURL, cfg.APIKey)
 		if err != nil {
-			return nil, err
+			gatewayConfigInvalid = true
+			logger.Warnw("kafuda_gateway_config_invalid")
+		} else {
+			gateway = client
 		}
-		gateway = client
 	}
 	if err := syncLegacyManualOrders(db, orders); err != nil {
 		return nil, err
 	}
 	catalog := kafudaapp.NewCatalogService(store, gateway, "default", time.Duration(cfg.CatalogTTLSeconds)*time.Second)
 	return &Module{
-		Store: store, Records: kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(store), orders), Gateway: gateway,
-		Catalog:  catalog,
-		Commerce: kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{Catalog: catalog, SalesEnabled: cfg.SalesEnabled, ReferenceLookupVerified: cfg.ReferenceLookupVerified, ProductCode: cfg.ProductCode, MaxCostCents: cfg.MaxCostCents, AllowedKinds: cfg.AllowedKinds}),
+		Store:   store,
+		Records: kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(store), orders),
+		Gateway: gateway,
+		Catalog: catalog,
+		Commerce: kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+			Catalog:                 catalog,
+			SalesEnabled:            cfg.SalesEnabled && gateway != nil,
+			ReferenceLookupVerified: cfg.ReferenceLookupVerified,
+			ProductCode:             cfg.ProductCode,
+			MaxCostCents:            cfg.MaxCostCents,
+			AllowedKinds:            cfg.AllowedKinds,
+		}),
+		gatewayConfigInvalid: gatewayConfigInvalid,
 	}, nil
 }
 
