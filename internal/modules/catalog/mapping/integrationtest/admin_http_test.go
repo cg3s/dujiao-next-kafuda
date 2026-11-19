@@ -839,104 +839,140 @@ func TestLateMappingWritesCannotChangeDetachedProducts(t *testing.T) {
 	}
 }
 
-func TestSyncCreatesSKUAndMappingAtomically(t *testing.T) {
-	for _, mode := range []string{"single", "batch"} {
-		t.Run(mode, func(t *testing.T) {
-			db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:atomic_mapping_sku_%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			pool, err := db.DB()
-			if err != nil {
-				t.Fatal(err)
-			}
-			pool.SetMaxOpenConns(1)
-			t.Cleanup(func() { _ = pool.Close() })
-			if err := db.AutoMigrate(&productdomain.Product{}, &productdomain.ProductSKU{}, &mappingdomain.Mapping{}, &mappingdomain.SKUMapping{}, &siteconnectiondomain.Connection{}); err != nil {
-				t.Fatal(err)
-			}
-			product := productdomain.Product{
-				Slug: "atomic-sku", TitleJSON: jsonmap.JSON{"zh-CN": "映射商品"},
-				FulfillmentType: constants.FulfillmentTypeUpstream, IsMapped: true, IsActive: true,
-			}
-			conn := siteconnectiondomain.Connection{Name: "atomic-sku", ExchangeRate: decimal.NewFromInt(1), AutoSyncPrice: true}
-			for _, row := range []interface{}{&product, &conn} {
-				if err := db.Create(row).Error; err != nil {
+func TestMappedProductSyncRollsBackFailedWrites(t *testing.T) {
+	for _, scenario := range []struct {
+		name       string
+		trigger    string
+		status     string
+		removedSKU bool
+	}{
+		{name: "insert_sku_mapping", trigger: "BEFORE INSERT ON sku_mappings WHEN NEW.upstream_sku_id = 202"},
+		{name: "update_sku_mapping", trigger: "BEFORE UPDATE ON sku_mappings"},
+		{name: "update_sku", trigger: "BEFORE UPDATE ON product_skus"},
+		{name: "removed_sku", trigger: "BEFORE UPDATE ON product_skus", removedSKU: true},
+		{name: "product_price", trigger: "BEFORE UPDATE ON products WHEN OLD.price_amount <> NEW.price_amount"},
+		{name: "product_mapping", trigger: "BEFORE UPDATE ON product_mappings"},
+		{name: "inactive_product", trigger: "BEFORE UPDATE ON products", status: mappingdomain.UpstreamStatusInactive},
+		{name: "inactive_sku_mapping", trigger: "BEFORE UPDATE ON sku_mappings", status: mappingdomain.UpstreamStatusInactive},
+		{name: "inactive_sku", trigger: "BEFORE UPDATE ON product_skus", status: mappingdomain.UpstreamStatusInactive},
+		{name: "deleted_mapping", trigger: "BEFORE UPDATE ON product_mappings", status: mappingdomain.UpstreamStatusDeleted},
+	} {
+		for _, mode := range []string{"single", "batch"} {
+			t.Run(mode+"/"+scenario.name, func(t *testing.T) {
+				db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:atomic_mapping_sku_%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true})
+				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: "OLD", IsActive: true}
-			mapping := mappingdomain.Mapping{LocalProductID: product.ID, ConnectionID: conn.ID, UpstreamProductID: 20}
-			for _, row := range []interface{}{&sku, &mapping} {
-				if err := db.Create(row).Error; err != nil {
+				pool, err := db.DB()
+				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			skuMapping := mappingdomain.SKUMapping{ProductMappingID: mapping.ID, LocalSKUID: sku.ID, UpstreamSKUID: 201, UpstreamStock: 2}
-			if err := db.Create(&skuMapping).Error; err != nil {
-				t.Fatal(err)
-			}
+				pool.SetMaxOpenConns(1)
+				t.Cleanup(func() { _ = pool.Close() })
+				if err := db.AutoMigrate(&productdomain.Product{}, &productdomain.ProductSKU{}, &mappingdomain.Mapping{}, &mappingdomain.SKUMapping{}, &siteconnectiondomain.Connection{}); err != nil {
+					t.Fatal(err)
+				}
+				product := productdomain.Product{
+					Slug: "atomic-sku", TitleJSON: jsonmap.JSON{"zh-CN": "映射商品"},
+					FulfillmentType: constants.FulfillmentTypeUpstream, IsMapped: true, IsActive: true,
+				}
+				conn := siteconnectiondomain.Connection{Name: "atomic-sku", ExchangeRate: decimal.NewFromInt(1), AutoSyncPrice: true}
+				for _, row := range []interface{}{&product, &conn} {
+					if err := db.Create(row).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: "OLD", IsActive: true}
+				mapping := mappingdomain.Mapping{LocalProductID: product.ID, ConnectionID: conn.ID, UpstreamProductID: 20}
+				for _, row := range []interface{}{&sku, &mapping} {
+					if err := db.Create(row).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				skuMapping := mappingdomain.SKUMapping{ProductMappingID: mapping.ID, LocalSKUID: sku.ID, UpstreamSKUID: 201, UpstreamStock: 2}
+				if err := db.Create(&skuMapping).Error; err != nil {
+					t.Fatal(err)
+				}
 
-			products := productgormstore.NewProductStore(db)
-			mappings := mappinggormstore.NewMappingStore(db)
-			skus := productgormstore.NewSKUStore(db)
-			skuMappings := mappinggormstore.NewSKUMappingStore(db)
-			unit := &mappingImportUoW{products: products, skus: skus, mappings: mappings, skuMappings: skuMappings}
-			adapter := lateMappingAdapter{product: upstream.UpstreamProduct{
-				ID: 20, CategoryID: 24, IsActive: true, ManualFormSchema: jsonmap.JSON{"updated": true},
-				SKUs: []upstream.UpstreamSKU{
-					{ID: 201, SKUCode: "OLD", PriceAmount: "20", StockQuantity: 8, IsActive: true},
-					{ID: 202, SKUCode: "NEW", PriceAmount: "30", StockQuantity: 9, IsActive: true},
-				},
-			}, check: func() {}}
-			svc, err := mappingapp.NewService(mappingapp.Options{
-				Mappings: mappings, SKUMappings: skuMappings, Products: products, SKUs: skus,
-				Media: adminNoopLocalMediaRecorder{}, Connections: &mappingConnectionProvider{db: db, adapter: adapter}, Transactions: unit,
+				products := productgormstore.NewProductStore(db)
+				mappings := mappinggormstore.NewMappingStore(db)
+				skus := productgormstore.NewSKUStore(db)
+				skuMappings := mappinggormstore.NewSKUMappingStore(db)
+				unit := &mappingImportUoW{products: products, skus: skus, mappings: mappings, skuMappings: skuMappings}
+				upProduct := upstream.UpstreamProduct{
+					ID: 20, CategoryID: 24, IsActive: scenario.status == "", ManualFormSchema: jsonmap.JSON{"updated": true},
+					SKUs: []upstream.UpstreamSKU{
+						{ID: 201, SKUCode: "OLD", PriceAmount: "20", StockQuantity: 8, IsActive: true},
+						{ID: 202, SKUCode: "NEW", PriceAmount: "30", StockQuantity: 9, IsActive: true},
+					},
+				}
+				if scenario.removedSKU {
+					upProduct.SKUs = upProduct.SKUs[1:]
+				}
+				adapter := lateMappingAdapter{product: upProduct, deleted: scenario.status == mappingdomain.UpstreamStatusDeleted, check: func() {}}
+				svc, err := mappingapp.NewService(mappingapp.Options{
+					Mappings: mappings, SKUMappings: skuMappings, Products: products, SKUs: skus,
+					Media: adminNoopLocalMediaRecorder{}, Connections: &mappingConnectionProvider{db: db, adapter: adapter}, Transactions: unit,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				syncOnce := func() error {
+					if mode == "single" {
+						return svc.SyncProduct(mapping.ID)
+					}
+					return svc.SyncConnectionStock(conn.ID, []mappingdomain.Mapping{mapping}, 100, 2)
+				}
+
+				const injectedMessage = "injected product sync write failure"
+				trigger := fmt.Sprintf("CREATE TRIGGER reject_sync_write %s BEGIN SELECT RAISE(ABORT, '%s'); END", scenario.trigger, injectedMessage)
+				if err := db.Exec(trigger).Error; err != nil {
+					t.Fatal(err)
+				}
+				before := readMappingWriteSnapshot(t, db)
+				if err := syncOnce(); err == nil || !strings.Contains(err.Error(), injectedMessage) {
+					t.Errorf("expected injected write failure, got %v", err)
+				}
+				if after := readMappingWriteSnapshot(t, db); !reflect.DeepEqual(before, after) {
+					t.Fatal("failed synchronization left partial SKU, stock, product or mapping updates")
+				}
+				if err := db.Exec("DROP TRIGGER reject_sync_write").Error; err != nil {
+					t.Fatal(err)
+				}
+
+				var newSKUID uint
+				for range 2 {
+					if err := syncOnce(); err != nil {
+						t.Fatal(err)
+					}
+					after := readMappingWriteSnapshot(t, db)
+					if scenario.status != "" {
+						if len(after.SKUs) != 1 || len(after.SKUMappings) != 1 || after.Product.IsActive || after.SKUs[0].IsActive ||
+							after.SKUMappings[0].UpstreamIsActive || after.SKUMappings[0].UpstreamStock != 0 ||
+							after.Mapping.UpstreamStatus != scenario.status || after.Mapping.LastSyncedAt == nil ||
+							after.Mapping.IsActive != (scenario.status != mappingdomain.UpstreamStatusDeleted) {
+							t.Fatalf("retry did not disable product, SKU and mapped stock: %+v", after)
+						}
+						continue
+					}
+					wantStock, wantPrice := 8, "20.00"
+					if scenario.removedSKU {
+						wantStock, wantPrice = 0, "30.00"
+					}
+					if len(after.SKUs) != 2 || len(after.SKUMappings) != 2 || after.SKUs[0].ID != sku.ID ||
+						after.SKUs[1].SKUCode != "NEW" || after.SKUMappings[1].UpstreamSKUID != 202 || after.SKUMappings[1].LocalSKUID != after.SKUs[1].ID ||
+						after.SKUMappings[0].UpstreamStock != wantStock || after.SKUMappings[1].UpstreamStock != 9 || after.Product.PriceAmount.String() != wantPrice ||
+						after.SKUs[0].IsActive == scenario.removedSKU || after.SKUMappings[0].UpstreamIsActive == scenario.removedSKU ||
+						after.Mapping.UpstreamCategoryID != 24 || after.Mapping.LastSyncedAt == nil {
+						t.Fatalf("successful sync did not save paired SKU, stock, and metadata: %+v", after)
+					}
+					if newSKUID != 0 && newSKUID != after.SKUs[1].ID {
+						t.Fatal("repeat sync replaced the SKU")
+					}
+					newSKUID = after.SKUs[1].ID
+				}
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			syncOnce := func() error {
-				if mode == "single" {
-					return svc.SyncProduct(mapping.ID)
-				}
-				return svc.SyncConnectionStock(conn.ID, []mappingdomain.Mapping{mapping}, 100, 2)
-			}
-
-			const injectedMessage = "injected new SKU mapping failure"
-			if err := db.Exec(`CREATE TRIGGER reject_new_sku_mapping BEFORE INSERT ON sku_mappings
-				WHEN NEW.upstream_sku_id = 202 BEGIN SELECT RAISE(ABORT, 'injected new SKU mapping failure'); END`).Error; err != nil {
-				t.Fatal(err)
-			}
-			before := readMappingWriteSnapshot(t, db)
-			if err := syncOnce(); err == nil || !strings.Contains(err.Error(), injectedMessage) {
-				t.Errorf("expected injected write failure, got %v", err)
-			}
-			if after := readMappingWriteSnapshot(t, db); !reflect.DeepEqual(before, after) {
-				t.Fatal("failed synchronization left partial SKU, stock, product or mapping updates")
-			}
-			if err := db.Exec(`DROP TRIGGER reject_new_sku_mapping`).Error; err != nil {
-				t.Fatal(err)
-			}
-
-			var newSKUID uint
-			for range 2 {
-				if err := syncOnce(); err != nil {
-					t.Fatal(err)
-				}
-				after := readMappingWriteSnapshot(t, db)
-				if len(after.SKUs) != 2 || len(after.SKUMappings) != 2 || after.SKUs[0].ID != sku.ID ||
-					after.SKUs[1].SKUCode != "NEW" || after.SKUMappings[1].UpstreamSKUID != 202 || after.SKUMappings[1].LocalSKUID != after.SKUs[1].ID ||
-					after.SKUMappings[0].UpstreamStock != 8 || after.SKUMappings[1].UpstreamStock != 9 ||
-					after.Mapping.UpstreamCategoryID != 24 || after.Mapping.LastSyncedAt == nil {
-					t.Fatalf("successful sync did not save paired SKU, stock, and metadata: %+v", after)
-				}
-				if newSKUID != 0 && newSKUID != after.SKUs[1].ID {
-					t.Fatal("repeat sync replaced the SKU")
-				}
-				newSKUID = after.SKUs[1].ID
-			}
-		})
+		}
 	}
 }
 

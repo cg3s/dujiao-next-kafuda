@@ -112,7 +112,7 @@ func (s *Service) reapplyMarkupPrices(conn *siteconnectiondomain.Connection, cat
 			// 更新 Product.PriceAmount
 			localProduct, err := s.products.GetByID(strconv.FormatUint(uint64(mapping.LocalProductID), 10))
 			if err == nil && localProduct != nil {
-				s.recalcProductPrice(localProduct)
+				_ = s.recalcProductPrice(localProduct)
 			}
 			return nil
 		})
@@ -173,10 +173,10 @@ func (s *Service) backfillUpstreamCategoryIDs(ctx context.Context, adapter upstr
 }
 
 // recalcProductPrice 重新计算商品基准价格和成本价为最低活跃 SKU 价格
-func (s *Service) recalcProductPrice(product *productdomain.Product) {
+func (s *Service) recalcProductPrice(product *productdomain.Product) error {
 	allSKUs, err := s.skus.ListByProduct(product.ID, true)
 	if err != nil || len(allSKUs) == 0 {
-		return
+		return err
 	}
 	minPrice := allSKUs[0].PriceAmount.Decimal
 	minCostPrice := allSKUs[0].CostPriceAmount.Decimal
@@ -190,5 +190,5 @@ func (s *Service) recalcProductPrice(product *productdomain.Product) {
 	}
 	product.PriceAmount = money.FromDecimal(minPrice.Round(2))
 	product.CostPriceAmount = money.FromDecimal(minCostPrice.Round(2))
-	_ = s.products.Update(product)
+	return s.products.Update(product)
 }
