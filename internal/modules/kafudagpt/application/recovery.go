@@ -51,9 +51,8 @@ func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudac
 	if err == nil && result != nil && result.ID == *attempt.UpstreamOrderID &&
 		result.Reference == attempt.Reference && result.Product == record.Snapshot.Product &&
 		result.Plan == record.Snapshot.Plan && result.Country == record.Snapshot.Country {
-		next := kafudadomain.AttemptStatus(result.Status)
-		if next != kafudadomain.AttemptChecking && attempt.Status.CanTransition(next) &&
-			(result.ChargedUSDCents == nil || *result.ChargedUSDCents >= 0) {
+		_, allowed := supplierResultStatus(attempt.Status, kafudadomain.AttemptStatus(result.Status))
+		if allowed && (result.ChargedUSDCents == nil || *result.ChargedUSDCents >= 0) {
 			return result, nil
 		}
 	}

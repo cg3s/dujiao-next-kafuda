@@ -229,8 +229,10 @@ func TestStalePollCannotRegressScheduleAndLateCompletionStillConverges(t *testin
 	if completed, err := apply(now, lateReceipt, lateReceipt.Add(time.Minute)); completed || !errors.Is(err, kafudadomain.ErrConflict) {
 		t.Fatalf("stale processing result was accepted: %t, %v", completed, err)
 	}
-	if err := service.MarkUnknown(ctx, id, now, now.Add(time.Minute)); !errors.Is(err, kafudadomain.ErrConflict) {
-		t.Fatalf("stale lookup failure was accepted: %v", err)
+	for _, failedAt := range []time.Time{now, lateReceipt} {
+		if err := service.MarkUnknown(ctx, id, failedAt, failedAt.Add(time.Minute)); !errors.Is(err, kafudadomain.ErrConflict) {
+			t.Fatalf("submission failure replaced a verified order at %v: %v", failedAt, err)
+		}
 	}
 	attempt, err := store.GetAttempt(ctx, id)
 	if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptProcessing ||
@@ -270,12 +272,14 @@ func TestOverCapChargeRequiresReviewAndKeepsSupplierOutcome(t *testing.T) {
 				if err != nil || attempt == nil || attempt.ActiveOrderID == nil || attempt.NextPollAt == nil {
 					t.Fatalf("in-flight attempt must retain its slot and schedule: %+v, %v", attempt, err)
 				}
-				if err := service.MarkUnknown(ctx, id, now, now.Add(time.Minute)); err != nil {
+				failedAt := *attempt.NextPollAt
+				if err := service.RescheduleKnownOrderResult(ctx, id, *attempt.NextPollAt, failedAt, failedAt, failedAt.Add(time.Minute), kafudaapp.DefaultPollReviewAfter); err != nil {
 					t.Fatal(err)
 				}
+				now = failedAt
 				record, err := store.GetRecharge(ctx, 10)
 				if err != nil || record == nil || record.ReasonCode != "cost_limit_exceeded" {
-					t.Fatalf("temporary lookup failure erased the review reason: %+v, %v", record, err)
+					t.Fatalf("retrying a known result erased the review reason: %+v, %v", record, err)
 				}
 			}
 			result.Status, result.ChargedUSDCents = "completed", nil

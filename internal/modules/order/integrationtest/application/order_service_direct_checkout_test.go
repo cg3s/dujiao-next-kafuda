@@ -613,6 +613,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 		{"completed_after_sales_disabled", kafudadomain.StageCompleted, true, ""},
 		{"poll_after_sales_disabled", kafudadomain.StageProcessing, true, ""},
 		{"response_lost", kafudadomain.StageManualReview, true, "outcome_unknown"},
+		{"response_lost_submitting", kafudadomain.StageManualReview, true, "outcome_unknown"},
 		{"response_mismatch", kafudadomain.StageManualReview, true, "outcome_unknown"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -681,7 +682,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				switch scenario.name {
 				case "completed", "completed_after_sales_disabled":
 					result.Status = "completed"
-				case "response_lost":
+				case "response_lost", "response_lost_submitting":
 					return nil, errors.New("supplier response lost")
 				case "response_mismatch":
 					result.Reference = "other-reference"
@@ -823,8 +824,11 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 					t.Fatalf("unknown outcome lost active attempt: %+v, %v", attempt, err)
 				}
 			}
-			if scenario.name == "response_lost" {
-				testReconcileUnknownDirectOrder(t, f, order, now, reservation.Attempt)
+			switch scenario.name {
+			case "response_lost":
+				testReconcileUnknownDirectOrder(t, f, order, now, reservation.Attempt, kafudadomain.AttemptProcessing)
+			case "response_lost_submitting":
+				testReconcileUnknownDirectOrder(t, f, order, now, reservation.Attempt, kafudadomain.AttemptSubmitting)
 			}
 		})
 	}
@@ -939,10 +943,12 @@ func testDirectQuoteExpiresBeforeDispatch(t *testing.T, f directCheckoutFixture,
 	}
 }
 
-func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, order *orderdomain.Order, paidAt time.Time, attempt *kafudadomain.Attempt) {
+func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, order *orderdomain.Order, paidAt time.Time, attempt *kafudadomain.Attempt, supplierStatus kafudadomain.AttemptStatus) {
 	t.Helper()
+	ctx := t.Context()
 	childID := order.Children[0].ID
 	const upstreamID = uint64(9_007_199_254_740_993)
+	const pollInterval = 10 * time.Second
 	calls := 0
 	gateway := directCreateGateway{get: func(ctx context.Context, id uint64) (*kafudacontract.OrderResult, error) {
 		calls++
@@ -957,8 +963,12 @@ func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, orde
 		if calls == 1 {
 			reference = "different-order"
 		}
+		status := supplierStatus
+		if calls >= 4 {
+			status = kafudadomain.AttemptCompleted
+		}
 		return &kafudacontract.OrderResult{
-			ID: id, Reference: reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing",
+			ID: id, Reference: reference, Product: "gpt", Plan: "plus", Country: "PH", Status: string(status),
 		}, nil
 	}}
 	handler := orderwiring.New(&container.Container{
@@ -982,20 +992,63 @@ func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, orde
 	}
 	request(attempt.ID+1, false)
 	request(attempt.ID, false)
-	stored, err := f.store.GetAttempt(context.Background(), attempt.ID)
-	if err != nil || stored == nil || stored.UpstreamOrderID != nil || stored.Status != kafudadomain.AttemptReview {
-		t.Fatalf("mismatch changed the original attempt: %+v, %v", stored, err)
+	original, err := f.store.GetAttempt(ctx, attempt.ID)
+	if err != nil || original == nil || original.UpstreamOrderID != nil || original.Status != kafudadomain.AttemptReview {
+		t.Fatalf("mismatch changed the original attempt: %+v, %v", original, err)
 	}
 	assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusFulfilling, paidAt)
 	request(attempt.ID, true)
 	request(attempt.ID, false)
-	stored, err = f.store.GetAttempt(context.Background(), attempt.ID)
-	if err != nil || stored == nil || stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != upstreamID ||
-		stored.NextPollAt == nil || stored.NextPollAt.Sub(stored.UpdatedAt) != 10*time.Second ||
-		stored.Status != kafudadomain.AttemptProcessing || calls != 2 {
-		t.Fatalf("verified ID did not restore scheduled lookups: %+v, %v, calls=%d", stored, err, calls)
+	wantStatus := supplierStatus
+	if supplierStatus == kafudadomain.AttemptSubmitting {
+		wantStatus = kafudadomain.AttemptReview
 	}
-	assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusFulfilling, paidAt)
+	assertPendingLookup := func(wantCalls int) *kafudadomain.Attempt {
+		t.Helper()
+		stored, err := f.store.GetAttempt(ctx, attempt.ID)
+		if err != nil || stored == nil || stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != upstreamID ||
+			stored.NextPollAt == nil || stored.NextPollAt.Sub(stored.UpdatedAt) != pollInterval ||
+			stored.Status != wantStatus || stored.ActiveOrderID == nil || *stored.ActiveOrderID != childID ||
+			stored.Reference != original.Reference || stored.QuoteID != original.QuoteID ||
+			!reflect.DeepEqual(stored.QuoteCosts, original.QuoteCosts) || calls != wantCalls {
+			t.Fatalf("verified ID did not preserve the active attempt and schedule: %+v, %v, calls=%d", stored, err, calls)
+		}
+		recharge, err := f.store.GetRecharge(ctx, childID)
+		if err != nil || recharge == nil || recharge.Stage != kafudadomain.StageManualReview || recharge.ReasonCode != "outcome_unknown" ||
+			recharge.CurrentAttemptID == nil || *recharge.CurrentAttemptID != attempt.ID {
+			t.Fatalf("verified intermediate result did not preserve the review: %+v, %v", recharge, err)
+		}
+		assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusFulfilling, paidAt)
+		return stored
+	}
+	stored := assertPendingLookup(2)
+	records := kafudaapp.New(f.store)
+	lookupAt := *stored.NextPollAt
+	result, err := records.PollKnownOrder(ctx, ctx, gateway, attempt.ID, lookupAt, lookupAt.Add(time.Minute), 0)
+	if err != nil || result == nil || result.Status != string(supplierStatus) {
+		t.Fatalf("subsequent intermediate result not accepted: %+v, %v", result, err)
+	}
+	if completed, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, *result, lookupAt, lookupAt, pollInterval); err != nil || completed {
+		t.Fatalf("apply intermediate result: completed=%t, %v", completed, err)
+	}
+	stored = assertPendingLookup(3)
+	lookupAt = *stored.NextPollAt
+	result, err = records.PollKnownOrder(ctx, ctx, gateway, attempt.ID, lookupAt, lookupAt.Add(time.Minute), 0)
+	if err != nil || result == nil || result.Status != string(kafudadomain.AttemptCompleted) || calls != 4 {
+		t.Fatalf("terminal result not found: %+v, %v, calls=%d", result, err, calls)
+	}
+	for _, wantCompleted := range []bool{true, false} {
+		completed, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, *result, lookupAt, lookupAt, pollInterval)
+		if err != nil || completed != wantCompleted {
+			t.Fatalf("late completion: completed=%t, %v; want %t", completed, err, wantCompleted)
+		}
+	}
+	assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusCompleted, paidAt)
+	var deliveries int64
+	if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ? AND type = ? AND status = ?",
+		childID, constants.FulfillmentTypeKafudaGPT, constants.FulfillmentStatusDelivered).Count(&deliveries).Error; err != nil || deliveries != 1 {
+		t.Fatalf("unexpected delivery count after applying the same terminal result twice: %d, %v", deliveries, err)
+	}
 }
 
 func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {

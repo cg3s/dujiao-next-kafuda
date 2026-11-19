@@ -228,7 +228,8 @@ func (s *Service) MarkUnknown(ctx context.Context, attemptID uint, now, nextPoll
 		if !attempt.Status.CanTransition(kafudadomain.AttemptReview) {
 			return kafudadomain.ErrInvalidTransition
 		}
-		if now.Before(attempt.UpdatedAt) {
+		// A delayed submission failure cannot replace a verified supplier order.
+		if attempt.UpstreamOrderID != nil || now.Before(attempt.UpdatedAt) {
 			return kafudadomain.ErrConflict
 		}
 		attempt.Status, attempt.NextPollAt, attempt.UpdatedAt = kafudadomain.AttemptReview, &nextPoll, now
@@ -269,8 +270,9 @@ func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll ti
 		if attempt.UpstreamOrderID != nil && *attempt.UpstreamOrderID != result.ID {
 			return kafudadomain.ErrInvalidTransition
 		}
-		next := kafudadomain.AttemptStatus(result.Status)
-		if next == kafudadomain.AttemptChecking || !attempt.Status.CanTransition(next) {
+		reported := kafudadomain.AttemptStatus(result.Status)
+		next, allowed := supplierResultStatus(attempt.Status, reported)
+		if !allowed {
 			return kafudadomain.ErrInvalidTransition
 		}
 		if !attempt.Status.Active() {
@@ -324,7 +326,7 @@ func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll ti
 			}
 			return nil
 		}
-		switch next {
+		switch reported {
 		case kafudadomain.AttemptSubmitting, kafudadomain.AttemptProcessing:
 			if record.Stage != kafudadomain.StageManualReview {
 				record.Stage = kafudadomain.StageProcessing
@@ -338,6 +340,15 @@ func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll ti
 		}
 		return nil
 	}
+}
+
+func supplierResultStatus(current, reported kafudadomain.AttemptStatus) (kafudadomain.AttemptStatus, bool) {
+	// A supplier can still be submitting after the local attempt entered review.
+	// Accept the verified identity and schedule another lookup while retaining review.
+	if current == kafudadomain.AttemptReview && reported == kafudadomain.AttemptSubmitting {
+		return current, true
+	}
+	return reported, reported != kafudadomain.AttemptChecking && current.CanTransition(reported)
 }
 
 func (s *Service) change(ctx context.Context, attemptID uint, update func(*kafudadomain.Recharge, *kafudadomain.Attempt) error) error {
