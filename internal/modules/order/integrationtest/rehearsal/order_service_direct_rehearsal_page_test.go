@@ -8,13 +8,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func writeDirectRehearsalPage(c *gin.Context, token string, productID, skuID uint) {
+func writeDirectRehearsalPage(c *gin.Context, token string, productID, skuID uint, storefrontSlug string) {
 	var page bytes.Buffer
 	data := struct {
-		Token     string
-		ProductID uint
-		SKUID     uint
-	}{Token: token, ProductID: productID, SKUID: skuID}
+		Token          string
+		ProductID      uint
+		SKUID          uint
+		StorefrontSlug string
+	}{Token: token, ProductID: productID, SKUID: skuID, StorefrontSlug: storefrontSlug}
 	if err := directRehearsalPage.Execute(&page, data); err != nil {
 		c.Status(http.StatusInternalServerError)
 		return
@@ -53,17 +54,36 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
     button:disabled { background: #eef2f1; color: #5a6b6b; border-color: #d4dfdc; cursor: default; }
     button:focus-visible, input:focus-visible { outline: 2px solid #876615; outline-offset: 3px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    .attach-order { align-items: center; }
+    .attach-order label { margin-right: 0; }
+    .attach-order input { flex: 1 1 160px; min-width: 0; border: 1px solid #cbd8d4; border-radius: 8px; padding: 8px 12px; font: inherit; }
     .hint { margin-top: 12px; font-size: 14px; }
     #error { margin-top: 12px; color: #a02322; }
     @media (max-width: 500px) { main { margin-block: 24px; } section { padding: 16px; } }
   </style>
 </head>
-<body data-product-id="{{.ProductID}}" data-sku-id="{{.SKUID}}">
+<body data-product-id="{{.ProductID}}" data-sku-id="{{.SKUID}}"{{if .StorefrontSlug}} data-storefront-slug="{{.StorefrontSlug}}"{{end}}>
   <main>
     <header>
       <h1>Kafuda GPT 直充演练</h1>
       <p>本地测试环境，使用演练钱包和模拟履约结果。</p>
     </header>
+
+    {{if .StorefrontSlug}}
+    <section aria-labelledby="storefront-heading">
+      <h2 id="storefront-heading">店面演练</h2>
+      <p class="hint">在店面选择套餐并用演练钱包付款。完成支付后回到此页，输入订单号接续履约。</p>
+      <div class="actions">
+        <button id="storefront-classic" type="button">打开 Classic 店面</button>
+        <button id="storefront-vault" type="button">打开 Vault 店面</button>
+      </div>
+      <form id="attach-order-form" class="actions attach-order">
+        <label for="attach-order-no">已付款订单号</label>
+        <input id="attach-order-no" type="text" autocomplete="off" spellcheck="false" required>
+        <button id="attach-order" class="secondary" type="submit">读取店面订单</button>
+      </form>
+    </section>
+    {{end}}
 
     <section aria-labelledby="checkout-heading">
       <h2 id="checkout-heading">选定套餐并付款</h2>
@@ -106,6 +126,7 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
     'use strict';
     const element = id => document.getElementById(id);
     const token = document.querySelector('meta[name="rehearsal-token"]').content;
+    const storefrontSlug = document.body.dataset.storefrontSlug;
     const items = [{
       product_id: Number(document.body.dataset.productId),
       sku_id: Number(document.body.dataset.skuId),
@@ -149,6 +170,12 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       element('advance').disabled = busy || !paid || stage !== 'processing';
       element('refresh').disabled = busy || !orderNo;
       element('new-order').disabled = busy || !finishedStages.has(stage);
+      if (storefrontSlug) {
+        element('storefront-classic').disabled = busy;
+        element('storefront-vault').disabled = busy;
+        element('attach-order-no').disabled = busy;
+        element('attach-order').disabled = busy;
+      }
     }
 
     async function refreshBalance() {
@@ -160,16 +187,20 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       }
     }
 
-    async function refreshStage() {
-      const status = await request('/orders/' + encodeURIComponent(orderNo) + '/direct-status');
+    function renderStage(status) {
       stage = status.stage;
       element('stage').textContent = stageLabels[stage] || '状态待确认';
       const time = new Date(status.updated_at);
       element('stage-time').textContent = Number.isNaN(time.getTime()) ? '—' : time.toLocaleString('zh-CN');
     }
 
-    function onClick(id, action) {
-      element(id).addEventListener('click', async () => {
+    async function refreshStage() {
+      renderStage(await request('/orders/' + encodeURIComponent(orderNo) + '/direct-status'));
+    }
+
+    function onAction(id, action, eventName = 'click') {
+      element(id).addEventListener(eventName, async event => {
+        event.preventDefault();
         if (busy) return;
         busy = true;
         element('error').hidden = true;
@@ -186,13 +217,40 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       });
     }
 
-    onClick('preview', async () => {
+    if (storefrontSlug) {
+      for (const name of ['classic', 'vault']) {
+        onAction('storefront-' + name, () => {
+          localStorage.removeItem('user_profile');
+          localStorage.setItem('user_token', token);
+          window.location.assign('/products/' + encodeURIComponent(storefrontSlug) + '?template=' + name);
+        });
+      }
+      onAction('attach-order-form', async () => {
+        const candidate = element('attach-order-no').value.trim();
+        if (!candidate) throw new Error('请输入演练订单号。');
+        const path = '/orders/' + encodeURIComponent(candidate);
+        const detail = await request(path);
+        if (detail.order_no !== candidate || !detail.paid_at || !['paid', 'fulfilling', 'completed'].includes(detail.status)) {
+          throw new Error('请选择已付款的直充演练订单。');
+        }
+        const status = await request(path + '/direct-status');
+        orderNo = candidate;
+        paid = true;
+        previewed = false;
+        element('order-no').textContent = orderNo;
+        element('price').textContent = detail.total_amount + ' ' + detail.currency;
+        renderStage(status);
+        void refreshBalance();
+      }, 'submit');
+    }
+
+    onAction('preview', async () => {
       previewed = false;
       const preview = await request('/orders/preview', 'POST', { items });
       element('price').textContent = preview.total_amount + ' ' + preview.currency;
       previewed = true;
     });
-    onClick('pay', async () => {
+    onAction('pay', async () => {
       const order = await request('/orders/create-and-pay', 'POST', { items, use_balance: true });
       orderNo = order.order_no;
       element('order-no').textContent = orderNo;
@@ -201,17 +259,17 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       if (!paid) throw new Error('演练钱包付款尚未确认。');
       await refreshStage();
     });
-    onClick('authorize', async () => {
+    onAction('authorize', async () => {
       const result = document.querySelector('input[name="result"]:checked').value;
       await request('/rehearsal/orders/' + encodeURIComponent(orderNo) + '/authorize', 'POST', { result });
       await refreshStage();
     });
-    onClick('advance', async () => {
+    onAction('advance', async () => {
       await request('/rehearsal/orders/' + encodeURIComponent(orderNo) + '/advance', 'POST');
       await refreshStage();
     });
-    onClick('refresh', refreshStage);
-    onClick('new-order', () => {
+    onAction('refresh', refreshStage);
+    onAction('new-order', () => {
       orderNo = '';
       stage = '';
       previewed = false;
@@ -221,6 +279,7 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       element('stage').textContent = '待付款';
       element('stage-time').textContent = '—';
       element('result-success').checked = true;
+      if (storefrontSlug) element('attach-order-no').value = '';
       return refreshBalance();
     });
     void refreshBalance();

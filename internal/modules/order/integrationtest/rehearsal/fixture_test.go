@@ -31,13 +31,14 @@ import (
 )
 
 type directCheckoutFixture struct {
-	db      *gorm.DB
-	product productdomain.Product
-	sku     productdomain.ProductSKU
-	users   []userdomain.User
-	options orderapp.OrderServiceOptions
-	store   *kafudastore.Store
-	tenant  resellercontract.TenantContext
+	db       *gorm.DB
+	product  productdomain.Product
+	sku      productdomain.ProductSKU
+	users    []userdomain.User
+	options  orderapp.OrderServiceOptions
+	store    *kafudastore.Store
+	commerce *kafudaapp.CommerceService
+	tenant   resellercontract.TenantContext
 }
 
 type rehearsalOrderQueue struct{}
@@ -102,14 +103,16 @@ func newDirectCheckoutFixture(t *testing.T) directCheckoutFixture {
 	if err := db.Create(&users).Error; err != nil {
 		t.Fatal(err)
 	}
+	commerce := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+		Catalog: kafudaapp.NewCatalogService(store, nil, profile, 2*time.Hour), SalesEnabled: true, ReferenceLookupVerified: true,
+		ProductCode: card, MaxCostCents: 2500, AllowedKinds: []string{"new"}, WorkerReady: func(context.Context) bool { return true },
+	})
 	return directCheckoutFixture{
-		db: db, product: product, sku: sku, users: users, store: store, tenant: resellercontract.MainTenantContext("rehearsal.example.test"),
+		db: db, product: product, sku: sku, users: users, store: store, commerce: commerce,
+		tenant: resellercontract.MainTenantContext("rehearsal.example.test"),
 		options: orderapp.OrderServiceOptions{
-			DirectCatalog: kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
-				Catalog: kafudaapp.NewCatalogService(store, nil, profile, 2*time.Hour), SalesEnabled: true, ReferenceLookupVerified: true,
-				ProductCode: card, MaxCostCents: 2500, AllowedKinds: []string{"new"}, WorkerReady: func(context.Context) bool { return true },
-			}),
-			OrderStore: orderstore.New(db, rand.Text()), UserStore: userstore.New(db),
+			DirectCatalog: commerce,
+			OrderStore:    orderstore.New(db, rand.Text()), UserStore: userstore.New(db),
 			ProductStore: productstore.NewProductStore(db), ProductSKUStore: productstore.NewSKUStore(db),
 			PromotionRepo: promotionstore.New(db), Queue: rehearsalOrderQueue{},
 		},

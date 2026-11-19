@@ -43,11 +43,12 @@ import (
 )
 
 var (
-	serveDirectRehearsal = flag.Bool("kafuda-rehearsal", false, "serve the isolated, synthetic buyer rehearsal on loopback")
-	directRehearsalPort  = flag.Int("kafuda-rehearsal-port", 5179, "loopback port used by the buyer rehearsal")
+	serveDirectRehearsal         = flag.Bool("kafuda-rehearsal", false, "serve the isolated, synthetic buyer rehearsal on loopback")
+	directRehearsalPort          = flag.Int("kafuda-rehearsal-port", 5179, "loopback port used by the buyer rehearsal")
+	directRehearsalStorefrontDir = flag.String("kafuda-rehearsal-storefront-dir", "", "absolute path to the built user storefront")
 )
 
-func newDirectRehearsalRouter(t *testing.T) (directCheckoutFixture, *gin.Engine, string, string) {
+func newDirectRehearsalRouter(t *testing.T, storefrontDir string) (directCheckoutFixture, *gin.Engine, string, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	f := newDirectCheckoutFixture(t)
@@ -84,8 +85,13 @@ func newDirectRehearsalRouter(t *testing.T) (directCheckoutFixture, *gin.Engine,
 	}
 
 	router := gin.New()
-	router.GET("/", func(c *gin.Context) {
-		writeDirectRehearsalPage(c, token, f.product.ID, f.sku.ID)
+	consolePath, storefrontSlug := "/", ""
+	if storefrontDir != "" {
+		consolePath, storefrontSlug = "/rehearsal", f.product.Slug
+		registerDirectRehearsalStorefront(t, router, f, storefrontDir)
+	}
+	router.GET(consolePath, func(c *gin.Context) {
+		writeDirectRehearsalPage(c, token, f.product.ID, f.sku.ID, storefrontSlug)
 	})
 	member := router.Group("/api/v1", func(c *gin.Context) {
 		c.Request = c.Request.WithContext(resellercontract.WithTenantContext(c.Request.Context(), f.tenant))
@@ -95,6 +101,7 @@ func newDirectRehearsalRouter(t *testing.T) (directCheckoutFixture, *gin.Engine,
 	orderhttp.RegisterUserCreateRoute(member, orders.Create)
 	orderhttp.RegisterUserCreateAndPayRoute(member, orders.Create)
 	orderhttp.RegisterUserReadRoutes(member, orders.User)
+	orderhttp.RegisterUserPaymentChannelsRoute(member, orders.User)
 	member.GET("/wallet", walletwiring.New(deps).User.GetWallet)
 	newDirectRehearsalActions(f).register(member)
 	return f, router, token, otherToken
@@ -110,7 +117,7 @@ func TestDirectBuyerFlowRehearsal(t *testing.T) {
 		{result: "manual_review", stage: kafudadomain.StageManualReview, status: constants.OrderStatusFulfilling},
 	} {
 		t.Run(scenario.result, func(t *testing.T) {
-			f, router, buyer, other := newDirectRehearsalRouter(t)
+			f, router, buyer, other := newDirectRehearsalRouter(t, "")
 			type data struct {
 				OrderNo     string `json:"order_no"`
 				OrderPaid   bool   `json:"order_paid"`
@@ -226,7 +233,7 @@ func TestServeDirectBuyerRehearsal(t *testing.T) {
 	if *directRehearsalPort < 1 || *directRehearsalPort > 65535 {
 		t.Fatal("invalid rehearsal port")
 	}
-	_, router, _, _ := newDirectRehearsalRouter(t)
+	_, router, _, _ := newDirectRehearsalRouter(t, *directRehearsalStorefrontDir)
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(*directRehearsalPort))
 	listener, err := net.Listen("tcp4", addr)
 	if err != nil {
@@ -250,7 +257,11 @@ func TestServeDirectBuyerRehearsal(t *testing.T) {
 	defer stop()
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
-	t.Logf("Synthetic buyer rehearsal: http://%s/", addr)
+	consolePath := "/"
+	if *directRehearsalStorefrontDir != "" {
+		consolePath = "/rehearsal"
+	}
+	t.Logf("Synthetic buyer rehearsal: http://%s%s", addr, consolePath)
 	select {
 	case err := <-done:
 		t.Fatal(err)
