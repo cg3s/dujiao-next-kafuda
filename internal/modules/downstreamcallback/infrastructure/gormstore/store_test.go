@@ -56,7 +56,9 @@ func TestStoreFiltersPendingAndCredentialLists(t *testing.T) {
 		{OrderID: 3, ApiCredentialID: 5, CallbackURL: "https://three.example", CallbackStatus: downstreamdomain.StatusSent},
 		{OrderID: 4, ApiCredentialID: 6, CallbackURL: "https://four.example", CallbackStatus: downstreamdomain.StatusPending},
 	}
-	for _, ref := range refs {
+	createdAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for index, ref := range refs {
+		ref.CreatedAt = createdAt.Add(time.Duration(index) * time.Second)
 		if err := store.Create(ref); err != nil {
 			t.Fatalf("create ref for order %d: %v", ref.OrderID, err)
 		}
