@@ -20,6 +20,7 @@ import (
 	orderwiring "github.com/dujiao-next/internal/bootstrap/order"
 	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/constants"
+	"github.com/dujiao-next/internal/logger"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	admindomain "github.com/dujiao-next/internal/modules/identity/admin/domain"
 	adminstore "github.com/dujiao-next/internal/modules/identity/admin/infrastructure/gormstore"
@@ -44,6 +45,8 @@ import (
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestConfirmOverCapDirectCompletion(t *testing.T) {
@@ -394,6 +397,17 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			const upstreamID = uint64(9_007_199_254_740_993)
 			const merchantToken = "direct-recovery-fixture-token"
 			const buyerSession = "direct-recovery-fixture-session"
+			assertCredentialsAbsent := func(raw []byte) {
+				t.Helper()
+				if strings.Contains(string(raw), buyerSession) || strings.Contains(string(raw), merchantToken) {
+					t.Fatal("supplier or buyer credential escaped into a response, record or log")
+				}
+			}
+			logCore, logs := observer.New(zap.DebugLevel)
+			requestLogger := zap.New(logCore)
+			previousLogger := logger.L
+			logger.L = requestLogger
+			t.Cleanup(func() { logger.L = previousLogger })
 			const originalQuoteID = "recovery-quote-1"
 			var checks, submissions, lookups atomic.Int32
 			var originalRequest, retryRequest atomic.Pointer[kafudacontract.CreateOrderRequest]
@@ -438,6 +452,8 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 					if call == 1 {
 						originalRequest.Store(&input)
 						w.WriteHeader(http.StatusBadGateway)
+						// Exercise a supplier error that echoes synthetic credential material.
+						_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": buyerSession + " " + merchantToken}})
 						return
 					}
 					retryRequest.Store(&input)
@@ -496,7 +512,7 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			if err != nil {
 				t.Fatal(err)
 			}
-			buyerRoutes := router.Group("/api/v1", middleware.UserJWTAuthMiddleware(buyerSecret, f.options.UserStore))
+			buyerRoutes := router.Group("/api/v1", middleware.LoggerMiddleware(requestLogger), middleware.UserJWTAuthMiddleware(buyerSecret, f.options.UserStore))
 			userHandler := orderwiring.New(deps).User
 			orderhttp.RegisterUserReadRoutes(buyerRoutes, userHandler)
 			orderhttp.RegisterUserDirectAuthorizationRoute(buyerRoutes, userHandler)
@@ -519,6 +535,7 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 				t.Helper()
 				raw := send(method, directAdminRoutePrefix+path, body, supportToken)
 				assertCode(raw, wantCode)
+				assertCredentialsAbsent(raw)
 				return raw
 			}
 			buyerOrderPath := "/api/v1/orders/" + order.OrderNo
@@ -526,6 +543,8 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 				t.Helper()
 				raw := send(method, buyerOrderPath+operation, body, buyerToken)
 				assertCode(raw, wantCode)
+				assertCredentialsAbsent(raw)
+				assertDirectCheckoutPrivate(t, raw)
 				return raw
 			}
 			submit := func(wantCode int) {
@@ -773,6 +792,32 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			}
 			if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&deliveries).Error; err != nil || deliveries != wantDeliveries {
 				t.Fatalf("found %d deliveries, want %d: %v", deliveries, wantDeliveries, err)
+			}
+			for _, table := range []string{(kafudadomain.Recharge{}).TableName(), (kafudadomain.Attempt{}).TableName()} {
+				var rows []map[string]any
+				if result := f.db.Table(table).Where("order_id = ?", childID).Find(&rows); result.Error != nil || len(rows) == 0 {
+					t.Fatalf("read persisted %s records: %v", table, result.Error)
+				}
+				for _, row := range rows {
+					for _, value := range row {
+						if raw, ok := value.([]byte); ok {
+							assertCredentialsAbsent(raw)
+						} else {
+							assertCredentialsAbsent([]byte(fmt.Sprint(value)))
+						}
+					}
+				}
+			}
+			if logs.FilterMessage("request").Len() == 0 {
+				t.Fatal("buyer routes did not run the access logger")
+			}
+			for _, entry := range logs.All() {
+				raw, err := json.Marshal(entry.ContextMap())
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertCredentialsAbsent([]byte(entry.Message))
+				assertCredentialsAbsent(raw)
 			}
 		})
 	}
