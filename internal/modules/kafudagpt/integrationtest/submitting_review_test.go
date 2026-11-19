@@ -38,7 +38,7 @@ func TestReviewedAttemptAcceptsSubmittingWithoutClearingReview(t *testing.T) {
 					t.Fatalf("known order poll fixture: %+v, %v", stored, err)
 				}
 				lease := claimTestKnownOrderPoll(t, ctx, store, *stored, due)
-				if err := service.RescheduleKnownOrderResult(ctx, lease, due, due, retry, time.Minute); err != nil {
+				if err := service.RescheduleKnownOrderResult(ctx, kafudaapp.KnownOrderPoll{Lease: lease, OrderResult: result}, due, due, retry, time.Minute); err != nil {
 					t.Fatal(err)
 				}
 				due = retry

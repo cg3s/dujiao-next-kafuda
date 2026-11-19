@@ -100,7 +100,7 @@ func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudac
 		}
 	}
 	// Never return raw gateway errors, which may contain upstream payloads.
-	rescheduleErr := s.rescheduleKnownOrderPoll(ctx, lease, now, failedAt, retryAt, reviewAfter, "lookup_deadline_exceeded")
+	rescheduleErr := s.rescheduleKnownOrderPoll(ctx, lease, now, failedAt, retryAt, reviewAfter, "lookup_deadline_exceeded", nil)
 	if rateLimited {
 		return nil, errors.Join(ErrKnownOrderLookupFailed, ErrKnownOrderRateLimited, rescheduleErr)
 	}
@@ -109,11 +109,11 @@ func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudac
 
 // RescheduleKnownOrderResult retries a verified lookup whose local application
 // failed. After the review deadline, the attempt remains active for polling.
-func (s *Service) RescheduleKnownOrderResult(ctx context.Context, lease KnownOrderPollLease, startedAt, now, nextPoll time.Time, reviewAfter time.Duration) error {
-	return s.rescheduleKnownOrderPoll(ctx, lease, startedAt, now, nextPoll, reviewAfter, kafudadomain.ReasonResultApplyFailed)
+func (s *Service) RescheduleKnownOrderResult(ctx context.Context, poll KnownOrderPoll, startedAt, now, nextPoll time.Time, reviewAfter time.Duration) error {
+	return s.rescheduleKnownOrderPoll(ctx, poll.Lease, startedAt, now, nextPoll, reviewAfter, kafudadomain.ReasonResultApplyFailed, &poll.OrderResult)
 }
 
-func (s *Service) rescheduleKnownOrderPoll(ctx context.Context, lease KnownOrderPollLease, startedAt, now, nextPoll time.Time, reviewAfter time.Duration, reason string) error {
+func (s *Service) rescheduleKnownOrderPoll(ctx context.Context, lease KnownOrderPollLease, startedAt, now, nextPoll time.Time, reviewAfter time.Duration, reason string, result *kafudacontract.OrderResult) error {
 	if lease.AttemptID == 0 || lease.ScheduledAt.IsZero() || startedAt.Before(lease.ScheduledAt) ||
 		!lease.Until.After(startedAt) || now.Before(startedAt) || !nextPoll.After(now) {
 		return kafudadomain.ErrInvalidTransition
@@ -121,20 +121,46 @@ func (s *Service) rescheduleKnownOrderPoll(ctx context.Context, lease KnownOrder
 	if reviewAfter <= 0 {
 		reviewAfter = DefaultPollReviewAfter
 	}
-	return s.change(ctx, lease.AttemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
-		if !attempt.Status.Active() || attempt.Status == kafudadomain.AttemptChecking ||
-			attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID == 0 {
-			return kafudadomain.ErrInvalidTransition
+	changeForLease := func(update func(*kafudadomain.Recharge, *kafudadomain.Attempt) error) error {
+		return s.change(ctx, lease.AttemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
+			if !attempt.Status.Active() || attempt.Status == kafudadomain.AttemptChecking ||
+				attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID == 0 {
+				return kafudadomain.ErrInvalidTransition
+			}
+			if attempt.KnownOrderPollLeaseUntil == nil || !attempt.KnownOrderPollLeaseUntil.Equal(lease.Until) ||
+				attempt.NextPollAt == nil || !attempt.NextPollAt.Equal(lease.ScheduledAt) || startedAt.Before(attempt.UpdatedAt) {
+				return kafudadomain.ErrConflict
+			}
+			return update(record, attempt)
+		})
+	}
+	if result != nil && result.ChargedUSDCents != nil {
+		// Save verified cost facts independently of the review status change,
+		// which can still encounter the same order write failure.
+		if err := changeForLease(func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
+			_, allowed := supplierResultStatus(attempt.Status, kafudadomain.AttemptStatus(result.Status))
+			if !allowed || !matchesSupplierOrder(record, attempt, *result) || *result.ChargedUSDCents < 0 {
+				return kafudadomain.ErrInvalidTransition
+			}
+			attempt.ChargedUSDCents = result.ChargedUSDCents
+			if *attempt.ChargedUSDCents > record.Snapshot.MaxCostCents {
+				record.ReasonCode = kafudadomain.ReasonCostLimitExceeded
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
-		if attempt.KnownOrderPollLeaseUntil == nil || !attempt.KnownOrderPollLeaseUntil.Equal(lease.Until) ||
-			attempt.NextPollAt == nil || !attempt.NextPollAt.Equal(lease.ScheduledAt) || startedAt.Before(attempt.UpdatedAt) {
-			return kafudadomain.ErrConflict
-		}
+	}
+	return changeForLease(func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 		attempt.NextPollAt, attempt.UpdatedAt = &nextPoll, now
 		attempt.KnownOrderPollLeaseUntil = nil
-		if now.Sub(attempt.CreatedAt) >= reviewAfter && record.Stage != kafudadomain.StageManualReview {
+		overCap := record.ReasonCode == kafudadomain.ReasonCostLimitExceeded
+		if (overCap || now.Sub(attempt.CreatedAt) >= reviewAfter) && record.Stage != kafudadomain.StageManualReview {
 			attempt.Status = kafudadomain.AttemptReview
-			record.Stage, record.ReasonCode = kafudadomain.StageManualReview, reason
+			record.Stage = kafudadomain.StageManualReview
+			if !overCap {
+				record.ReasonCode = reason
+			}
 		}
 		record.UpdatedAt = now
 		return nil

@@ -696,6 +696,115 @@ func TestKafudaRecoveryTaskEscalatesResultApplicationFailure(t *testing.T) {
 	}
 }
 
+func TestKafudaRecoveryTaskKeepsVerifiedDebitAfterApplyFailure(t *testing.T) {
+	lowerDebit := int64(1_900)
+	for _, scenario := range []struct {
+		name             string
+		firstDebit       int64
+		retryDebit       *int64
+		failReviewStatus bool
+	}{
+		{name: "over_cap_then_missing", firstDebit: 2_001, failReviewStatus: true},
+		{name: "over_cap_then_lower", firstDebit: 2_001, retryDebit: &lowerDebit},
+		{name: "zero_then_missing"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const parentID, childID = 101, 1
+				ctx := t.Context()
+				gateway := &kafudaPollTestGateway{}
+				c, store, _, db := newKafudaPollBatch(t, gateway, childID)
+				if err := db.AutoMigrate(&userdomain.User{}); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Create(&userdomain.User{ID: 20, Email: "poll-recovery@example.test", PasswordHash: "test"}).Error; err != nil {
+					t.Fatal(err)
+				}
+				emails := &kafudaStatusEmailQueue{t: t, orders: c.OrderStore, orderID: parentID}
+				c.orderStatusQueue = emails
+				due, err := store.DueKnownOrderPolls(ctx, time.Now().UTC(), 1)
+				if err != nil || len(due) != 1 || due[0].UpstreamOrderID == nil {
+					t.Fatalf("expected a due supplier lookup: %+v, %v", due, err)
+				}
+				initial := due[0]
+				gateway.result = kafudacontract.OrderResult{
+					ID: *initial.UpstreamOrderID, Reference: initial.Reference, Product: "gpt", Plan: "plus", Country: "PH",
+					Status: "completed", ChargedUSDCents: &scenario.firstDebit,
+				}
+				trigger := `CREATE TRIGGER reject_poll_result BEFORE UPDATE ON kafuda_gpt_recharges
+					WHEN (SELECT status FROM kafuda_gpt_attempts WHERE id = NEW.current_attempt_id) = 'completed'
+					BEGIN SELECT RAISE(ABORT, 'local result write failed'); END`
+				if scenario.failReviewStatus {
+					trigger = `CREATE TRIGGER reject_poll_result BEFORE UPDATE ON orders WHEN OLD.id = 101 AND NEW.status = 'fulfilling'
+						BEGIN SELECT RAISE(ABORT, 'local review status write failed'); END`
+				}
+				if err := db.Exec(trigger).Error; err != nil {
+					t.Fatal(err)
+				}
+				mux := asynq.NewServeMux()
+				c.Register(mux)
+				task := queue.NewKafudaRecoverChecksTask()
+				if err := mux.ProcessTask(ctx, task); err == nil {
+					t.Fatal("expected the first poll result transaction to fail")
+				}
+				attempt, err := store.GetAttempt(ctx, initial.ID)
+				if err != nil || attempt == nil || attempt.ActiveOrderID == nil || *attempt.ActiveOrderID != childID ||
+					attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID != gateway.result.ID || attempt.Reference != initial.Reference ||
+					attempt.ChargedUSDCents == nil || *attempt.ChargedUSDCents != scenario.firstDebit || attempt.NextPollAt == nil {
+					t.Fatalf("failed application lost verified debit or active order identity: %+v, %v", attempt, err)
+				}
+				recharge, err := store.GetRecharge(ctx, childID)
+				if err != nil || recharge == nil || recharge.CompletedAt != nil || recharge.CompletionEmailPending || emails.calls != 0 {
+					t.Fatalf("failed poll finalized the recharge or notified the buyer: %+v, %v, emails=%d", recharge, err, emails.calls)
+				}
+				overCap := scenario.firstDebit > recharge.Snapshot.MaxCostCents
+				if overCap && recharge.ReasonCode != kafudadomain.ReasonCostLimitExceeded {
+					t.Fatalf("verified overage did not create a durable hold: %+v", recharge)
+				}
+				var deliveries int64
+				if err := db.Model(&fulfillmentdomain.Fulfillment{}).Count(&deliveries).Error; err != nil || deliveries != 0 {
+					t.Fatalf("failed result leaked fulfillment: count=%d, %v", deliveries, err)
+				}
+				if err := db.Exec("DROP TRIGGER reject_poll_result").Error; err != nil {
+					t.Fatal(err)
+				}
+				retryAt := *attempt.NextPollAt
+				if attempt.KnownOrderPollLeaseUntil != nil && attempt.KnownOrderPollLeaseUntil.After(retryAt) {
+					retryAt = *attempt.KnownOrderPollLeaseUntil
+				}
+				time.Sleep(time.Until(retryAt))
+				gateway.result.ChargedUSDCents = scenario.retryDebit
+				for range 2 {
+					if err := mux.ProcessTask(ctx, task); err != nil {
+						t.Fatal(err)
+					}
+				}
+				settled, err := store.GetAttempt(ctx, initial.ID)
+				wantDebit := scenario.firstDebit
+				if scenario.retryDebit != nil {
+					wantDebit = *scenario.retryDebit
+				}
+				if err != nil || settled == nil || settled.Status != kafudadomain.AttemptCompleted || settled.ActiveOrderID != nil ||
+					settled.ChargedUSDCents == nil || *settled.ChargedUSDCents != wantDebit || len(gateway.ids) != 2 {
+					t.Fatalf("terminal result lost verified cost or repeated the lookup: %+v, %v, requests=%v", settled, err, gateway.ids)
+				}
+				wantStatus, wantCount := constants.OrderStatusCompleted, 1
+				if overCap {
+					wantStatus, wantCount = constants.OrderStatusFulfilling, 0
+					review, err := store.GetRecharge(ctx, childID)
+					if err != nil || !kafudacontract.CanConfirmUpstreamCompletion(review, settled) {
+						t.Fatalf("completed result cleared the over-cap hold: %+v, %v", review, err)
+					}
+				}
+				assertDirectPollOrderStatus(t, c.OrderStore, parentID, childID, wantStatus)
+				if err := db.Model(&fulfillmentdomain.Fulfillment{}).Count(&deliveries).Error; err != nil || deliveries != int64(wantCount) || emails.calls != wantCount {
+					t.Fatalf("delivery or notification mismatch: deliveries=%d, emails=%d, want=%d, %v", deliveries, emails.calls, wantCount, err)
+				}
+			})
+		})
+	}
+}
+
 func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway, orderIDs ...uint) (*Consumer, *gormstore.Store, time.Time, *gorm.DB) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})

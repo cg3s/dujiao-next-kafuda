@@ -330,7 +330,7 @@ func TestOverCapChargeRequiresReviewAndKeepsSupplierOutcome(t *testing.T) {
 				}
 				failedAt := *attempt.NextPollAt
 				lease := claimTestKnownOrderPoll(t, ctx, store, *attempt, failedAt)
-				if err := service.RescheduleKnownOrderResult(ctx, lease, failedAt, failedAt, failedAt.Add(time.Minute), kafudaapp.DefaultPollReviewAfter); err != nil {
+				if err := service.RescheduleKnownOrderResult(ctx, kafudaapp.KnownOrderPoll{Lease: lease, OrderResult: result}, failedAt, failedAt, failedAt.Add(time.Minute), kafudaapp.DefaultPollReviewAfter); err != nil {
 					t.Fatal(err)
 				}
 				now = failedAt

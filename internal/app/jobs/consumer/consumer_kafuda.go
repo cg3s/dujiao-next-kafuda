@@ -84,7 +84,7 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 			continue
 		}
 		retryFrom := startedAt.Add(time.Since(lookupStarted))
-		err = errors.Join(err, module.Records.RescheduleKnownOrderResult(ctx, result.Lease, startedAt, retryFrom, retryFrom.Add(result.RetryDelay), reviewAfter))
+		err = errors.Join(err, module.Records.RescheduleKnownOrderResult(ctx, *result, startedAt, retryFrom, retryFrom.Add(result.RetryDelay), reviewAfter))
 		failures = append(failures, err)
 	}
 	if limit := min(kafudaCardChargeBatchSize, kafudaPollBatchSize-len(attempts)); limit > 0 {

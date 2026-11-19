@@ -97,10 +97,11 @@ func TestRecoveryDoesNotReleaseSubmittedOrUnknownAttempts(t *testing.T) {
 	review := polls[1]
 	due, retry := now.Add(time.Second), now.Add(2*time.Minute)
 	lease := claimTestKnownOrderPoll(t, ctx, store, review, due)
-	if err := service.RescheduleKnownOrderResult(ctx, lease, due, due, retry, time.Second); err != nil {
+	poll := kafudaapp.KnownOrderPoll{Lease: lease}
+	if err := service.RescheduleKnownOrderResult(ctx, poll, due, due, retry, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.RescheduleKnownOrderResult(ctx, lease, due, due, retry.Add(time.Minute), time.Second); !errors.Is(err, kafudadomain.ErrConflict) {
+	if err := service.RescheduleKnownOrderResult(ctx, poll, due, due, retry.Add(time.Minute), time.Second); !errors.Is(err, kafudadomain.ErrConflict) {
 		t.Fatalf("duplicate lookup failure overwrote the new schedule: %v", err)
 	}
 	reviewRecord, err := store.GetRecharge(ctx, review.OrderID)
@@ -395,8 +396,17 @@ func TestExpiredKnownOrderPollFencesOlderWorker(t *testing.T) {
 			}
 			received := expires.Add(time.Second)
 			next := received.Add(10 * time.Second)
-			if err := service.RescheduleKnownOrderResult(ctx, first.Lease, due, received, next, time.Hour); !errors.Is(err, kafudadomain.ErrConflict) {
-				t.Fatalf("old worker overwrote replacement lease on failure: %v", err)
+			debit := snapshot().MaxCostCents + 1
+			staleRetry := *first
+			staleRetry.ChargedUSDCents = &debit
+			if err := service.RescheduleKnownOrderResult(ctx, staleRetry, due, received, next, time.Hour); !errors.Is(err, kafudadomain.ErrConflict) {
+				t.Fatalf("old worker overwrote replacement lease or debit on failure: %v", err)
+			}
+			mismatched := *second
+			mismatched.Reference = "different-reference"
+			mismatched.ChargedUSDCents = &debit
+			if err := service.RescheduleKnownOrderResult(ctx, mismatched, expires, received, next, time.Hour); !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+				t.Fatalf("unmatched result was treated as a verified debit: %v", err)
 			}
 			apply := func(polled *kafudaapp.KnownOrderPoll, startedAt time.Time) (bool, error) {
 				var completed bool
@@ -415,7 +425,7 @@ func TestExpiredKnownOrderPollFencesOlderWorker(t *testing.T) {
 			}
 			stillOwned, err := store.GetAttempt(ctx, attempt.ID)
 			if err != nil || stillOwned == nil || stillOwned.ActiveOrderID == nil || *stillOwned.ActiveOrderID != orderID ||
-				stillOwned.Status != kafudadomain.AttemptProcessing || !stillOwned.UpdatedAt.Equal(now) ||
+				stillOwned.Status != kafudadomain.AttemptProcessing || stillOwned.ChargedUSDCents != nil || !stillOwned.UpdatedAt.Equal(now) ||
 				stillOwned.NextPollAt == nil || !stillOwned.NextPollAt.Equal(due) || stillOwned.KnownOrderPollLeaseUntil == nil ||
 				!stillOwned.KnownOrderPollLeaseUntil.Equal(second.Lease.Until) {
 				t.Fatalf("stale worker altered active ownership or schedule: %+v, %v", stillOwned, err)
