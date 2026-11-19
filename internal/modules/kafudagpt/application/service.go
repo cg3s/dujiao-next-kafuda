@@ -263,44 +263,69 @@ func (s *Service) MarkUnknown(ctx context.Context, attemptID uint, now, nextPoll
 // HoldUnappliedSubmission keeps a verified supplier order eligible for read-only
 // polling after its result could not be applied to the shop order.
 func (s *Service) HoldUnappliedSubmission(ctx context.Context, attemptID uint, quoteID string, result kafudacontract.OrderResult, now, nextPoll time.Time) error {
-	if quoteID == "" || now.IsZero() || !nextPoll.After(now) || (result.ChargedUSDCents != nil && *result.ChargedUSDCents < 0) {
+	if quoteID == "" {
 		return kafudadomain.ErrInvalidTransition
 	}
 	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
-		if attempt.QuoteID != quoteID || !matchesSupplierOrder(record, attempt, result) {
+		if attempt.QuoteID != quoteID {
 			return kafudadomain.ErrInvalidTransition
 		}
-		if _, allowed := supplierResultStatus(attempt.Status, kafudadomain.AttemptStatus(result.Status)); !allowed {
+		return holdUnappliedSupplierOrder(record, attempt, result, now, nextPoll)
+	})
+}
+
+// HoldUnappliedReconciliationInTransaction retains a verified order for polling
+// only while the original reconciliation still owns its lookup lease.
+func HoldUnappliedReconciliationInTransaction(tx kafudacontract.Transaction, orderID, attemptID uint, leaseUntil time.Time, result kafudacontract.OrderResult, now, nextPoll time.Time) error {
+	return changeInTransaction(tx, orderID, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
+		if leaseUntil.IsZero() || attempt.KnownOrderPollLeaseUntil == nil || !attempt.KnownOrderPollLeaseUntil.Equal(leaseUntil) {
+			return kafudadomain.ErrConflict
+		}
+		if attempt.UpstreamOrderID == nil && !isUnidentifiedSubmission(record, attempt) {
 			return kafudadomain.ErrInvalidTransition
 		}
-		if attempt.UpstreamOrderID != nil {
-			return errNoRecordChange
+		if err := holdUnappliedSupplierOrder(record, attempt, result, now, nextPoll); err != nil {
+			return err
 		}
-		isSubmitting := attempt.Status == kafudadomain.AttemptSubmitting && record.Stage == kafudadomain.StageSubmitting
-		isUnidentified := attempt.Status == kafudadomain.AttemptReview && record.Stage == kafudadomain.StageManualReview && record.ReasonCode == "outcome_unknown"
-		if (!isSubmitting && !isUnidentified) || record.CompletedAt != nil || attempt.ActiveOrderID == nil || *attempt.ActiveOrderID != record.OrderID {
-			return kafudadomain.ErrInvalidTransition
-		}
-		observedAt := now
-		if observedAt.Before(attempt.UpdatedAt) {
-			observedAt = attempt.UpdatedAt
-		}
-		if observedAt.Before(record.UpdatedAt) {
-			observedAt = record.UpdatedAt
-		}
-		retryAt := observedAt.Add(nextPoll.Sub(now))
-		attempt.UpstreamOrderID, attempt.Status = &result.ID, kafudadomain.AttemptReview
-		attempt.NextPollAt, attempt.UpdatedAt = &retryAt, observedAt
-		record.Stage, record.ReasonCode, record.UpdatedAt = kafudadomain.StageManualReview, kafudadomain.ReasonResultApplyFailed, observedAt
-		// Keep the verified debit even if the next response omits it.
-		if result.ChargedUSDCents != nil {
-			attempt.ChargedUSDCents = result.ChargedUSDCents
-			if *result.ChargedUSDCents > record.Snapshot.MaxCostCents {
-				record.ReasonCode = kafudadomain.ReasonCostLimitExceeded
-			}
-		}
+		attempt.KnownOrderPollLeaseUntil = nil
 		return nil
 	})
+}
+
+func holdUnappliedSupplierOrder(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt, result kafudacontract.OrderResult, now, nextPoll time.Time) error {
+	if attempt.QuoteID == "" || now.IsZero() || !nextPoll.After(now) || (result.ChargedUSDCents != nil && *result.ChargedUSDCents < 0) ||
+		!matchesSupplierOrder(record, attempt, result) {
+		return kafudadomain.ErrInvalidTransition
+	}
+	if _, allowed := supplierResultStatus(attempt.Status, kafudadomain.AttemptStatus(result.Status)); !allowed {
+		return kafudadomain.ErrInvalidTransition
+	}
+	if attempt.UpstreamOrderID != nil {
+		return errNoRecordChange
+	}
+	isSubmitting := attempt.Status == kafudadomain.AttemptSubmitting && record.Stage == kafudadomain.StageSubmitting
+	if (!isSubmitting && !isUnidentifiedSubmission(record, attempt)) || record.CompletedAt != nil || attempt.ActiveOrderID == nil || *attempt.ActiveOrderID != record.OrderID {
+		return kafudadomain.ErrInvalidTransition
+	}
+	observedAt := now
+	if observedAt.Before(attempt.UpdatedAt) {
+		observedAt = attempt.UpdatedAt
+	}
+	if observedAt.Before(record.UpdatedAt) {
+		observedAt = record.UpdatedAt
+	}
+	retryAt := observedAt.Add(nextPoll.Sub(now))
+	attempt.UpstreamOrderID, attempt.Status = &result.ID, kafudadomain.AttemptReview
+	attempt.NextPollAt, attempt.UpdatedAt = &retryAt, observedAt
+	record.Stage, record.ReasonCode, record.UpdatedAt = kafudadomain.StageManualReview, kafudadomain.ReasonResultApplyFailed, observedAt
+	// Keep the verified debit even if the next response omits it.
+	if result.ChargedUSDCents != nil {
+		attempt.ChargedUSDCents = result.ChargedUSDCents
+		if *result.ChargedUSDCents > record.Snapshot.MaxCostCents {
+			record.ReasonCode = kafudadomain.ReasonCostLimitExceeded
+		}
+	}
+	return nil
 }
 
 // RecordResult consumes a normalized query/create response, not arbitrary text.
@@ -343,18 +368,19 @@ func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll ti
 		if result.ChargedUSDCents != nil && *result.ChargedUSDCents < 0 {
 			return kafudadomain.ErrInvalidTransition
 		}
+		// Binding an unidentified order requires the lookup's original lease,
+		// even for terminal results. A known order can accept late terminals.
+		if !pollLeaseUntil.IsZero() && (next.Active() || attempt.UpstreamOrderID == nil) &&
+			(attempt.KnownOrderPollLeaseUntil == nil || !attempt.KnownOrderPollLeaseUntil.Equal(pollLeaseUntil)) {
+			return kafudadomain.ErrConflict
+		}
 		if next.Active() {
 			if !nextPoll.After(now) {
 				return kafudadomain.ErrInvalidTransition
 			}
-			if !pollLeaseUntil.IsZero() && (attempt.KnownOrderPollLeaseUntil == nil || !attempt.KnownOrderPollLeaseUntil.Equal(pollLeaseUntil)) {
-				return kafudadomain.ErrConflict
-			}
 			// Local recovery can move an unidentified submission to review before the
 			// first supplier response arrives. That response can still bind its ID.
-			firstIdentityAfterRecovery := attempt.UpstreamOrderID == nil && attempt.Status == kafudadomain.AttemptReview &&
-				record.Stage == kafudadomain.StageManualReview && record.ReasonCode == "outcome_unknown"
-			if startedAt.Before(attempt.UpdatedAt) && !firstIdentityAfterRecovery {
+			if startedAt.Before(attempt.UpdatedAt) && !isUnidentifiedSubmission(record, attempt) {
 				return kafudadomain.ErrConflict
 			}
 			if now.Before(attempt.UpdatedAt) {
@@ -424,6 +450,11 @@ func matchesSupplierOrder(record *kafudadomain.Recharge, attempt *kafudadomain.A
 	return result.ID != 0 && result.Reference == attempt.Reference &&
 		result.Product == record.Snapshot.Product && result.Plan == record.Snapshot.Plan && result.Country == record.Snapshot.Country &&
 		(attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID == result.ID)
+}
+
+func isUnidentifiedSubmission(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) bool {
+	return attempt.UpstreamOrderID == nil && attempt.Status == kafudadomain.AttemptReview &&
+		record.Stage == kafudadomain.StageManualReview && record.ReasonCode == "outcome_unknown"
 }
 
 func supplierResultStatus(current, reported kafudadomain.AttemptStatus) (kafudadomain.AttemptStatus, bool) {

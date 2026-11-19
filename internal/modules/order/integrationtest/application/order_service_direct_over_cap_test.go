@@ -354,8 +354,22 @@ func TestDirectSupplierRecovery(t *testing.T) {
 
 func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) directCheckoutFixture) {
 	t.Helper()
-	for _, terminal := range []kafudadomain.AttemptStatus{kafudadomain.AttemptCompleted, kafudadomain.AttemptCancelled} {
-		t.Run(string(terminal), func(t *testing.T) {
+	zero, overCap, lower := int64(0), int64(2_501), int64(2_000)
+	for _, scenario := range []struct {
+		name          string
+		terminal      kafudadomain.AttemptStatus
+		verifiedDebit *int64
+		retryDebit    *int64
+		replaceLease  bool
+	}{
+		{name: "completed", terminal: kafudadomain.AttemptCompleted},
+		{name: "cancelled", terminal: kafudadomain.AttemptCancelled},
+		{name: "verified_zero_after_rollback", terminal: kafudadomain.AttemptCompleted, verifiedDebit: &zero},
+		{name: "verified_over_cap_after_rollback", terminal: kafudadomain.AttemptCompleted, verifiedDebit: &overCap, retryDebit: &lower},
+		{name: "replaced_lease", terminal: kafudadomain.AttemptCompleted, replaceLease: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			terminal := scenario.terminal
 			f := newFixture(t)
 			if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
 				t.Fatal(err)
@@ -410,6 +424,7 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 					return
 				}
 				status := terminal
+				var debit *int64
 				switch lookups.Add(1) {
 				case 1:
 					close(firstLookupStarted)
@@ -417,24 +432,37 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 					case <-finishFirstLookup:
 					case <-r.Context().Done():
 					}
-					w.WriteHeader(http.StatusBadGateway)
-					return
+					if !scenario.replaceLease {
+						w.WriteHeader(http.StatusBadGateway)
+						return
+					}
 				case 3:
 					w.WriteHeader(http.StatusBadGateway)
 					return
 				case 2:
-					status = kafudadomain.AttemptProcessing
+					if scenario.verifiedDebit == nil {
+						status = kafudadomain.AttemptProcessing
+					} else {
+						debit = scenario.verifiedDebit
+					}
 				case 4:
+					debit = scenario.retryDebit
 				default:
 					t.Error("unexpected supplier lookup after settlement")
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				data := map[string]any{
 					"id": upstreamID, "reference": reference, "product": snapshot.Product, "plan": snapshot.Plan, "country": snapshot.Country, "status": status,
-				}})
+				}
+				if debit != nil {
+					data["charged_usd_cents"] = *debit
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 			})
 			deps := stoppedDirectSalesContainer(t, f)
 			deps.KafudaGPT.Gateway = gateway
 			deps.UserStore = f.options.UserStore
+			operatorStore := &directSubmitStore{Store: orders}
+			deps.OrderStore = operatorStore
 			router, supportToken, _ := newDirectSupportRouter(t, f, deps)
 			send := func(method, path, body string) []byte {
 				req := httptest.NewRequestWithContext(ctx, method, directAdminRoutePrefix+path, strings.NewReader(body))
@@ -500,21 +528,65 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			case <-time.After(5 * time.Second):
 				t.Fatal("duplicate reconciliation blocked behind supplier HTTP")
 			}
+			var replacementLease time.Time
+			firstCode := response.CodeInternal
+			if scenario.replaceLease {
+				firstCode = response.CodeBadRequest
+				replacementLease = time.Now().UTC().Add(2 * time.Minute).Truncate(time.Microsecond)
+				if err := f.db.Model(&kafudadomain.Attempt{}).Where("id = ?", attemptID).
+					UpdateColumn("known_order_poll_lease_until", replacementLease).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
 			unblockLookup()
-			assertCode(<-firstResponse, response.CodeInternal)
+			assertCode(<-firstResponse, firstCode)
 			assertCode(duplicate, response.CodeBadRequest)
 			if got := lookups.Load(); got != 1 {
 				t.Fatalf("concurrent reconciliation issued %d supplier lookups, want one", got)
 			}
-			if stored := loadAttempt(); !reflect.DeepEqual(stored, unknown) {
+			stored := loadAttempt()
+			if scenario.replaceLease {
+				if stored.KnownOrderPollLeaseUntil == nil || !stored.KnownOrderPollLeaseUntil.Equal(replacementLease) {
+					t.Fatalf("stale response released the newer lookup lease: %+v", stored)
+				}
+				stored.KnownOrderPollLeaseUntil = nil
+				if err := f.db.Model(&kafudadomain.Attempt{}).Where("id = ?", attemptID).
+					UpdateColumn("known_order_poll_lease_until", paidAt).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !reflect.DeepEqual(stored, unknown) {
 				t.Fatalf("failed reconciliation changed the hold: %+v", stored)
 			}
-			request(http.MethodPost, reconcilePath, lookupBody, response.CodeOK)
+			wantPendingStatus := kafudadomain.AttemptProcessing
+			wantReviewReason := "outcome_unknown"
+			secondCode := response.CodeOK
+			costHold := scenario.verifiedDebit != nil && *scenario.verifiedDebit > snapshot.MaxCostCents
+			if scenario.verifiedDebit != nil {
+				secondCode = response.CodeInternal
+				wantPendingStatus = kafudadomain.AttemptReview
+				wantReviewReason = kafudadomain.ReasonResultApplyFailed
+				if costHold {
+					wantReviewReason = kafudadomain.ReasonCostLimitExceeded
+				}
+				operatorStore.afterCommit = func() { operatorStore.rollbackErr = errors.New("rollback reconciliation apply") }
+			}
+			request(http.MethodPost, reconcilePath, lookupBody, secondCode)
 			request(http.MethodPost, reconcilePath, lookupBody, response.CodeBadRequest)
-			if stored := loadAttempt(); stored.Status != kafudadomain.AttemptProcessing || stored.ActiveOrderID == nil || *stored.ActiveOrderID != childID ||
+			if stored := loadAttempt(); stored.Status != wantPendingStatus || stored.ActiveOrderID == nil || *stored.ActiveOrderID != childID ||
 				stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != upstreamID || stored.NextPollAt == nil ||
-				stored.KnownOrderPollLeaseUntil != nil || lookups.Load() != 2 {
+				stored.KnownOrderPollLeaseUntil != nil || !reflect.DeepEqual(stored.ChargedUSDCents, scenario.verifiedDebit) || lookups.Load() != 2 {
 				t.Fatalf("numeric reconciliation did not retain the original hold and schedule: %+v, lookups=%d", stored, lookups.Load())
+			}
+			review, err := f.store.GetRecharge(ctx, childID)
+			if err != nil || review == nil || review.Stage != kafudadomain.StageManualReview || review.ReasonCode != wantReviewReason ||
+				review.CompletedAt != nil || review.CompletionEmailPending || !reflect.DeepEqual(review.Snapshot, snapshot) {
+				t.Fatalf("unexpected recharge after verification: %+v, %v", review, err)
+			}
+			assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusFulfilling, paidAt)
+			var deliveries int64
+			if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&deliveries).Error; err != nil || deliveries != 0 {
+				t.Fatalf("initial supplier verification left %d delivery records: %v", deliveries, err)
 			}
 			poll := func() (*kafudaapp.KnownOrderPoll, time.Time, error) {
 				t.Helper()
@@ -530,8 +602,8 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			if result, _, err := poll(); result != nil || !errors.Is(err, kafudaapp.ErrKnownOrderLookupFailed) {
 				t.Fatalf("expected retryable supplier lookup failure: %+v, %v", result, err)
 			}
-			stored := loadAttempt()
-			if stored.Status != kafudadomain.AttemptProcessing || stored.ActiveOrderID == nil || stored.NextPollAt == nil ||
+			stored = loadAttempt()
+			if stored.Status != wantPendingStatus || stored.ActiveOrderID == nil || stored.NextPollAt == nil ||
 				!stored.NextPollAt.After(stored.UpdatedAt) || stored.KnownOrderPollLeaseUntil != nil {
 				t.Fatalf("failed numeric lookup did not retain and reschedule the hold: %+v", stored)
 			}
@@ -543,14 +615,28 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			}
 			receivedAt, interval := time.Now().UTC(), deps.Config.KafudaPollInterval()
 			completed, err := kafudaworkflow.ApplyPolledResult(orders, childID, attemptID, *result, startedAt, receivedAt, interval, 0)
-			if err != nil || completed != (terminal == kafudadomain.AttemptCompleted) {
+			if err != nil || completed != (terminal == kafudadomain.AttemptCompleted && !costHold) {
 				t.Fatalf("apply supplier result: completed=%t, %v", completed, err)
 			}
 			settled := loadAttempt()
 			if settled.Status != terminal || settled.ActiveOrderID != nil || settled.NextPollAt != nil || settled.UpstreamOrderID == nil || *settled.UpstreamOrderID != upstreamID {
 				t.Fatalf("original attempt did not settle: %+v", settled)
 			}
-			if completed {
+			wantDebit := scenario.verifiedDebit
+			if scenario.retryDebit != nil {
+				wantDebit = scenario.retryDebit
+			}
+			if !reflect.DeepEqual(settled.ChargedUSDCents, wantDebit) {
+				t.Fatalf("known lookup lost the verified debit: %+v", settled)
+			}
+			if costHold {
+				assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusFulfilling, paidAt)
+				review, err := f.store.GetRecharge(ctx, childID)
+				if err != nil || !kafudacontract.CanConfirmUpstreamCompletion(review, settled) {
+					t.Fatalf("lower debit removed the cost hold: %+v, %v", review, err)
+				}
+				release(true, response.CodeBadRequest)
+			} else if completed {
 				assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusCompleted, paidAt)
 				release(true, response.CodeBadRequest)
 				if replay, err := kafudaworkflow.ApplyPolledResult(orders, childID, attemptID, *result, startedAt, receivedAt, interval, 0); err != nil || replay {
@@ -573,7 +659,11 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 				}
 				assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusFulfilling, paidAt)
 			}
-			assertReviewList(0)
+			if costHold {
+				assertReviewList(1)
+			} else {
+				assertReviewList(0)
+			}
 			if historical := loadAttempt(); !reflect.DeepEqual(historical, settled) {
 				t.Fatalf("replay or release changed terminal history: %+v", historical)
 			}
@@ -581,7 +671,6 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			if completed {
 				wantDeliveries = 1
 			}
-			var deliveries int64
 			if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&deliveries).Error; err != nil || deliveries != wantDeliveries {
 				t.Fatalf("found %d deliveries, want %d: %v", deliveries, wantDeliveries, err)
 			}

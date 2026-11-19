@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
@@ -79,6 +80,16 @@ func ReconcileUnknownOrder(ctx context.Context, store ordercontract.Store, gatew
 	completed, err = applyResult(store, childID, attemptID, *result, startedAt, receivedAt, pollInterval, 0, leaseUntil)
 	if errors.Is(err, kafudadomain.ErrInvalidTransition) || errors.Is(err, kafudadomain.ErrConflict) {
 		return false, orderapp.ErrOrderStatusInvalid
+	}
+	if err != nil {
+		holdErr := withLockedDirectOrder(store, childID, func(tx ordercontract.Transaction, parent *orderdomain.Order) error {
+			if !isOpenPaidShopOrder(parent.Status) {
+				return orderapp.ErrOrderStatusInvalid
+			}
+			now := time.Now().UTC()
+			return kafudaapp.HoldUnappliedReconciliationInTransaction(tx.KafudaGPT(), childID, attemptID, leaseUntil, *result, now, now.Add(pollInterval))
+		})
+		err = errors.Join(err, holdErr)
 	}
 	return completed, err
 }
