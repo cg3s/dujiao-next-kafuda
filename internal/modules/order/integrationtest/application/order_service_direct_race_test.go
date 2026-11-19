@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dujiao-next/internal/constants"
+	cardsecretcontract "github.com/dujiao-next/internal/modules/cardsecret/contract"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
@@ -178,12 +179,34 @@ func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testin
 	}
 }
 
+type directCompletionStore struct {
+	ordercontract.Store
+	t *testing.T
+}
+
+func (s directCompletionStore) WithinTransaction(run func(ordercontract.Transaction) error) error {
+	return s.Store.WithinTransaction(func(tx ordercontract.Transaction) error {
+		return run(directCompletionTransaction{Transaction: tx, t: s.t})
+	})
+}
+
+type directCompletionTransaction struct {
+	ordercontract.Transaction
+	t *testing.T
+}
+
+func (tx directCompletionTransaction) CardSecrets() cardsecretcontract.Repository {
+	tx.t.Error("direct completion must not access card secret inventory")
+	return tx.Transaction.CardSecrets()
+}
+
 func testDirectCompetingCompletions(t *testing.T, f directCheckoutFixture, order *orderdomain.Order, reservation *kafudaapp.Reservation,
 	records *kafudaapp.Service, failed kafudacontract.OrderResult, paidAt time.Time, supplierFailed bool,
 ) {
 	t.Helper()
 	ctx := t.Context()
-	orders, childID, attemptID := f.options.OrderStore, order.Children[0].ID, reservation.Attempt.ID
+	orders := directCompletionStore{Store: f.options.OrderStore, t: t}
+	childID, attemptID := order.Children[0].ID, reservation.Attempt.ID
 	const operatorID = 9
 	queue := &overCapCompletionQueue{store: orders, parentID: order.ID}
 	complete := failed
@@ -295,6 +318,15 @@ func testDirectCompetingCompletions(t *testing.T, f directCheckoutFixture, order
 		t.Fatalf("expected one acknowledged completion email: calls=%d pending=%t retry=%v", queue.calls.Load(), record.CompletionEmailPending, record.CompletionEmailRetryAt)
 	}
 	assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusCompleted, paidAt)
+	loadShopOrder := func() *orderdomain.Order {
+		t.Helper()
+		stored, err := orders.GetByID(order.ID)
+		if err != nil || stored == nil {
+			t.Fatalf("load completed storefront order: %v", err)
+		}
+		return stored
+	}
+	shopOrder := loadShopOrder()
 
 	if err := manual(); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
 		t.Fatalf("replayed manual completion: %v", err)
@@ -306,10 +338,20 @@ func testDirectCompetingCompletions(t *testing.T, f directCheckoutFixture, order
 	if completed, err := supplier(); completed || !errors.Is(err, wantReplayErr) {
 		t.Fatalf("replayed supplier result: completed=%t, err=%v", completed, err)
 	}
+	if !supplierFailed {
+		for _, status := range []kafudadomain.AttemptStatus{kafudadomain.AttemptProcessing, kafudadomain.AttemptFailed} {
+			late := failed
+			late.Status = string(status)
+			if completed, err := kafudaworkflow.ApplyResult(orders, childID, attemptID, late, startedAt, receivedAt.Add(time.Second), time.Second); completed || !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+				t.Fatalf("late supplier %s result after completion: completed=%t, err=%v", status, completed, err)
+			}
+		}
+	}
 	kafudaworkflow.EnqueueCompletionEmail(ctx, orders, f.store, queue, nil, nil, childID)
 	afterDelivery, afterRecord, afterAttempt := loadCompletion()
-	if queue.calls.Load() != 1 || !reflect.DeepEqual(afterDelivery, delivery) || !reflect.DeepEqual(afterRecord, record) || !reflect.DeepEqual(afterAttempt, attempt) {
-		t.Fatal("replay changed delivery, recharge, attempt or notification state")
+	if queue.calls.Load() != 1 || !reflect.DeepEqual(afterDelivery, delivery) || !reflect.DeepEqual(afterRecord, record) ||
+		!reflect.DeepEqual(afterAttempt, attempt) || !reflect.DeepEqual(loadShopOrder(), shopOrder) {
+		t.Fatal("replayed or out-of-order results changed the completed order, delivery, recharge, attempt or notification")
 	}
 	assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusCompleted, paidAt)
 }
