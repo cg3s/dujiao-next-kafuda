@@ -13,8 +13,12 @@ import (
 	"github.com/dujiao-next/internal/app/httpserver/middleware"
 	"github.com/dujiao-next/internal/authz"
 	adminauthzwiring "github.com/dujiao-next/internal/bootstrap/adminauthz"
+	catalogproductbootstrap "github.com/dujiao-next/internal/bootstrap/catalogproduct"
 	orderwiring "github.com/dujiao-next/internal/bootstrap/order"
 	"github.com/dujiao-next/internal/config"
+	categorystore "github.com/dujiao-next/internal/modules/catalog/category/infrastructure/gormstore"
+	productstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
+	producthttp "github.com/dujiao-next/internal/modules/catalog/product/transport/http"
 	admindomain "github.com/dujiao-next/internal/modules/identity/admin/domain"
 	adminstore "github.com/dujiao-next/internal/modules/identity/admin/infrastructure/gormstore"
 	adminauthapp "github.com/dujiao-next/internal/modules/identity/adminauth/application"
@@ -101,6 +105,11 @@ func registerDirectRehearsalAdmin(t *testing.T, router *gin.Engine, f directChec
 		middleware.AdminRBACMiddleware(deps.AuthzService),
 	)
 	admin.GET("/authz/me", adminauthzwiring.NewHandler(deps).GetAuthzMe)
+	products := catalogproductbootstrap.New(catalogproductbootstrap.Dependencies{
+		Products: productstore.NewProductStore(f.db), Categories: categorystore.NewCategoryStore(f.db),
+	})
+	productHandler := producthttp.NewAdminProductHandler(products.Read, products.Write, products.Admin, deps.SettingService, nil, nil)
+	admin.GET("/products/:id", productHandler.GetAdminProduct)
 	settingshttp.RegisterAdminRoutes(admin, settingshttp.NewAdminHandler(deps.SettingService))
 	handlers := orderwiring.New(deps)
 	orderhttp.RegisterAdminRoutes(admin, handlers.Admin)

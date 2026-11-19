@@ -35,6 +35,11 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	directRehearsalProfile = "rehearsal-profile"
+	directRehearsalCard    = "rehearsal-card"
+)
+
 type directCheckoutFixture struct {
 	db          *gorm.DB
 	product     productdomain.Product
@@ -46,6 +51,15 @@ type directCheckoutFixture struct {
 	commerce    *kafudaapp.CommerceService
 	tenant      resellercontract.TenantContext
 	adminTokens map[string]string
+}
+
+func (f directCheckoutFixture) withSalesEnabled(enabled bool) directCheckoutFixture {
+	f.commerce = kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+		Catalog: kafudaapp.NewCatalogService(f.store, nil, directRehearsalProfile, 2*time.Hour), SalesEnabled: enabled, ReferenceLookupVerified: true,
+		ProductCode: directRehearsalCard, MaxCostCents: 2500, AllowedKinds: []string{"new"}, WorkerReady: func(context.Context) bool { return true },
+	})
+	f.options.DirectCatalog = f.commerce
+	return f
 }
 
 type rehearsalOrderQueue struct{}
@@ -128,16 +142,16 @@ func newDirectCheckoutFixture(t *testing.T, productType, postgresDSN string) dir
 	}
 
 	now := time.Now().UTC()
-	const profile, card, country = "rehearsal-profile", "rehearsal-card", "PH"
+	const country = "PH"
 	plan, planLabel := "plus", "Plus"
 	if productType == "gpt_credits" {
 		plan, planLabel = "credit250", "Codex 250"
 	}
 	store := kafudastore.New(db)
 	catalog := &kafudadomain.Catalog{
-		Profile: profile, Enabled: true, SyncedAt: now, ExpiresAt: now.Add(2 * time.Hour),
+		Profile: directRehearsalProfile, Enabled: true, SyncedAt: now, ExpiresAt: now.Add(2 * time.Hour),
 		Options: []kafudadomain.CatalogOption{{Plan: plan, Country: country, Product: productType, Available: true}},
-		Cards:   []kafudadomain.CardProduct{{ProductCode: card}},
+		Cards:   []kafudadomain.CardProduct{{ProductCode: directRehearsalCard}},
 	}
 	if err := store.SaveCatalog(t.Context(), catalog); err != nil {
 		t.Fatal(err)
@@ -169,18 +183,13 @@ func newDirectCheckoutFixture(t *testing.T, productType, postgresDSN string) dir
 	if err := db.Create(&users).Error; err != nil {
 		t.Fatal(err)
 	}
-	commerce := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
-		Catalog: kafudaapp.NewCatalogService(store, nil, profile, 2*time.Hour), SalesEnabled: true, ReferenceLookupVerified: true,
-		ProductCode: card, MaxCostCents: 2500, AllowedKinds: []string{"new"}, WorkerReady: func(context.Context) bool { return true },
-	})
-	return directCheckoutFixture{
-		db: db, product: product, sku: sku, planLabel: planLabel, users: users, store: store, commerce: commerce,
+	return (directCheckoutFixture{
+		db: db, product: product, sku: sku, planLabel: planLabel, users: users, store: store,
 		tenant: resellercontract.MainTenantContext("rehearsal.example.test"),
 		options: orderapp.OrderServiceOptions{
-			DirectCatalog: commerce,
-			OrderStore:    orderstore.New(db, rand.Text()), UserStore: userstore.New(db),
+			OrderStore: orderstore.New(db, rand.Text()), UserStore: userstore.New(db),
 			ProductStore: productstore.NewProductStore(db), ProductSKUStore: productstore.NewSKUStore(db),
 			PromotionRepo: promotionstore.New(db), Queue: rehearsalOrderQueue{},
 		},
-	}
+	}).withSalesEnabled(true)
 }

@@ -75,9 +75,6 @@ func newDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigin string, 
 
 func newConfiguredDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigin, adminDir string, options directRehearsalOptions) (directCheckoutFixture, *gin.Engine, string, string) {
 	t.Helper()
-	if adminDir != "" && storefrontDir == "" {
-		t.Fatal("admin rehearsal requires built storefront assets")
-	}
 	productType := options.productType
 	if productType == "" {
 		productType = "gpt"
@@ -94,7 +91,14 @@ func newConfiguredDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigi
 	if err := f.db.Create(&account).Error; err != nil {
 		t.Fatal(err)
 	}
+	return assembleDirectRehearsalRouter(t, f, storefrontDir, onlineOrigin, adminDir, options.renewalCancelled)
+}
 
+func assembleDirectRehearsalRouter(t *testing.T, f directCheckoutFixture, storefrontDir, onlineOrigin, adminDir string, renewalCancelled *bool) (directCheckoutFixture, *gin.Engine, string, string) {
+	t.Helper()
+	if adminDir != "" && storefrontDir == "" {
+		t.Fatal("admin rehearsal requires built storefront assets")
+	}
 	wallets := walletstore.New(f.db)
 	walletService := walletapp.NewService(walletapp.Options{Repository: wallets, Transactions: wallets})
 	payments := paymentstore.New(f.db, rand.Text())
@@ -110,7 +114,7 @@ func newConfiguredDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigi
 	deps := &container.Container{
 		OrderStore: f.options.OrderStore, OrderService: orderapp.NewOrderService(f.options), UserStore: f.options.UserStore,
 		WalletRepo: wallets, WalletService: walletService, PaymentStore: payments, PaymentChannelStore: channels,
-		KafudaGPT: &kafudawiring.Module{Store: f.store},
+		KafudaGPT: &kafudawiring.Module{Store: f.store, Commerce: f.commerce},
 		PaymentService: paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{
 			OrderStore: f.options.OrderStore, ProductRepo: f.options.ProductStore, ProductSKURepo: f.options.ProductSKUStore,
 			PaymentStore: payments, ChannelStore: channels, UserStore: f.options.UserStore, WalletRepo: wallets, WalletService: walletService,
@@ -156,7 +160,7 @@ func newConfiguredDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigi
 	orderhttp.RegisterUserReadRoutes(member, orders.User)
 	orderhttp.RegisterUserPaymentChannelsRoute(member, orders.User)
 	member.GET("/wallet", walletwiring.New(deps).User.GetWallet)
-	newDirectRehearsalActions(f, adminDir != "", options.renewalCancelled).register(member)
+	newDirectRehearsalActions(f, adminDir != "", renewalCancelled).register(member)
 	if online != nil {
 		online.register(router, member, deps)
 	}
