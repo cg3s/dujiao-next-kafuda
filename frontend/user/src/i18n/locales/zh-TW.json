@@ -1673,6 +1673,7 @@
     "title": "訂單詳情",
     "subtitle": "查看訂單狀態與交付資訊",
     "notFound": "訂單不存在或已被刪除",
+    "offline": "網路已中斷，恢復連線後將自動重試。",
     "payNow": "去支付",
     "cancel": "取消訂單",
     "cancelConfirm": "確認取消該訂單？",

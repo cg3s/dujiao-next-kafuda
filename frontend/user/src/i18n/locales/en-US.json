@@ -1673,6 +1673,7 @@
     "title": "Order Detail",
     "subtitle": "Check order status and fulfillment",
     "notFound": "Order not found or deleted",
+    "offline": "You’re offline. The order will reload when you reconnect.",
     "payNow": "Pay now",
     "cancel": "Cancel order",
     "cancelConfirm": "Confirm cancel this order?",

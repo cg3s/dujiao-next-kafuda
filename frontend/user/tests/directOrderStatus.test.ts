@@ -54,6 +54,80 @@ function testPage() {
   return Object.assign(new EventTarget(), { visibilityState: 'visible' as DocumentVisibilityState })
 }
 
+function testConnectivity(online = true) {
+  const events = new EventTarget()
+  return {
+    events,
+    isOnline: () => online,
+    setOnline(value: boolean) {
+      online = value
+      events.dispatchEvent(new Event(online ? 'online' : 'offline'))
+    },
+  }
+}
+
+test('known offline polls pause, reconnect while visible and detach when stopped', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const page = testPage()
+  const connectivity = testConnectivity(false)
+  const seen: (string | null)[] = []
+  let calls = 0
+  const stop = startDirectOrderPolling(async () => {
+    calls++
+    return { stage: 'manual_review', updated_at: '2026-11-18T08:00:00Z' }
+  }, (status) => seen.push(status?.stage ?? null), page, undefined, connectivity)
+  t.mock.timers.tick(60_000)
+  assert.equal(calls, 0)
+  assert.deepEqual(seen, [null])
+
+  connectivity.setOnline(true)
+  assert.equal(calls, 1)
+  await Promise.resolve()
+  connectivity.setOnline(false)
+  t.mock.timers.tick(60_000)
+  assert.equal(calls, 1)
+  assert.deepEqual(seen, [null, 'manual_review', null])
+
+  page.visibilityState = 'hidden'
+  page.dispatchEvent(new Event('visibilitychange'))
+  connectivity.setOnline(true)
+  assert.equal(calls, 1)
+  page.visibilityState = 'visible'
+  page.dispatchEvent(new Event('visibilitychange'))
+  assert.equal(calls, 2)
+  await Promise.resolve()
+  stop()
+  connectivity.setOnline(false)
+  connectivity.setOnline(true)
+  t.mock.timers.tick(60_000)
+  assert.equal(calls, 2)
+  assert.deepEqual(seen, [null, 'manual_review', null, 'manual_review'])
+})
+
+test('reconnect during a failing in-flight poll refreshes immediately without overlapping requests', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const connectivity = testConnectivity()
+  const pending = Promise.withResolvers<unknown>()
+  const goodStatus = { stage: 'processing', updated_at: '2026-11-18T08:00:00Z' }
+  const seen: (DirectOrderStatus | null)[] = []
+  let calls = 0
+  const stop = startDirectOrderPolling(() => {
+    calls++
+    return calls === 1 ? pending.promise : Promise.resolve(goodStatus)
+  }, (status) => seen.push(status), testPage(), undefined, connectivity)
+  connectivity.setOnline(false)
+  connectivity.setOnline(true)
+  assert.equal(calls, 1)
+  pending.reject(new Error('connection interrupted'))
+  await Promise.resolve()
+  assert.equal(calls, 2)
+  await Promise.resolve()
+  assert.deepEqual(seen, [null, null, goodStatus])
+  t.mock.timers.tick(9_999)
+  assert.equal(calls, 2)
+  stop()
+})
+
 test('polling retries an offline refresh and stops after completion', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   let calls = 0
@@ -220,4 +294,39 @@ test('leaving after terminal progress cancels pending order detail retries', asy
   page.dispatchEvent(new Event('visibilitychange'))
   t.mock.timers.tick(60_000)
   assert.equal(detailRequests, 1)
+})
+
+test('reconnecting resumes terminal order details without polling progress again', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const connectivity = testConnectivity()
+  const pending = Promise.withResolvers<boolean>()
+  const completed = { stage: 'completed', updated_at: '2026-11-18T08:00:00Z' }
+  const seen: (DirectOrderStatus | null)[] = []
+  let statusRequests = 0
+  let detailRequests = 0
+  const stop = startDirectOrderPolling(async () => {
+    statusRequests++
+    return completed
+  }, (status) => seen.push(status), testPage(), (stage) => {
+    detailRequests++
+    assert.equal(stage, 'completed')
+    return detailRequests === 1 ? pending.promise : Promise.resolve(true)
+  }, connectivity)
+  await Promise.resolve()
+  assert.equal(detailRequests, 1)
+  connectivity.setOnline(false)
+  pending.resolve(false)
+  await Promise.resolve()
+  t.mock.timers.tick(60_000)
+  assert.equal(detailRequests, 1)
+  connectivity.setOnline(true)
+  assert.equal(detailRequests, 2)
+  await Promise.resolve()
+  connectivity.setOnline(false)
+  connectivity.setOnline(true)
+  t.mock.timers.tick(60_000)
+  assert.equal(detailRequests, 2)
+  assert.equal(statusRequests, 1)
+  assert.deepEqual(seen, [completed])
+  stop()
 })

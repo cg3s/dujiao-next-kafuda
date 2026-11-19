@@ -19,6 +19,7 @@ export function useOrderDetail() {
 
   const loading = ref(true)
   const order = ref<any>(null)
+  const orderOffline = ref(!navigator.onLine)
   const fulfillmentDownloading = ref(false)
   const orderNo = computed(() => String(route.params.order_no || '').trim())
   const directStatus = ref<DirectOrderStatus | null>(null)
@@ -71,6 +72,12 @@ export function useOrderDetail() {
     const request = ++orderRequest
     const number = orderNo.value
     const isCurrent = () => isCurrentSession() && request === orderRequest && number === orderNo.value
+    if (order.value?.order_no !== number) order.value = null
+    orderOffline.value = !navigator.onLine
+    if (orderOffline.value) {
+      loading.value = false
+      return
+    }
     if (showLoading) loading.value = true
     try {
       const response = await userOrderAPI.detail(number, { silentBusinessError: !showLoading })
@@ -80,6 +87,18 @@ export function useOrderDetail() {
     } finally {
       if (isCurrent()) loading.value = false
     }
+  }
+
+  const handleOrderConnectivity = () => {
+    const offline = !navigator.onLine
+    if (orderOffline.value === offline) return
+    orderOffline.value = offline
+    if (orderNo.value && order.value?.order_no !== orderNo.value) void loadOrder()
+  }
+
+  const handlePageResume = () => {
+    checkStoredSession()
+    handleOrderConnectivity()
   }
 
   const debouncedLoadOrder = debounceAsync(loadOrder, 300)
@@ -107,6 +126,7 @@ export function useOrderDetail() {
         await loadOrder(false)
         return !isCurrentSession() || number !== directOrderNo.value || order.value?.status === stage
       },
+      { isOnline: () => navigator.onLine, events: window },
     ))
   })
 
@@ -136,8 +156,10 @@ export function useOrderDetail() {
 
   onMounted(() => {
     window.addEventListener('storage', handleStoredSessionChange)
-    window.addEventListener('pageshow', checkStoredSession)
-    document.addEventListener('visibilitychange', checkStoredSession)
+    window.addEventListener('online', handleOrderConnectivity)
+    window.addEventListener('offline', handleOrderConnectivity)
+    window.addEventListener('pageshow', handlePageResume)
+    document.addEventListener('visibilitychange', handlePageResume)
     checkStoredSession()
     if (!isCurrentSession()) return
     if (!route.params.order_no) {
@@ -149,8 +171,10 @@ export function useOrderDetail() {
 
   onUnmounted(() => {
     window.removeEventListener('storage', handleStoredSessionChange)
-    window.removeEventListener('pageshow', checkStoredSession)
-    document.removeEventListener('visibilitychange', checkStoredSession)
+    window.removeEventListener('online', handleOrderConnectivity)
+    window.removeEventListener('offline', handleOrderConnectivity)
+    window.removeEventListener('pageshow', handlePageResume)
+    document.removeEventListener('visibilitychange', handlePageResume)
     orderRequest++
     debouncedLoadOrder.cancel()
   })
@@ -158,6 +182,7 @@ export function useOrderDetail() {
   return {
     loading,
     order,
+    orderOffline,
     directOrderNo,
     directStatus,
     directStatusUnavailable,

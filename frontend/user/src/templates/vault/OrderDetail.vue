@@ -19,11 +19,11 @@
       <div class="h-[200px] rounded-md bg-secondary"></div>
     </div>
 
-    <!-- 不存在 -->
+    <!-- 加载失败 -->
     <div v-else-if="!order" class="my-6 flex flex-col items-center gap-3 rounded-xl border border-dashed py-16 text-center text-muted-foreground">
       <AlertCircle class="h-10 w-10 opacity-60" />
-      <p>{{ t('orderDetail.notFound') }}</p>
-      <Button class="mt-2 rounded-full" size="sm" @click="debouncedLoadOrder()">{{ t('errorBoundary.retry') }}</Button>
+      <p>{{ t(orderOffline ? 'orderDetail.offline' : 'orderDetail.notFound') }}</p>
+      <Button v-if="!orderOffline" class="mt-2 rounded-full" size="sm" @click="debouncedLoadOrder()">{{ t('errorBoundary.retry') }}</Button>
     </div>
 
     <template v-else>
@@ -70,7 +70,7 @@ import DirectOrderStatus from '../../components/DirectOrderStatus.vue'
 const { t } = useI18n()
 
 const {
-  loading, order, debouncedLoadOrder, cancelOrder, fulfillmentDownloading, handleDownloadFulfillment,
+  loading, order, orderOffline, debouncedLoadOrder, cancelOrder, fulfillmentDownloading, handleDownloadFulfillment,
   statusLabel, statusVariant, formatDate, formatMoney,
   directOrderNo, directStatus, directStatusUnavailable,
 } = useOrderDetail()

@@ -45,35 +45,55 @@ export function parseDirectOrderStatus(input: unknown): DirectOrderStatus | null
 const ACTIVE_POLL_INTERVAL = 10_000
 const MANUAL_REVIEW_POLL_INTERVAL = 60_000
 
+type DirectOrderConnectivity = {
+  isOnline: () => boolean
+  events: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>
+}
+
 export function startDirectOrderPolling(
   fetchStatus: () => Promise<unknown>,
   onUpdate: (status: DirectOrderStatus | null) => void,
   page: Pick<Document, 'visibilityState' | 'addEventListener' | 'removeEventListener'>,
   syncTerminalOrder?: (stage: TerminalDirectOrderStage) => Promise<boolean>,
+  connectivity?: DirectOrderConnectivity,
 ): () => void {
   let stopped = false
   let inFlight = false
+  let reconnectedWhileInFlight = false
   let lastStage: DirectOrderStage | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
+  const isOnline = () => connectivity?.isOnline() ?? true
+  const terminalStage = () => lastStage === 'completed' || lastStage === 'refunded' ? lastStage : undefined
   const stop = () => {
     stopped = true
     clearTimeout(timer)
     page.removeEventListener('visibilitychange', onVisibilityChange)
+    connectivity?.events.removeEventListener('online', onOnline)
+    connectivity?.events.removeEventListener('offline', onOffline)
+  }
+  const schedule = (interval: number, retryAfterReconnect: boolean) => {
+    if (stopped || page.visibilityState !== 'visible' || !isOnline()) return
+    if (retryAfterReconnect && reconnectedWhileInFlight) void refresh()
+    else timer = setTimeout(refresh, interval)
   }
   const refresh = async () => {
     if (stopped || inFlight || page.visibilityState === 'hidden') return
+    if (!isOnline()) {
+      if (!terminalStage()) onUpdate(null)
+      return
+    }
     inFlight = true
-    if ((lastStage === 'completed' || lastStage === 'refunded') && syncTerminalOrder) {
+    reconnectedWhileInFlight = false
+    const confirmedStage = terminalStage()
+    if (confirmedStage && syncTerminalOrder) {
       try {
-        if (await syncTerminalOrder(lastStage)) stop()
+        if (await syncTerminalOrder(confirmedStage)) stop()
       } catch {
         // Keep the confirmed terminal stage while the order detail catches up.
       } finally {
         inFlight = false
       }
-      if (!stopped && page.visibilityState === 'visible') {
-        timer = setTimeout(refresh, ACTIVE_POLL_INTERVAL)
-      }
+      schedule(ACTIVE_POLL_INTERVAL, true)
       return
     }
     let status: DirectOrderStatus | null = null
@@ -87,22 +107,35 @@ export function startDirectOrderPolling(
     if (stopped) return
     if (status) lastStage = status.stage
     onUpdate(status)
-    if (lastStage === 'completed' || lastStage === 'refunded') {
+    if (terminalStage()) {
       if (!syncTerminalOrder) {
         stop()
         return
       }
       void refresh()
-    } else if (!stopped && page.visibilityState === 'visible') {
+    } else {
+      if (status && !isOnline()) onUpdate(null)
       const interval = lastStage === 'manual_review' ? MANUAL_REVIEW_POLL_INTERVAL : ACTIVE_POLL_INTERVAL
-      timer = setTimeout(refresh, interval)
+      schedule(interval, status === null)
     }
   }
   const onVisibilityChange = () => {
     clearTimeout(timer)
     void refresh()
   }
+  const onOffline = () => {
+    clearTimeout(timer)
+    if (!terminalStage()) onUpdate(null)
+  }
+  const onOnline = () => {
+    clearTimeout(timer)
+    if (page.visibilityState !== 'visible') return
+    if (inFlight) reconnectedWhileInFlight = true
+    else void refresh()
+  }
   page.addEventListener('visibilitychange', onVisibilityChange)
+  connectivity?.events.addEventListener('online', onOnline)
+  connectivity?.events.addEventListener('offline', onOffline)
   void refresh()
   return stop
 }
