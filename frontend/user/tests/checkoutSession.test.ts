@@ -57,6 +57,35 @@ test('checkout and order detail keep settlement within the correct browser sessi
   const { useBuyNowStore } = await vite.ssrLoadModule('/src/stores/buyNow.ts')
   const { default: i18n } = await vite.ssrLoadModule('/src/i18n/index.ts')
 
+  await t.test('direct authorization rejects redirects and hides reflected HTTP errors', async (scenario) => {
+    const { userOrderAPI } = await vite.ssrLoadModule('/src/api/order.ts')
+    const { ApiRequestError } = await vite.ssrLoadModule('/src/api/client.ts')
+    const session = 'synthetic-session-not-for-logs'
+    const reported: unknown[][] = []
+    scenario.mock.method(console, 'error', (...args: unknown[]) => reported.push(args))
+    const localWrites = scenario.mock.method(localStorage, 'setItem')
+    const sessionWrites = scenario.mock.method(sessionStorage, 'setItem')
+    const request = scenario.mock.method(globalThis, 'fetch', async (url: string, options: RequestInit) => {
+      assert.equal(url, '/api/v1/orders/paid-fixture/direct-authorize')
+      assert.equal(options.method, 'POST')
+      assert.equal(options.redirect, 'error')
+      assert.equal(options.cache, 'no-store')
+      assert.deepEqual(JSON.parse(String(options.body)), { session })
+      return Response.json({ status_code: 502, msg: session }, { status: 502 })
+    })
+
+    await assert.rejects(userOrderAPI.authorizeDirect('paid-fixture', session), (error: unknown) => {
+      assert.ok(error instanceof ApiRequestError)
+      assert.equal(error.status, 502)
+      assert.ok(!error.message.includes(session))
+      return true
+    })
+    assert.equal(request.mock.callCount(), 1)
+    assert.ok(!JSON.stringify(reported).includes(session))
+    assert.equal(localWrites.mock.callCount(), 0)
+    assert.equal(sessionWrites.mock.callCount(), 0)
+  })
+
   const mountCheckout = async (scenario: TestContext, {
     guest = false, direct = !guest, online = guest, initialPreviewFailure, coupon = '',
   }: { guest?: boolean; direct?: boolean; online?: boolean; initialPreviewFailure?: 'network' | 'temporary' | 'validation'; coupon?: string } = {}) => {

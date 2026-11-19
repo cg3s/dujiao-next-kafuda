@@ -39,6 +39,7 @@ interface RequestOptions {
     authToken?: string
     blob?: boolean
     silentBusinessError?: boolean
+    sensitiveBody?: boolean
     credentials?: RequestCredentials
     [key: string]: any
 }
@@ -131,6 +132,8 @@ function createClient(injectAuth: boolean) {
                 body: body instanceof FormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
                 credentials: opts.credentials,
                 signal: controller.signal,
+                cache: opts.sensitiveBody ? 'no-store' : undefined,
+                redirect: opts.sensitiveBody ? 'error' : undefined,
             })
         } catch (err: any) {
             if (err.name === 'AbortError') {
@@ -175,7 +178,7 @@ function createClient(injectAuth: boolean) {
         // HTTP error with JSON body
         if (!response.ok) {
             const status = response.status
-            const message = data?.msg || getHttpErrorMessage(status)
+            const message = (!opts.sensitiveBody && data?.msg) || getHttpErrorMessage(status)
             if (status === 401) expireUserAuth()
             console.error('HTTP Error:', message)
             return Promise.reject(new ApiRequestError(message, 'http', status))
