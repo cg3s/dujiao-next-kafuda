@@ -83,12 +83,15 @@ export function useCheckout() {
   const syncingStock = ref(false)
   const orderPaymentChannels = ref<any[]>([])
   const orderPaymentChannelsRequestId = ref(0)
+  let checkoutRevision = 0
+  let disposed = false
 
   // Payment state
   const selectedChannelId = ref<number | null>(null)
   const useBalance = ref(false)
   const walletLoading = ref(false)
   const walletBalance = ref('0')
+  let walletBalanceRequestId = 0
 
   // Payment channels
   const paymentChannels = computed(() => {
@@ -214,13 +217,16 @@ export function useCheckout() {
   }
 
   const handleSelectChannel = (channel?: any) => {
-    if (!channel || isChannelDisabledForAmount(channel)) return
+    if (submitting.value || !channel || isChannelDisabledForAmount(channel)) return
     selectedChannelId.value = Number(channel.id) || null
   }
 
+  const selectedPaymentChannel = computed(() => selectedChannelId.value
+    ? paymentChannels.value.find((channel: any) => Number(channel?.id) === selectedChannelId.value)
+    : undefined)
+
   const selectedChannelAmountHint = computed(() => {
-    const channel = paymentChannels.value.find((item: any) => Number(item?.id) === Number(selectedChannelId.value))
-    if (!channel) return ''
+    const channel = selectedPaymentChannel.value
     if (!isChannelDisabledForAmount(channel)) return ''
     return channelAmountLimitHint(channel)
   })
@@ -596,30 +602,6 @@ export function useCheckout() {
     guestTurnstileToken.value = ''
   }
 
-  const canSubmit = computed(() => {
-    if (directCheckoutError.value) return false
-    if (syncingStock.value) return false
-    if (submitting.value) return false
-    if (cartItems.value.length === 0) return false
-    if (!manualFormValidation.value.valid) return false
-    if (cartItems.value.some((item) => itemStockExceeded(item))) return false
-    if (cartItems.value.some((item) => itemMinNotMet(item))) return false
-    if (walletOnlyPayment.value && expectedOnlinePayCents.value > 0) return false
-    if (!walletOnlyPayment.value && requiresOnlineChannel.value && !selectedChannelId.value) return false
-    if (requiresOnlineChannel.value && selectedChannelAmountHint.value) return false
-    if (userAuthStore.isAuthenticated) return true
-    if (checkoutMode.value !== 'guest') return false
-    if (!guestEmail.value.trim() || !guestPassword.value.trim() || !guestEmailValid.value || !guestPasswordValid.value) return false
-    if (!guestCaptchaEnabled.value) return true
-    if (captchaProvider.value === 'image') {
-      return Boolean(guestCaptchaPayload.value.captcha_id && guestCaptchaPayload.value.captcha_code)
-    }
-    if (captchaProvider.value === 'turnstile') {
-      return Boolean(guestTurnstileToken.value)
-    }
-    return false
-  })
-
   const submitBlockedReason = computed(() => {
     if (directCheckoutError.value) return t(directCheckoutError.value)
     if (syncingStock.value) return t('checkout.stockSyncing')
@@ -636,7 +618,7 @@ export function useCheckout() {
       return t('cart.minPurchaseNotMet', { count: itemPurchaseMin(minBlockedItem) })
     }
     if (walletOnlyPayment.value && expectedOnlinePayCents.value > 0) return t('payment.walletInsufficientHint')
-    if (!walletOnlyPayment.value && requiresOnlineChannel.value && !selectedChannelId.value) return t('checkout.errors.selectPayment')
+    if (!walletOnlyPayment.value && requiresOnlineChannel.value && !selectedPaymentChannel.value) return t('checkout.errors.selectPayment')
     if (requiresOnlineChannel.value && selectedChannelAmountHint.value) return selectedChannelAmountHint.value
     if (userAuthStore.isAuthenticated) return ''
     if (checkoutMode.value !== 'guest') return t('checkout.errors.loginOrGuest')
@@ -644,15 +626,15 @@ export function useCheckout() {
     if (!guestEmailValid.value) return t('error.email_invalid')
     if (!guestPasswordValid.value) return t('checkout.errors.guestPasswordTooShort')
     if (guestCaptchaEnabled.value) {
-      if (captchaProvider.value === 'image' && (!guestCaptchaPayload.value.captcha_id || !guestCaptchaPayload.value.captcha_code)) {
-        return t('auth.common.captchaRequired')
-      }
-      if (captchaProvider.value === 'turnstile' && !guestTurnstileToken.value) {
+      const captcha = getGuestCaptchaPayload()
+      if (!(captcha?.turnstile_token || (captcha?.captcha_id && captcha.captcha_code))) {
         return t('auth.common.captchaRequired')
       }
     }
     return ''
   })
+
+  const canSubmit = computed(() => !submitting.value && !submitBlockedReason.value)
 
   const previewStatusText = computed(() => couponRefreshing.value
     ? t('checkout.couponRefreshing')
@@ -686,32 +668,44 @@ export function useCheckout() {
     manual_form_data: buildManualFormDataPayload(),
   })
 
-  const loadOrderPaymentChannels = async () => {
-    if (!userAuthStore.isAuthenticated || directCheckoutError.value) {
-      orderPaymentChannels.value = []
-      return
-    }
-    if (!requiresOnlineChannel.value) {
-      orderPaymentChannels.value = []
-      return
-    }
-    if (cartItems.value.length === 0 || !preview.value) {
-      orderPaymentChannels.value = []
-      return
-    }
+  const captureCheckoutContext = () => ({ revision: checkoutRevision, token: localStorage.getItem('user_token') })
+  const isCurrentCheckout = (context: ReturnType<typeof captureCheckoutContext>) => !disposed
+    && context.revision === checkoutRevision && context.token === localStorage.getItem('user_token')
+
+  const isValidAmount = (amount: unknown) => {
+    if (typeof amount !== 'string' && typeof amount !== 'number') return false
+    const cents = amountToCents(amount)
+    return cents !== null && Number(amount) >= 0
+  }
+
+  const loadOrderPaymentChannels = async (items = buildItemsPayload()) => {
     const requestId = ++orderPaymentChannelsRequestId.value
+    if (!userAuthStore.isAuthenticated || directCheckoutError.value || !requiresOnlineChannel.value
+      || items.length === 0 || !preview.value) {
+      orderPaymentChannels.value = []
+      return false
+    }
+    const context = captureCheckoutContext()
+    const requestedPreview = preview.value
+    const onlineAmount = expectedOnlinePayCents.value
+    const isCurrentRequest = () => requestId === orderPaymentChannelsRequestId.value && isCurrentCheckout(context)
+      && requestedPreview === preview.value && requiresOnlineChannel.value && onlineAmount === expectedOnlinePayCents.value
     try {
       const response = await userOrderAPI.getPaymentChannels({
-        amount: centsToAmount(expectedOnlinePayCents.value),
-        items: buildItemsPayload(),
+        amount: centsToAmount(onlineAmount),
+        items,
       })
-      if (requestId !== orderPaymentChannelsRequestId.value) return
+      if (!isCurrentRequest()) return false
       const channels = response.data.data
-      orderPaymentChannels.value = Array.isArray(channels) ? channels : []
+      const available = Array.isArray(channels)
+      orderPaymentChannels.value = available ? channels : []
+      return available
     } catch {
-      if (requestId !== orderPaymentChannelsRequestId.value) return
-      const fallback = preview.value?.payment_channels
-      orderPaymentChannels.value = Array.isArray(fallback) ? fallback : []
+      if (isCurrentRequest()) {
+        const fallback = requestedPreview.payment_channels
+        orderPaymentChannels.value = Array.isArray(fallback) ? fallback : []
+      }
+      return false
     }
   }
 
@@ -728,53 +722,27 @@ export function useCheckout() {
     }
   }
 
-  const loadPreview = async () => {
-    if (directCheckoutError.value || syncingStock.value) {
-      previewRequestId.value++
+  const loadPreview = async (orderPayload?: ReturnType<typeof buildOrderPayload>) => {
+    const requestId = ++previewRequestId.value
+    if (directCheckoutError.value || syncingStock.value || cartItems.value.length === 0
+      || (isGuestCheckout.value && (!guestEmail.value.trim() || !guestPassword.value.trim() || !guestEmailValid.value))
+      || cartItems.value.some((item) => itemStockExceeded(item) || itemMinNotMet(item))) {
       orderPaymentChannelsRequestId.value++
       preview.value = null
       previewLoading.value = false
       orderPaymentChannels.value = []
       previewError.value = ''
       couponRefreshing.value = false
-      return
-    }
-    if (cartItems.value.length === 0) {
-      preview.value = null
-      orderPaymentChannels.value = []
-      previewError.value = ''
-      couponRefreshing.value = false
-      return
-    }
-    if (isGuestCheckout.value && (!guestEmail.value.trim() || !guestPassword.value.trim() || !guestEmailValid.value)) {
-      preview.value = null
-      orderPaymentChannels.value = []
-      previewError.value = ''
-      couponRefreshing.value = false
-      return
+      return false
     }
 
-    if (cartItems.value.some((item) => itemStockExceeded(item))) {
-      preview.value = null
-      orderPaymentChannels.value = []
-      previewError.value = ''
-      couponRefreshing.value = false
-      return
-    }
-    if (cartItems.value.some((item) => itemMinNotMet(item))) {
-      preview.value = null
-      orderPaymentChannels.value = []
-      previewError.value = ''
-      couponRefreshing.value = false
-      return
-    }
-
-    const requestId = ++previewRequestId.value
+    const context = captureCheckoutContext()
+    const isCurrentRequest = () => requestId === previewRequestId.value && isCurrentCheckout(context)
     previewLoading.value = true
     previewError.value = ''
 
     try {
-      const payload: any = buildOrderPayload()
+      const payload = orderPayload ?? buildOrderPayload()
 
       let response
       if (userAuthStore.isAuthenticated) {
@@ -787,18 +755,20 @@ export function useCheckout() {
         })
       }
 
-      if (requestId !== previewRequestId.value) return
-      preview.value = response.data.data
-      if (userAuthStore.isAuthenticated) {
-        debouncedLoadOrderPaymentChannels()
-      } else {
-        orderPaymentChannels.value = []
+      if (!isCurrentRequest()) return false
+      const result = response.data.data
+      if (!isValidAmount(result?.total_amount)) {
+        throw new Error(t('checkout.previewFailed'))
       }
+      preview.value = result
+      return true
     } catch (err: any) {
-      if (requestId !== previewRequestId.value) return
-      preview.value = null
-      orderPaymentChannels.value = []
-      previewError.value = err.message || t('checkout.previewFailed')
+      if (isCurrentRequest()) {
+        preview.value = null
+        orderPaymentChannels.value = []
+        previewError.value = err.message || t('checkout.previewFailed')
+      }
+      return false
     } finally {
       if (requestId === previewRequestId.value) {
         previewLoading.value = false
@@ -809,12 +779,6 @@ export function useCheckout() {
 
   const debouncedLoadPreview = debounceAsync(loadPreview, 300)
 
-  const loadPreviewNow = async () => {
-    debouncedLoadPreview.cancel()
-    debouncedLoadOrderPaymentChannels.cancel()
-    await loadPreview()
-  }
-
   const clearSourceStore = () => {
     if (isBuyNowMode.value) {
       buyNowStore.clear()
@@ -824,6 +788,7 @@ export function useCheckout() {
   }
 
   const handleSubmit = async () => {
+    if (submitting.value) return
     submitAttempted.value = true
     error.value = ''
     previewError.value = ''
@@ -833,39 +798,67 @@ export function useCheckout() {
     }
 
     submitting.value = true
+    const context = captureCheckoutContext()
+    const useWallet = useBalance.value
+    const walletOnly = walletOnlyPayment.value
+    const isCurrentPaymentPreference = () => useWallet === useBalance.value && walletOnly === walletOnlyPayment.value
+    const isCurrentSubmission = () => isCurrentCheckout(context) && isCurrentPaymentPreference()
+    debouncedLoadPreview.cancel()
+    debouncedLoadOrderPaymentChannels.cancel()
+    orderPaymentChannelsRequestId.value++
     try {
-      await loadPreviewNow()
-      if (previewError.value) {
-        error.value = previewError.value
+      const orderPayload = buildOrderPayload()
+      const hasPreview = await loadPreview(orderPayload)
+      if (!hasPreview || !isCurrentSubmission()) {
+        error.value = previewError.value || t('checkout.previewFailed')
         return
       }
-      if (directCheckoutError.value || (hasDirectItems.value && !preview.value)) {
-        error.value = directCheckoutError.value ? t(directCheckoutError.value) : t('checkout.previewFailed')
+      const authenticated = userAuthStore.isAuthenticated
+      if (authenticated && useWallet) {
+        const hasBalance = await loadWalletBalance()
+        if (!hasBalance || !isCurrentSubmission()) {
+          error.value = t('checkout.errors.submitFailed')
+          return
+        }
+      }
+      if (walletOnly && expectedOnlinePayCents.value > 0) {
+        error.value = t('payment.walletInsufficientHint')
+        return
+      }
+      if (authenticated && requiresOnlineChannel.value) {
+        const hasChannels = await loadOrderPaymentChannels(orderPayload.items)
+        if (!hasChannels || !isCurrentSubmission()) {
+          error.value = t('checkout.errors.submitFailed')
+          return
+        }
+      }
+      if (submitBlockedReason.value) {
+        error.value = submitBlockedReason.value
         return
       }
 
       const payload = {
-        ...buildOrderPayload(),
+        ...orderPayload,
         channel_id: requiresOnlineChannel.value ? (selectedChannelId.value || undefined) : undefined,
-        use_balance: useBalance.value,
+        use_balance: useWallet,
       }
 
       let responseData: any
 
-      if (userAuthStore.isAuthenticated) {
+      if (authenticated) {
         const response = await userOrderAPI.createAndPay(payload)
         responseData = response.data.data
       } else {
+        const guestAuth = {
+          email: guestEmail.value.trim(),
+          order_password: guestPassword.value,
+        }
         const response = await guestOrderAPI.createAndPay({
           ...payload,
-          email: guestEmail.value.trim(),
-          order_password: guestPassword.value,
+          ...guestAuth,
           captcha_payload: getGuestCaptchaPayload(),
         })
-        saveGuestOrderAuth({
-          email: guestEmail.value.trim(),
-          order_password: guestPassword.value,
-        })
+        saveGuestOrderAuth(guestAuth)
         responseData = response.data.data
       }
 
@@ -876,7 +869,7 @@ export function useCheckout() {
       clearSourceStore()
 
       // Redirect to the existing Payment page which handles all payment display
-      const query = userAuthStore.isAuthenticated
+      const query = authenticated
         ? `order_no=${encodeURIComponent(responseData.order_no)}`
         : `guest=1&order_no=${encodeURIComponent(responseData.order_no)}`
       router.push(`/pay?${query}`)
@@ -891,15 +884,23 @@ export function useCheckout() {
       }
     } finally {
       submitting.value = false
+      if (!disposed && !isCurrentCheckout(context)) {
+        debouncedLoadPreview()
+      } else if (!disposed && !isCurrentPaymentPreference()) {
+        debouncedLoadOrderPaymentChannels()
+      }
     }
   }
 
   watch(
-    () => [cartItems.value, manualFormFingerprint.value, normalizedCouponCode.value, checkoutMode.value, guestEmail.value, guestPassword.value, userAuthStore.isAuthenticated, directCheckoutError.value],
+    () => [cartItems.value, manualFormFingerprint.value, normalizedCouponCode.value, checkoutMode.value,
+      guestEmail.value, guestPassword.value, userAuthStore.isAuthenticated, userAuthStore.token,
+      directCheckoutError.value, route.fullPath],
     () => {
-      debouncedLoadPreview()
+      checkoutRevision++
+      if (!submitting.value) debouncedLoadPreview()
     },
-    { deep: true }
+    { deep: true, flush: 'sync' }
   )
 
   watch(walletOnlyPayment, (v) => {
@@ -914,17 +915,17 @@ export function useCheckout() {
   })
 
   watch(
-    () => [userAuthStore.isAuthenticated, requiresOnlineChannel.value, expectedOnlinePayCents.value, preview.value?.total_amount],
+    () => [userAuthStore.isAuthenticated, requiresOnlineChannel.value, expectedOnlinePayCents.value, preview.value],
     () => {
-      debouncedLoadOrderPaymentChannels()
+      if (!submitting.value) debouncedLoadOrderPaymentChannels()
     }
   )
 
   watch(
-    () => [paymentChannels.value, expectedOnlinePayCents.value, requiresOnlineChannel.value],
+    () => [selectedPaymentChannel.value, expectedOnlinePayCents.value, requiresOnlineChannel.value, submitting.value],
     () => {
-      if (!selectedChannelId.value) return
-      const selected = paymentChannels.value.find((item: any) => Number(item?.id) === Number(selectedChannelId.value))
+      if (submitting.value || !selectedChannelId.value) return
+      const selected = selectedPaymentChannel.value
       if (!selected || isChannelDisabledForAmount(selected)) {
         selectedChannelId.value = null
       }
@@ -933,28 +934,46 @@ export function useCheckout() {
   )
 
   const loadWalletBalance = async () => {
-    if (!userAuthStore.isAuthenticated) return
+    if (!userAuthStore.isAuthenticated) return false
+    const requestId = ++walletBalanceRequestId
+    const authToken = userAuthStore.token
+    const requestToken = localStorage.getItem('user_token')
+    const isCurrentRequest = () => !disposed && requestId === walletBalanceRequestId && userAuthStore.isAuthenticated
+      && authToken === userAuthStore.token && requestToken === localStorage.getItem('user_token')
     walletLoading.value = true
     try {
       const response = await walletAPI.account()
-      walletBalance.value = String(response.data.data?.balance || '0')
+      if (!isCurrentRequest()) return false
+      const balance = response.data.data?.balance
+      if (!isValidAmount(balance)) return false
+      walletBalance.value = String(balance)
+      return true
     } catch {
-      walletBalance.value = '0'
+      return false
     } finally {
-      walletLoading.value = false
+      if (requestId === walletBalanceRequestId) walletLoading.value = false
     }
   }
+
+  watch(() => [userAuthStore.isAuthenticated, userAuthStore.token], () => {
+    walletBalanceRequestId++
+    walletBalance.value = '0'
+    walletLoading.value = false
+    loadWalletBalance()
+  })
 
   onMounted(async () => {
     if (!appStore.config) {
       await appStore.loadConfig()
     }
     await syncCartStockSnapshots()
+    if (disposed || submitting.value) return
     debouncedLoadPreview()
     loadWalletBalance()
   })
 
   onUnmounted(() => {
+    disposed = true
     debouncedLoadPreview.cancel()
     debouncedLoadOrderPaymentChannels.cancel()
   })
