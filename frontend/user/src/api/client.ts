@@ -36,6 +36,7 @@ const API_PREFIX = '/api/v1'
 interface RequestOptions {
     params?: Record<string, any>
     headers?: Record<string, string>
+    authToken?: string
     blob?: boolean
     silentBusinessError?: boolean
     credentials?: RequestCredentials
@@ -96,7 +97,9 @@ function createClient(injectAuth: boolean) {
             headers['X-Lang'] = locale
         }
 
-        const requestToken = injectAuth && !headers['Authorization'] ? localStorage.getItem('user_token') : undefined
+        const requestToken = injectAuth && !headers['Authorization']
+            ? (opts.authToken ?? localStorage.getItem('user_token'))
+            : undefined
         if (requestToken) {
             headers['Authorization'] = `Bearer ${requestToken}`
         }

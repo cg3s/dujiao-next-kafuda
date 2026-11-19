@@ -52,6 +52,8 @@ export function useCheckout() {
   const appStore = useAppStore()
   const userAuthStore = useUserAuthStore()
   const { t } = useI18n()
+  const sessionToken = userAuthStore.token
+  const reloading = ref(false)
 
   const { getLocalizedText, siteCurrency, formatPrice } = useLocalized()
   const { resolveWholesalePriceAmount } = useProductLabels()
@@ -85,6 +87,9 @@ export function useCheckout() {
   const orderPaymentChannelsRequestId = ref(0)
   let checkoutRevision = 0
   let disposed = false
+  const hasCurrentToken = () => sessionToken === userAuthStore.token
+    && sessionToken === (localStorage.getItem('user_token') || '')
+  const isCurrentSession = () => !disposed && !reloading.value && route.name === 'checkout' && hasCurrentToken()
 
   // Payment state
   const selectedChannelId = ref<number | null>(null)
@@ -634,7 +639,7 @@ export function useCheckout() {
     return ''
   })
 
-  const canSubmit = computed(() => !submitting.value && !submitBlockedReason.value)
+  const canSubmit = computed(() => !reloading.value && !submitting.value && !submitBlockedReason.value)
 
   const previewStatusText = computed(() => couponRefreshing.value
     ? t('checkout.couponRefreshing')
@@ -668,9 +673,7 @@ export function useCheckout() {
     manual_form_data: buildManualFormDataPayload(),
   })
 
-  const captureCheckoutContext = () => ({ revision: checkoutRevision, token: localStorage.getItem('user_token') })
-  const isCurrentCheckout = (context: ReturnType<typeof captureCheckoutContext>) => !disposed
-    && context.revision === checkoutRevision && context.token === localStorage.getItem('user_token')
+  const isCurrentCheckout = (revision: number) => revision === checkoutRevision && isCurrentSession()
 
   const isValidAmount = (amount: unknown) => {
     if (typeof amount !== 'string' && typeof amount !== 'number') return false
@@ -679,16 +682,17 @@ export function useCheckout() {
   }
 
   const loadOrderPaymentChannels = async (items = buildItemsPayload()) => {
+    if (!isCurrentSession()) return false
     const requestId = ++orderPaymentChannelsRequestId.value
     if (!userAuthStore.isAuthenticated || directCheckoutError.value || !requiresOnlineChannel.value
       || items.length === 0 || !preview.value) {
       orderPaymentChannels.value = []
       return false
     }
-    const context = captureCheckoutContext()
+    const revision = checkoutRevision
     const requestedPreview = preview.value
     const onlineAmount = expectedOnlinePayCents.value
-    const isCurrentRequest = () => requestId === orderPaymentChannelsRequestId.value && isCurrentCheckout(context)
+    const isCurrentRequest = () => requestId === orderPaymentChannelsRequestId.value && isCurrentCheckout(revision)
       && requestedPreview === preview.value && requiresOnlineChannel.value && onlineAmount === expectedOnlinePayCents.value
     try {
       const response = await userOrderAPI.getPaymentChannels({
@@ -723,6 +727,7 @@ export function useCheckout() {
   }
 
   const loadPreview = async (orderPayload?: ReturnType<typeof buildOrderPayload>) => {
+    if (!isCurrentSession()) return false
     const requestId = ++previewRequestId.value
     if (directCheckoutError.value || syncingStock.value || cartItems.value.length === 0
       || (isGuestCheckout.value && (!guestEmail.value.trim() || !guestPassword.value.trim() || !guestEmailValid.value))
@@ -736,8 +741,8 @@ export function useCheckout() {
       return false
     }
 
-    const context = captureCheckoutContext()
-    const isCurrentRequest = () => requestId === previewRequestId.value && isCurrentCheckout(context)
+    const revision = checkoutRevision
+    const isCurrentRequest = () => requestId === previewRequestId.value && isCurrentCheckout(revision)
     previewLoading.value = true
     previewError.value = ''
 
@@ -770,7 +775,7 @@ export function useCheckout() {
       }
       return false
     } finally {
-      if (requestId === previewRequestId.value) {
+      if (requestId === previewRequestId.value && isCurrentSession()) {
         previewLoading.value = false
         couponRefreshing.value = false
       }
@@ -788,7 +793,8 @@ export function useCheckout() {
   }
 
   const handleSubmit = async () => {
-    if (submitting.value) return
+    checkStoredSession()
+    if (!isCurrentSession() || submitting.value) return
     submitAttempted.value = true
     error.value = ''
     previewError.value = ''
@@ -798,25 +804,27 @@ export function useCheckout() {
     }
 
     submitting.value = true
-    const context = captureCheckoutContext()
+    const revision = checkoutRevision
+    const buyNow = isBuyNowMode.value
     const useWallet = useBalance.value
     const walletOnly = walletOnlyPayment.value
     const isCurrentPaymentPreference = () => useWallet === useBalance.value && walletOnly === walletOnlyPayment.value
-    const isCurrentSubmission = () => isCurrentCheckout(context) && isCurrentPaymentPreference()
     debouncedLoadPreview.cancel()
     debouncedLoadOrderPaymentChannels.cancel()
     orderPaymentChannelsRequestId.value++
     try {
       const orderPayload = buildOrderPayload()
       const hasPreview = await loadPreview(orderPayload)
-      if (!hasPreview || !isCurrentSubmission()) {
+      if (!isCurrentCheckout(revision)) return
+      if (!hasPreview || !isCurrentPaymentPreference()) {
         error.value = previewError.value || t('checkout.previewFailed')
         return
       }
       const authenticated = userAuthStore.isAuthenticated
       if (authenticated && useWallet) {
         const hasBalance = await loadWalletBalance()
-        if (!hasBalance || !isCurrentSubmission()) {
+        if (!isCurrentCheckout(revision)) return
+        if (!hasBalance || !isCurrentPaymentPreference()) {
           error.value = t('checkout.errors.submitFailed')
           return
         }
@@ -827,7 +835,8 @@ export function useCheckout() {
       }
       if (authenticated && requiresOnlineChannel.value) {
         const hasChannels = await loadOrderPaymentChannels(orderPayload.items)
-        if (!hasChannels || !isCurrentSubmission()) {
+        if (!isCurrentCheckout(revision)) return
+        if (!hasChannels || !isCurrentPaymentPreference()) {
           error.value = t('checkout.errors.submitFailed')
           return
         }
@@ -843,37 +852,38 @@ export function useCheckout() {
         use_balance: useWallet,
       }
 
-      let responseData: any
-
-      if (authenticated) {
-        const response = await userOrderAPI.createAndPay(payload)
-        responseData = response.data.data
-      } else {
-        const guestAuth = {
-          email: guestEmail.value.trim(),
-          order_password: guestPassword.value,
-        }
-        const response = await guestOrderAPI.createAndPay({
+      const guestAuth = authenticated ? null : {
+        email: guestEmail.value.trim(),
+        order_password: guestPassword.value,
+      }
+      const response = guestAuth
+        ? await guestOrderAPI.createAndPay({
           ...payload,
           ...guestAuth,
           captcha_payload: getGuestCaptchaPayload(),
         })
-        saveGuestOrderAuth(guestAuth)
-        responseData = response.data.data
-      }
+        : await userOrderAPI.createAndPay(payload, sessionToken)
+      if (!isCurrentSession()) return
 
+      const responseData = response.data.data
       if (!responseData?.order_no) {
         throw new Error(t('checkout.errors.submitFailed'))
       }
 
-      clearSourceStore()
+      if (guestAuth) saveGuestOrderAuth(guestAuth)
+      // A successful order still opens payment if the same buyer edited the form during the request.
+      // Preserve any newly selected items, and clear only an unchanged purchase selection.
+      if (buyNow === isBuyNowMode.value && JSON.stringify(buildItemsPayload()) === JSON.stringify(orderPayload.items)) {
+        clearSourceStore()
+      }
 
       // Redirect to the existing Payment page which handles all payment display
       const query = authenticated
         ? `order_no=${encodeURIComponent(responseData.order_no)}`
         : `guest=1&order_no=${encodeURIComponent(responseData.order_no)}`
-      router.push(`/pay?${query}`)
+      if (isCurrentSession()) void router.push(`/pay?${query}`)
     } catch (err: any) {
+      if (!isCurrentCheckout(revision)) return
       error.value = err.message || t('checkout.errors.submitFailed')
       if (guestCaptchaEnabled.value && captchaProvider.value === 'image') {
         guestImageCaptchaRef.value?.refresh()
@@ -883,11 +893,13 @@ export function useCheckout() {
         guestTurnstileToken.value = ''
       }
     } finally {
-      submitting.value = false
-      if (!disposed && !isCurrentCheckout(context)) {
-        debouncedLoadPreview()
-      } else if (!disposed && !isCurrentPaymentPreference()) {
-        debouncedLoadOrderPaymentChannels()
+      if (isCurrentSession()) {
+        submitting.value = false
+        if (!isCurrentCheckout(revision)) {
+          debouncedLoadPreview()
+        } else if (!isCurrentPaymentPreference()) {
+          debouncedLoadOrderPaymentChannels()
+        }
       }
     }
   }
@@ -898,7 +910,7 @@ export function useCheckout() {
       directCheckoutError.value, route.fullPath],
     () => {
       checkoutRevision++
-      if (!submitting.value) debouncedLoadPreview()
+      if (isCurrentSession() && !submitting.value) debouncedLoadPreview()
     },
     { deep: true, flush: 'sync' }
   )
@@ -917,7 +929,7 @@ export function useCheckout() {
   watch(
     () => [userAuthStore.isAuthenticated, requiresOnlineChannel.value, expectedOnlinePayCents.value, preview.value],
     () => {
-      if (!submitting.value) debouncedLoadOrderPaymentChannels()
+      if (isCurrentSession() && !submitting.value) debouncedLoadOrderPaymentChannels()
     }
   )
 
@@ -934,12 +946,9 @@ export function useCheckout() {
   )
 
   const loadWalletBalance = async () => {
-    if (!userAuthStore.isAuthenticated) return false
+    if (!isCurrentSession() || !userAuthStore.isAuthenticated) return false
     const requestId = ++walletBalanceRequestId
-    const authToken = userAuthStore.token
-    const requestToken = localStorage.getItem('user_token')
-    const isCurrentRequest = () => !disposed && requestId === walletBalanceRequestId && userAuthStore.isAuthenticated
-      && authToken === userAuthStore.token && requestToken === localStorage.getItem('user_token')
+    const isCurrentRequest = () => isCurrentSession() && requestId === walletBalanceRequestId
     walletLoading.value = true
     try {
       const response = await walletAPI.account()
@@ -951,23 +960,49 @@ export function useCheckout() {
     } catch {
       return false
     } finally {
-      if (requestId === walletBalanceRequestId) walletLoading.value = false
+      if (isCurrentRequest()) walletLoading.value = false
     }
   }
 
-  watch(() => [userAuthStore.isAuthenticated, userAuthStore.token], () => {
-    walletBalanceRequestId++
+  const checkStoredSession = () => {
+    if (disposed || reloading.value || route.name !== 'checkout' || hasCurrentToken()) return
+    reloading.value = true
+    debouncedLoadPreview.cancel()
+    debouncedLoadOrderPaymentChannels.cancel()
+    preview.value = null
+    previewLoading.value = false
+    previewError.value = ''
+    couponCode.value = ''
+    couponRefreshing.value = false
+    orderPaymentChannels.value = []
+    selectedChannelId.value = null
     walletBalance.value = '0'
     walletLoading.value = false
-    loadWalletBalance()
-  })
+    manualFormData.value = {}
+    guestEmail.value = ''
+    guestPassword.value = ''
+    guestCaptchaPayload.value = {}
+    guestTurnstileToken.value = ''
+    submitting.value = false
+    error.value = ''
+    window.location.reload()
+  }
+  const handleStoredSessionChange = (event: StorageEvent) => {
+    if (event.storageArea === localStorage && (event.key === 'user_token' || event.key === null)) checkStoredSession()
+  }
 
   onMounted(async () => {
+    window.addEventListener('storage', handleStoredSessionChange)
+    window.addEventListener('pageshow', checkStoredSession)
+    document.addEventListener('visibilitychange', checkStoredSession)
+    checkStoredSession()
+    if (!isCurrentSession()) return
     if (!appStore.config) {
       await appStore.loadConfig()
     }
+    if (!isCurrentSession()) return
     await syncCartStockSnapshots()
-    if (disposed || submitting.value) return
+    if (!isCurrentSession() || submitting.value) return
     debouncedLoadPreview()
     loadWalletBalance()
   })
@@ -976,6 +1011,9 @@ export function useCheckout() {
     disposed = true
     debouncedLoadPreview.cancel()
     debouncedLoadOrderPaymentChannels.cancel()
+    window.removeEventListener('storage', handleStoredSessionChange)
+    window.removeEventListener('pageshow', checkStoredSession)
+    document.removeEventListener('visibilitychange', checkStoredSession)
   })
 
   const cartItemKey = (item: CartItem) => `${item.productId}:${normalizeSkuId(item.skuId)}`
