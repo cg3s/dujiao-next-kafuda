@@ -119,6 +119,23 @@ func (s *CommerceService) SalesBlockReason(ctx context.Context) string {
 	}
 }
 
+// CatalogSalesBlockReason diagnoses the snapshot already read for the admin response.
+func (s *CommerceService) CatalogSalesBlockReason(ctx context.Context, catalog *kafudadomain.Catalog) string {
+	if reason := s.SalesBlockReason(ctx); reason != "" {
+		return reason
+	}
+	switch {
+	case catalog == nil || !time.Now().Before(catalog.ExpiresAt):
+		return "catalog_stale"
+	case !catalog.Enabled:
+		return "catalog_disabled"
+	case !s.cardAllowed(catalog):
+		return "card_product_unavailable"
+	default:
+		return ""
+	}
+}
+
 func (s *CommerceService) purchaseCatalog(ctx context.Context) (*kafudadomain.Catalog, error) {
 	if s.SalesBlockReason(ctx) != "" {
 		return nil, ErrQuoteUnavailable

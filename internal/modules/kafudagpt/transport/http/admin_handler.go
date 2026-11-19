@@ -22,7 +22,7 @@ type AdminHandler struct {
 	Catalog              CatalogUseCase
 	Configured           bool
 	GatewayConfigInvalid bool
-	SalesBlockReason     func(context.Context) string
+	SalesBlockReason     func(context.Context, *kafudadomain.Catalog) string
 }
 
 func (h *AdminHandler) GetCatalog(c *gin.Context)  { h.catalog(c, false) }
@@ -58,7 +58,7 @@ func (h *AdminHandler) catalog(c *gin.Context, sync bool) {
 	} else if !h.Configured {
 		data["sales_block_reason"] = "gateway_not_configured"
 	} else if h.SalesBlockReason != nil {
-		if reason := h.SalesBlockReason(c.Request.Context()); reason != "" {
+		if reason := h.SalesBlockReason(c.Request.Context(), catalog); reason != "" {
 			data["sales_block_reason"] = reason
 		}
 	}

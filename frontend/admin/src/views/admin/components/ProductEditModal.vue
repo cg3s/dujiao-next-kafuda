@@ -1135,7 +1135,7 @@ watch(
             <div v-if="isDirect" class="text-xs text-muted-foreground space-y-2">
               <p>{{ t('kafuda.tip') }}</p>
               <p>{{ t('kafuda.lastSync', { time: catalogSyncedAt || t('kafuda.neverSynced') }) }}</p>
-              <p v-if="catalogStale" class="text-amber-600">{{ t('kafuda.stale') }}</p>
+              <p v-if="catalogStale && catalogSalesBlockReason !== 'catalog_stale'" class="text-amber-600">{{ t('kafuda.salesBlockReasons.catalog_stale') }}</p>
               <p v-if="catalogSalesBlockReason" class="text-amber-600" role="status">
                 {{ t(`kafuda.salesBlockReasons.${catalogSalesBlockReason}`) }}
               </p>

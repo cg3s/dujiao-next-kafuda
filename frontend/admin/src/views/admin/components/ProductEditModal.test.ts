@@ -179,6 +179,27 @@ describe('ProductEditModal product loading', () => {
 })
 
 describe('ProductEditModal Direct SKU edits', () => {
+  it('shows the catalog block once and replaces it after refresh', async () => {
+    api.getProduct.mockResolvedValue(productResponse(1, 'PH'))
+    api.getKafudaCatalog.mockResolvedValue({ data: { data: { options: catalogOptions, stale: true, sales_block_reason: 'catalog_stale' } } })
+    api.syncKafudaCatalog.mockResolvedValue({ data: { data: { options: catalogOptions, stale: false, sales_block_reason: 'card_product_unavailable' } } })
+    const context = mountModal()
+    context.productId = 1
+    context.open = true
+    await flushRequests()
+
+    const staleMessage = 'kafuda.salesBlockReasons.catalog_stale'
+    expect([...host.querySelectorAll('p')].filter((element) => element.textContent?.trim() === staleMessage)).toHaveLength(1)
+
+    const refresh = [...host.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'kafuda.sync')
+    expect(refresh).toBeDefined()
+    refresh!.click()
+    await flushRequests()
+
+    expect(host.textContent).not.toContain(staleMessage)
+    expect(host.querySelector('p[role="status"]')?.textContent?.trim()).toBe('kafuda.salesBlockReasons.card_product_unavailable')
+  })
+
   it('submits only edited fields from each region after refreshing the catalog', async () => {
     const product = productResponse(1, 'PH')
     product.data.data.skus.push(productResponse(2, 'US').data.data.skus[0]!)

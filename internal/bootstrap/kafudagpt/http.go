@@ -10,7 +10,7 @@ func NewAdminHandler(module *Module) *kafudahttp.AdminHandler {
 		Catalog: module.Catalog, Configured: module.Gateway != nil, GatewayConfigInvalid: module.gatewayConfigInvalid,
 	}
 	if module.Commerce != nil {
-		handler.SalesBlockReason = module.Commerce.SalesBlockReason
+		handler.SalesBlockReason = module.Commerce.CatalogSalesBlockReason
 	}
 	return handler
 }

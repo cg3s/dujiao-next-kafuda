@@ -69,7 +69,7 @@ func TestAdminCatalogRefreshUsesPersistedSnapshotWithoutSecondRead(t *testing.T)
 		ProductCode: "test-card", MaxCostCents: 1000, AllowedKinds: []string{"new"},
 	})
 	kafudahttp.RegisterAdminRoutes(router.Group("/admin"), &kafudahttp.AdminHandler{
-		Catalog: service, Configured: true, SalesBlockReason: commerce.SalesBlockReason,
+		Catalog: service, Configured: true, SalesBlockReason: commerce.CatalogSalesBlockReason,
 	})
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/admin/kafuda-gpt/catalog/sync", nil))
@@ -106,6 +106,68 @@ func TestAdminCatalogRefreshUsesPersistedSnapshotWithoutSecondRead(t *testing.T)
 		if option.Plan != entry.Plan || option.Country != entry.Country || option.Available != (saved.Enabled && entry.Available) || option.CatalogRevision != saved.Revision(entry.Plan, entry.Country) {
 			t.Fatalf("response option does not match the saved catalog: %+v", option)
 		}
+	}
+}
+
+func TestAdminCatalogExplainsSnapshotSalesBlocks(t *testing.T) {
+	const cardCode = "deployment-card"
+	now := time.Now().UTC()
+	ready := kafudadomain.Catalog{
+		Profile: "default", Enabled: true, SyncedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour),
+		Options: []kafudadomain.CatalogOption{{Plan: "plus", Country: "PH", Product: "gpt", Available: true}},
+		Cards:   []kafudadomain.CardProduct{{ProductCode: cardCode}},
+	}
+	stale, disabled, missingCard, restrictedCard := ready, ready, ready, ready
+	stale.ExpiresAt = now.Add(-time.Minute)
+	disabled.Enabled = false
+	missingCard.Cards = []kafudadomain.CardProduct{{ProductCode: "alternate-card"}}
+	restrictedCard.Cards = []kafudadomain.CardProduct{{ProductCode: cardCode, Restricted: true}}
+	for _, tc := range []struct {
+		name, reason string
+		catalog      *kafudadomain.Catalog
+		workerReady  bool
+		stale        bool
+	}{
+		{"no_cache", "catalog_stale", nil, true, true},
+		{"expired", "catalog_stale", &stale, true, true},
+		{"disabled", "catalog_disabled", &disabled, true, false},
+		{"missing_card", "card_product_unavailable", &missingCard, true, false},
+		{"restricted_card", "card_product_unavailable", &restrictedCard, true, false},
+		{"worker_block_takes_precedence", "worker_not_ready", &stale, false, true},
+		{"ready", "", &ready, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, store, _ := database(t)
+			if tc.catalog != nil {
+				if err := store.SaveCatalog(t.Context(), tc.catalog); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reads := &singleReadCatalogStore{Store: store}
+			catalog := kafudaapp.NewCatalogService(reads, nil, "default", time.Hour)
+			commerce := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+				Catalog: catalog, SalesEnabled: true, ReferenceLookupVerified: true,
+				ProductCode: cardCode, MaxCostCents: 1000, AllowedKinds: []string{"new"},
+				WorkerReady: func(context.Context) bool { return tc.workerReady },
+			})
+			router := gin.New()
+			kafudahttp.RegisterAdminRoutes(router.Group("/admin"), &kafudahttp.AdminHandler{
+				Catalog: catalog, Configured: true, SalesBlockReason: commerce.CatalogSalesBlockReason,
+			})
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin/kafuda-gpt/catalog", nil))
+			var body struct {
+				StatusCode int `json:"status_code"`
+				Data       struct {
+					Reason string `json:"sales_block_reason"`
+					Stale  bool   `json:"stale"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body.StatusCode != response.CodeOK ||
+				body.Data.Reason != tc.reason || body.Data.Stale != tc.stale || reads.reads != 1 {
+				t.Fatalf("want reason %q and stale=%t from one snapshot, got: %s (%v)", tc.reason, tc.stale, recorder.Body.String(), err)
+			}
+		})
 	}
 }
 
