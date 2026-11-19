@@ -103,8 +103,3 @@ func respondCatalogFailure(c *gin.Context, err error) {
 	// An upstream 401 is not an expired administrator login.
 	ginutil.RespondError(c, response.CodeInternal, key, nil)
 }
-
-func RegisterAdminRoutes(group gin.IRoutes, handler *AdminHandler) {
-	group.GET("/kafuda-gpt/catalog", handler.GetCatalog)
-	group.POST("/kafuda-gpt/catalog/sync", handler.SyncCatalog)
-}

@@ -236,11 +236,11 @@ func setupContentRouteAccessTest(t *testing.T) (admincontract.Store, *authz.Serv
 	}
 
 	return adminRepo, authzService,
-		signContentAdminToken(t, noPermission),
-		signContentAdminToken(t, operations)
+		signAdminRouteToken(t, contentAdminJWTSecret, noPermission),
+		signAdminRouteToken(t, contentAdminJWTSecret, operations)
 }
 
-func signContentAdminToken(t *testing.T, admin *admindomain.Admin) string {
+func signAdminRouteToken(t *testing.T, secret string, admin *admindomain.Admin) string {
 	t.Helper()
 	now := time.Now()
 	claims := adminauthapp.JWTClaims{
@@ -255,7 +255,7 @@ func signContentAdminToken(t *testing.T, admin *admindomain.Admin) string {
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString([]byte(contentAdminJWTSecret))
+	signed, err := token.SignedString([]byte(secret))
 	if err != nil {
 		t.Fatalf("sign admin token: %v", err)
 	}

@@ -1,22 +1,41 @@
 package httpserver
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dujiao-next/internal/app/container"
 	"github.com/dujiao-next/internal/authz"
+	databasemigrations "github.com/dujiao-next/internal/bootstrap/database/migrations"
+	"github.com/dujiao-next/internal/config"
+	"github.com/dujiao-next/internal/logger"
+	admindomain "github.com/dujiao-next/internal/modules/identity/admin/domain"
+	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	"github.com/dujiao-next/internal/platform/database/gormdb"
+	"github.com/dujiao-next/internal/platform/http/response"
 
 	"github.com/casbin/casbin/v3/util"
+	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // TestAllAdminRoutesCoveredByBuiltinRoles 校验 admin 路由文件里的每条路由
@@ -196,6 +215,123 @@ func TestExtractAdminRoutesIncludesPlatformHTTPRoutes(t *testing.T) {
 		}
 	}
 	t.Fatal("platform HTTP route GET /admin/system/version/check was not discovered")
+}
+
+type kafudaCatalogAccessGateway struct {
+	kafudacontract.Gateway
+	calls int
+}
+
+func (g *kafudaCatalogAccessGateway) Catalog(context.Context) (json.RawMessage, error) {
+	g.calls++
+	return json.RawMessage(`{"enabled":true,"plans":[],"auto_card_products":[]}`), nil
+}
+
+func TestKafudaCatalogRoutesRequireOperationsPermission(t *testing.T) {
+	const jwtSecret = "kafuda-catalog-test-admin-jwt-secret"
+	gin.SetMode(gin.TestMode)
+	previousLogger := logger.L
+	logger.L = zap.NewNop()
+	t.Cleanup(func() { logger.L = previousLogger })
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = pool.Close() })
+	previousDB := gormdb.DB
+	gormdb.DB = db
+	t.Cleanup(func() { gormdb.DB = previousDB })
+	if err := databasemigrations.AutoMigrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		App: config.AppConfig{SecretKey: jwtSecret}, JWT: config.JWTConfig{SecretKey: jwtSecret}, Server: config.ServerConfig{Mode: gin.TestMode},
+	}
+	deps, err := container.NewContainer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens := make(map[string]string, 2)
+	for _, role := range []string{"support", "operations"} {
+		admin := &admindomain.Admin{Username: role, PasswordHash: "test-hash"}
+		if err := deps.AdminStore.Create(admin); err != nil {
+			t.Fatal(err)
+		}
+		if err := deps.AuthzService.SetAdminRoles(admin.ID, []string{role}); err != nil {
+			t.Fatal(err)
+		}
+		tokens[role] = signAdminRouteToken(t, jwtSecret, admin)
+	}
+
+	gateway := &kafudaCatalogAccessGateway{}
+	store := deps.KafudaGPT.Store
+	deps.KafudaGPT.Gateway = gateway
+	deps.KafudaGPT.Catalog = kafudaapp.NewCatalogService(store, gateway, "default", time.Hour)
+	deps.KafudaGPT.Commerce = kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{Catalog: deps.KafudaGPT.Catalog})
+	router := SetupRouter(cfg, deps)
+
+	routes := []adminRoute{{method: http.MethodGet, object: "/admin/kafuda-gpt/catalog"}, {method: http.MethodPost, object: "/admin/kafuda-gpt/catalog/sync"}}
+	discovered, err := extractAdminRoutesFromSource()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range routes {
+		if !slices.Contains(discovered, route) {
+			t.Errorf("RBAC coverage did not discover %s %s", route.method, route.object)
+		}
+	}
+	for _, actor := range []struct {
+		name string
+		want int
+	}{
+		{name: "anonymous", want: response.CodeUnauthorized},
+		{name: "support", want: response.CodeForbidden},
+		{name: "operations", want: response.CodeOK},
+	} {
+		for _, route := range routes {
+			t.Run(actor.name+"/"+route.method, func(t *testing.T) {
+				request := httptest.NewRequest(route.method, "/api/v1"+route.object, nil)
+				if bearer := tokens[actor.name]; bearer != "" {
+					request.Header.Set("Authorization", "Bearer "+bearer)
+				}
+				beforeCalls := gateway.calls
+				recorder := httptest.NewRecorder()
+				router.ServeHTTP(recorder, request)
+				var body struct {
+					StatusCode int `json:"status_code"`
+					Data       struct {
+						Configured bool `json:"configured"`
+					} `json:"data"`
+				}
+				if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body.StatusCode != actor.want {
+					t.Fatalf("expected business status %d, got %s (%v)", actor.want, recorder.Body.String(), err)
+				}
+				wantCalls := 0
+				if actor.want == response.CodeOK {
+					if !body.Data.Configured {
+						t.Fatal("operations request did not reach the configured catalog")
+					}
+					if route.method == http.MethodPost {
+						wantCalls = 1
+					}
+				}
+				if calls := gateway.calls - beforeCalls; calls != wantCalls {
+					t.Fatalf("expected %d upstream requests, got %d", wantCalls, calls)
+				}
+			})
+		}
+	}
+	catalog, err := store.GetCatalog(t.Context(), "default")
+	if err != nil || catalog == nil || !catalog.Enabled {
+		t.Fatalf("authorized refresh did not persist the upstream response: %+v, %v", catalog, err)
+	}
 }
 
 func extractAdminRoutesFromFile(path string) ([]adminRoute, error) {
