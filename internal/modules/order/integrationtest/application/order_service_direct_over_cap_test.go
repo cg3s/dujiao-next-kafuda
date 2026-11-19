@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -399,6 +400,8 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			const upstreamID = uint64(9_007_199_254_740_993)
 			const merchantToken = "direct-recovery-fixture-token"
 			var lookups atomic.Int32
+			firstLookupStarted := make(chan struct{})
+			finishFirstLookup := make(chan struct{})
 			gateway := newDirectTLSGateway(t, merchantToken, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet || r.URL.RequestURI() != fmt.Sprintf("/api/v1/gpt/orders/%d", upstreamID) ||
 					r.Header.Get("Authorization") != "Bearer "+merchantToken {
@@ -408,7 +411,15 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 				}
 				status := terminal
 				switch lookups.Add(1) {
-				case 1, 3:
+				case 1:
+					close(firstLookupStarted)
+					select {
+					case <-finishFirstLookup:
+					case <-r.Context().Done():
+					}
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				case 3:
 					w.WriteHeader(http.StatusBadGateway)
 					return
 				case 2:
@@ -425,18 +436,26 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			deps.KafudaGPT.Gateway = gateway
 			deps.UserStore = f.options.UserStore
 			router, supportToken, _ := newDirectSupportRouter(t, f, deps)
-			request := func(method, path, body string, wantCode int) []byte {
-				t.Helper()
+			send := func(method, path, body string) []byte {
 				req := httptest.NewRequestWithContext(ctx, method, directAdminRoutePrefix+path, strings.NewReader(body))
 				req.Header.Set("Authorization", "Bearer "+supportToken)
 				req.Header.Set("Content-Type", "application/json")
 				rec := httptest.NewRecorder()
 				router.ServeHTTP(rec, req)
-				var envelope response.Response
-				if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil || envelope.StatusCode != wantCode {
-					t.Fatalf("%s %s returned code %d, want %d, decode error %v", method, path, envelope.StatusCode, wantCode, err)
-				}
 				return rec.Body.Bytes()
+			}
+			assertCode := func(raw []byte, wantCode int) {
+				t.Helper()
+				var envelope response.Response
+				if err := json.Unmarshal(raw, &envelope); err != nil || envelope.StatusCode != wantCode {
+					t.Fatalf("admin request returned code %d, want %d, decode error %v: %s", envelope.StatusCode, wantCode, err, raw)
+				}
+			}
+			request := func(method, path, body string, wantCode int) []byte {
+				t.Helper()
+				raw := send(method, path, body)
+				assertCode(raw, wantCode)
+				return raw
 			}
 			assertReviewList := func(want int) {
 				t.Helper()
@@ -457,14 +476,44 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			lookupBody := fmt.Sprintf(`{"attempt_id":%d,"upstream_order_id":"%d"}`, attemptID, upstreamID)
 			assertReviewList(1)
 			release(true, response.CodeBadRequest)
-			request(http.MethodPost, reconcilePath, lookupBody, response.CodeInternal)
+			// A lease left by an interrupted lookup must allow recovery at expiry.
+			if err := f.db.Model(&kafudadomain.Attempt{}).Where("id = ?", attemptID).
+				UpdateColumn("known_order_poll_lease_until", paidAt).Error; err != nil {
+				t.Fatal(err)
+			}
+			firstResponse := make(chan []byte, 1)
+			go func() { firstResponse <- send(http.MethodPost, reconcilePath, lookupBody) }()
+			unblockLookup := sync.OnceFunc(func() { close(finishFirstLookup) })
+			defer unblockLookup()
+			select {
+			case <-firstLookupStarted:
+			case early := <-firstResponse:
+				t.Fatalf("first reconciliation returned before contacting the supplier: %s", early)
+			case <-time.After(5 * time.Second):
+				t.Fatal("first reconciliation did not reach supplier")
+			}
+			duplicateResponse := make(chan []byte, 1)
+			go func() { duplicateResponse <- send(http.MethodPost, reconcilePath, lookupBody) }()
+			var duplicate []byte
+			select {
+			case duplicate = <-duplicateResponse:
+			case <-time.After(5 * time.Second):
+				t.Fatal("duplicate reconciliation blocked behind supplier HTTP")
+			}
+			unblockLookup()
+			assertCode(<-firstResponse, response.CodeInternal)
+			assertCode(duplicate, response.CodeBadRequest)
+			if got := lookups.Load(); got != 1 {
+				t.Fatalf("concurrent reconciliation issued %d supplier lookups, want one", got)
+			}
 			if stored := loadAttempt(); !reflect.DeepEqual(stored, unknown) {
 				t.Fatalf("failed reconciliation changed the hold: %+v", stored)
 			}
 			request(http.MethodPost, reconcilePath, lookupBody, response.CodeOK)
 			request(http.MethodPost, reconcilePath, lookupBody, response.CodeBadRequest)
 			if stored := loadAttempt(); stored.Status != kafudadomain.AttemptProcessing || stored.ActiveOrderID == nil || *stored.ActiveOrderID != childID ||
-				stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != upstreamID || stored.NextPollAt == nil || lookups.Load() != 2 {
+				stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != upstreamID || stored.NextPollAt == nil ||
+				stored.KnownOrderPollLeaseUntil != nil || lookups.Load() != 2 {
 				t.Fatalf("numeric reconciliation did not retain the original hold and schedule: %+v, lookups=%d", stored, lookups.Load())
 			}
 			poll := func() (*kafudaapp.KnownOrderPoll, time.Time, error) {
