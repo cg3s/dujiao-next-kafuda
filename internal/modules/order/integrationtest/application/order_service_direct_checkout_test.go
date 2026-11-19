@@ -739,6 +739,9 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 		{"response_lost", kafudadomain.StageManualReview, true, "outcome_unknown"},
 		{"response_lost_submitting", kafudadomain.StageManualReview, true, "outcome_unknown"},
 		{"response_mismatch", kafudadomain.StageManualReview, true, "outcome_unknown"},
+		{"response_invalid_status", kafudadomain.StageManualReview, true, "outcome_unknown"},
+		{"known_create_result_write_failed", kafudadomain.StageManualReview, true, kafudadomain.ReasonResultApplyFailed},
+		{"known_over_cap_create_result_write_failed", kafudadomain.StageManualReview, true, kafudadomain.ReasonCostLimitExceeded},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			f := newFixture(t)
@@ -804,6 +807,13 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				reservation.Attempt.Reference = "replacement-reference"
 			}
 			calls := 0
+			const upstreamID = uint64(100)
+			var charged int64
+			if scenario.name == "known_over_cap_create_result_write_failed" {
+				charged = storedSnapshot.MaxCostCents + 1
+			}
+			applyFailure := errors.New("injected create result transaction rollback")
+			orders := &directSubmitStore{Store: f.options.OrderStore}
 			gateway := directCreateGateway{create: func(ctx context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
 				calls++
 				attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
@@ -813,7 +823,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 					!reflect.DeepEqual(attempt.QuoteCosts, &quoteCosts) {
 					t.Fatalf("create without committed attempt: %+v, %v", attempt, err)
 				}
-				result := &kafudacontract.OrderResult{ID: 100, Reference: req.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing"}
+				result := &kafudacontract.OrderResult{ID: upstreamID, Reference: req.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing"}
 				switch scenario.name {
 				case "completed", "completed_after_sales_disabled":
 					result.Status = "completed"
@@ -821,6 +831,12 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 					return nil, errors.New("supplier response lost")
 				case "response_mismatch":
 					result.Reference = "other-reference"
+				case "response_invalid_status":
+					result.Status = "unrecognized"
+				case "known_create_result_write_failed", "known_over_cap_create_result_write_failed":
+					result.Status = "completed"
+					result.ChargedUSDCents = &charged
+					orders.rollbackErr = applyFailure
 				case "upstream_quote_expired":
 					return nil, kafudacontract.ErrCreateQuoteExpired
 				case "upstream_quote_expired_after_recovery":
@@ -839,12 +855,12 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				}
 				return result, nil
 			}, get: func(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
-				if id != 100 {
+				if id != upstreamID {
 					t.Fatalf("polled unexpected upstream order %d", id)
 				}
 				return &kafudacontract.OrderResult{ID: id, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed"}, nil
 			}}
-			completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check, 10*time.Second)
+			completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, orders, records, gateway, reservation, check, 10*time.Second)
 			wantError := scenario.wantReason != "" || scenario.name == "changed_reservation_reference"
 			if completed != (scenario.stage == kafudadomain.StageCompleted) || (err != nil) != wantError {
 				t.Fatalf("unexpected outcome: completed=%v, err=%v", completed, err)
@@ -869,6 +885,10 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 			case "changed_reservation_reference":
 				if !errors.Is(err, kafudadomain.ErrConflict) {
 					t.Fatalf("expected changed reference to conflict, got %v", err)
+				}
+			case "known_create_result_write_failed", "known_over_cap_create_result_write_failed":
+				if !errors.Is(err, applyFailure) {
+					t.Fatalf("expected rolled-back transaction error, got %v", err)
 				}
 			}
 			wantReplayErr := kafudadomain.ErrInvalidTransition
@@ -968,9 +988,11 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				assertDirectShopOrderStatus(t, f.options.OrderStore, order, constants.OrderStatusCompleted, now)
 			}
 			if scenario.stage == kafudadomain.StageManualReview {
-				attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
-				if err != nil || attempt == nil || attempt.ActiveOrderID == nil || attempt.UpstreamOrderID != nil {
-					t.Fatalf("unknown outcome lost active attempt: %+v, %v", attempt, err)
+				if original.Status != kafudadomain.AttemptReview || original.ActiveOrderID == nil || *original.ActiveOrderID != childID {
+					t.Fatalf("review lost its active attempt: %+v", original)
+				}
+				if scenario.wantReason == "outcome_unknown" && original.UpstreamOrderID != nil {
+					t.Fatalf("unknown outcome unexpectedly bound a supplier ID: %+v", original)
 				}
 			}
 			switch scenario.name {
@@ -978,6 +1000,51 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				testReconcileUnknownDirectOrder(t, f, order, now, reservation.Attempt, kafudadomain.AttemptProcessing)
 			case "response_lost_submitting":
 				testReconcileUnknownDirectOrder(t, f, order, now, reservation.Attempt, kafudadomain.AttemptSubmitting)
+			case "known_create_result_write_failed", "known_over_cap_create_result_write_failed":
+				if original.UpstreamOrderID == nil || *original.UpstreamOrderID != upstreamID || original.NextPollAt == nil ||
+					original.NextPollAt.Sub(original.UpdatedAt) != 10*time.Second || original.QuoteID != "quote_checkout" ||
+					original.ChargedUSDCents == nil || *original.ChargedUSDCents != charged ||
+					record.CurrentAttemptID == nil || *record.CurrentAttemptID != original.ID || record.CompletionEmailPending {
+					t.Fatalf("failed apply did not leave a durable numeric lookup: attempt=%+v recharge=%+v", original, record)
+				}
+				var deliveries int64
+				if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&deliveries).Error; err != nil || deliveries != 0 {
+					t.Fatalf("failed apply leaked a delivery: %d, %v", deliveries, err)
+				}
+				at := *original.NextPollAt
+				due, err := f.store.DueKnownOrderPolls(ctx, at, 1)
+				if err != nil || len(due) != 1 || due[0].ID != original.ID {
+					t.Fatalf("known supplier result not scheduled for recovery: %+v, %v", due, err)
+				}
+				polled, err := records.PollKnownOrder(ctx, ctx, gateway, original.ID, at, 10*time.Second, 0)
+				if err != nil || polled == nil {
+					t.Fatalf("numeric lookup did not recover the supplier result: %+v, %v", polled, err)
+				}
+				wantCompletion := scenario.name == "known_create_result_write_failed"
+				for _, wantFresh := range []bool{wantCompletion, false} {
+					completed, err := kafudaworkflow.ApplyPolledResult(orders, childID, original.ID, *polled, at, at, 10*time.Second, 0)
+					if err != nil || completed != wantFresh {
+						t.Fatalf("recovered completion=%t, want %t: %v", completed, wantFresh, err)
+					}
+				}
+				settled, err := f.store.GetAttempt(ctx, original.ID)
+				if err != nil || settled == nil || settled.ChargedUSDCents == nil || *settled.ChargedUSDCents != charged {
+					t.Fatalf("later response omitted the debit and lost the confirmed amount: %+v, %v", settled, err)
+				}
+				var wantDeliveries int64
+				if wantCompletion {
+					wantDeliveries = 1
+					assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusCompleted, now)
+				} else {
+					review, err := f.store.GetRecharge(ctx, childID)
+					if err != nil || !kafudacontract.CanConfirmUpstreamCompletion(review, settled) {
+						t.Fatalf("later response omitted the debit and lost the cost hold: recharge=%+v attempt=%+v %v", review, settled, err)
+					}
+					assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusFulfilling, now)
+				}
+				if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&deliveries).Error; err != nil || deliveries != wantDeliveries || calls != 1 {
+					t.Fatalf("recovery created %d deliveries, want %d; create calls=%d: %v", deliveries, wantDeliveries, calls, err)
+				}
 			}
 		})
 	}
@@ -987,6 +1054,7 @@ type directSubmitStore struct {
 	ordercontract.Store
 	beforeTransaction func()
 	afterCommit       func()
+	rollbackErr       error
 }
 
 func (s *directSubmitStore) WithinTransaction(run func(ordercontract.Transaction) error) error {
@@ -995,7 +1063,14 @@ func (s *directSubmitStore) WithinTransaction(run func(ordercontract.Transaction
 		s.beforeTransaction = nil
 		beforeTransaction()
 	}
-	if err := s.Store.WithinTransaction(run); err != nil {
+	rollbackErr := s.rollbackErr
+	s.rollbackErr = nil
+	if err := s.Store.WithinTransaction(func(tx ordercontract.Transaction) error {
+		if err := run(tx); err != nil {
+			return err
+		}
+		return rollbackErr
+	}); err != nil {
 		return err
 	}
 	if s.afterCommit != nil {

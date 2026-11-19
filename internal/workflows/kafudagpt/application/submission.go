@@ -54,6 +54,7 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 	result, err := gateway.CreateOrder(submitCtx, request)
 	cancelSubmit()
 	var rejectionReason string
+	var unappliedResult *kafudacontract.OrderResult
 	switch {
 	case err == nil && result != nil:
 		startedAt := requestStarted.UTC()
@@ -63,6 +64,7 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 			return completed, nil
 		}
 		err = applyErr
+		unappliedResult = result
 	case err == nil:
 		err = errCreateResultMissing
 	case result == nil && errors.Is(err, kafudacontract.ErrCreateQuoteExpired):
@@ -80,6 +82,13 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 			return false, rejectErr
 		}
 		return false, err
+	}
+	if unappliedResult != nil {
+		holdErr := records.HoldUnappliedSubmission(recoveryCtx, attempt.ID, request.QuoteID, *unappliedResult, observedAt, observedAt.Add(pollInterval))
+		if holdErr == nil {
+			return false, err
+		}
+		err = errors.Join(err, holdErr)
 	}
 	// When the request may have succeeded upstream, keep the original attempt.
 	// The persisted submitting lease is recoverable if this update fails.

@@ -260,6 +260,49 @@ func (s *Service) MarkUnknown(ctx context.Context, attemptID uint, now, nextPoll
 	})
 }
 
+// HoldUnappliedSubmission keeps a verified supplier order eligible for read-only
+// polling after its result could not be applied to the shop order.
+func (s *Service) HoldUnappliedSubmission(ctx context.Context, attemptID uint, quoteID string, result kafudacontract.OrderResult, now, nextPoll time.Time) error {
+	if quoteID == "" || now.IsZero() || !nextPoll.After(now) || (result.ChargedUSDCents != nil && *result.ChargedUSDCents < 0) {
+		return kafudadomain.ErrInvalidTransition
+	}
+	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
+		if attempt.QuoteID != quoteID || !matchesSupplierOrder(record, attempt, result) {
+			return kafudadomain.ErrInvalidTransition
+		}
+		if _, allowed := supplierResultStatus(attempt.Status, kafudadomain.AttemptStatus(result.Status)); !allowed {
+			return kafudadomain.ErrInvalidTransition
+		}
+		if attempt.UpstreamOrderID != nil {
+			return errNoRecordChange
+		}
+		isSubmitting := attempt.Status == kafudadomain.AttemptSubmitting && record.Stage == kafudadomain.StageSubmitting
+		isUnidentified := attempt.Status == kafudadomain.AttemptReview && record.Stage == kafudadomain.StageManualReview && record.ReasonCode == "outcome_unknown"
+		if (!isSubmitting && !isUnidentified) || record.CompletedAt != nil || attempt.ActiveOrderID == nil || *attempt.ActiveOrderID != record.OrderID {
+			return kafudadomain.ErrInvalidTransition
+		}
+		observedAt := now
+		if observedAt.Before(attempt.UpdatedAt) {
+			observedAt = attempt.UpdatedAt
+		}
+		if observedAt.Before(record.UpdatedAt) {
+			observedAt = record.UpdatedAt
+		}
+		retryAt := observedAt.Add(nextPoll.Sub(now))
+		attempt.UpstreamOrderID, attempt.Status = &result.ID, kafudadomain.AttemptReview
+		attempt.NextPollAt, attempt.UpdatedAt = &retryAt, observedAt
+		record.Stage, record.ReasonCode, record.UpdatedAt = kafudadomain.StageManualReview, kafudadomain.ReasonResultApplyFailed, observedAt
+		// Keep the verified debit even if the next response omits it.
+		if result.ChargedUSDCents != nil {
+			attempt.ChargedUSDCents = result.ChargedUSDCents
+			if *result.ChargedUSDCents > record.Snapshot.MaxCostCents {
+				record.ReasonCode = kafudadomain.ReasonCostLimitExceeded
+			}
+		}
+		return nil
+	})
+}
+
 // RecordResult consumes a normalized query/create response, not arbitrary text.
 // A terminal duplicate is a no-op. Old terminal events never reopen a recharge.
 func (s *Service) RecordResult(ctx context.Context, attemptID uint, result kafudacontract.OrderResult, now, nextPoll time.Time) error {
@@ -283,10 +326,7 @@ func RecordResultInTransaction(tx kafudacontract.Transaction, orderID, attemptID
 
 func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll time.Time, reviewAfter time.Duration, pollLeaseUntil time.Time) func(*kafudadomain.Recharge, *kafudadomain.Attempt) error {
 	return func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
-		if result.ID == 0 || result.Reference != attempt.Reference || result.Product != record.Snapshot.Product || result.Plan != record.Snapshot.Plan || result.Country != record.Snapshot.Country {
-			return kafudadomain.ErrInvalidTransition
-		}
-		if attempt.UpstreamOrderID != nil && *attempt.UpstreamOrderID != result.ID {
+		if !matchesSupplierOrder(record, attempt, result) {
 			return kafudadomain.ErrInvalidTransition
 		}
 		reported := kafudadomain.AttemptStatus(result.Status)
@@ -378,6 +418,12 @@ func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll ti
 		}
 		return nil
 	}
+}
+
+func matchesSupplierOrder(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt, result kafudacontract.OrderResult) bool {
+	return result.ID != 0 && result.Reference == attempt.Reference &&
+		result.Product == record.Snapshot.Product && result.Plan == record.Snapshot.Plan && result.Country == record.Snapshot.Country &&
+		(attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID == result.ID)
 }
 
 func supplierResultStatus(current, reported kafudadomain.AttemptStatus) (kafudadomain.AttemptStatus, bool) {
