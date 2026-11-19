@@ -179,6 +179,60 @@ describe('ProductEditModal product loading', () => {
 })
 
 describe('ProductEditModal Direct SKU edits', () => {
+  it('explains a missing cost and accepts an explicitly entered zero', async () => {
+    const product = productResponse(1, 'PH')
+    product.data.data.skus[0]!.direct_cost_configured = false
+    api.getProduct.mockResolvedValue(product)
+    const context = mountModal()
+    context.productId = 1
+    context.open = true
+    await flushRequests()
+
+    const cost = host.querySelector<HTMLInputElement>('input[placeholder="admin.products.form.skuCostPricePlaceholder"]')
+    expect(cost?.value).toBe('')
+    expect(host.textContent).toContain('kafuda.costMissing')
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    expect(api.updateProduct).not.toHaveBeenCalled()
+
+    cost!.value = '0'
+    cost!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(host.textContent).not.toContain('kafuda.costMissing')
+    const payload = submitUpdate()
+    expect(payload.skus).toHaveLength(1)
+    expect(payload.skus[0]).toMatchObject({ id: 1, cost_price_amount: 0 })
+  })
+
+  it('saves an explicitly confirmed historical cost at the existing amount after catalog refresh', async () => {
+    const product = productResponse(1, 'PH')
+    Object.assign(product.data.data.skus[0]!, { cost_price_amount: 45, direct_cost_configured: false })
+    product.data.data.skus.push(productResponse(2, 'US').data.data.skus[0]!)
+    api.getProduct.mockResolvedValue(product)
+    const context = mountModal()
+    context.productId = 1
+    context.open = true
+    await flushRequests()
+
+    const findButton = (text: string) => [...host.querySelectorAll('button')].find((button) => button.textContent?.trim() === text)
+    expect(host.textContent).toContain('kafuda.costUnconfirmed')
+    const confirm = findButton('kafuda.confirmCost')
+    expect(confirm).toBeDefined()
+    confirm!.click()
+    await nextTick()
+    expect(host.textContent).not.toContain('kafuda.costUnconfirmed')
+    expect(api.updateProduct).not.toHaveBeenCalled()
+
+    findButton('kafuda.sync')!.click()
+    await flushRequests()
+    expect(host.textContent).not.toContain('kafuda.costUnconfirmed')
+    const payload = submitUpdate()
+    expect(payload.skus).toHaveLength(1)
+    expect(payload.skus[0]).toMatchObject({ id: 1, sku_code: 'KGPT_PH', cost_price_amount: 45 })
+    for (const field of ['price_amount', 'is_active', 'sort_order', 'direct_cost_configured']) {
+      expect(payload.skus[0]).not.toHaveProperty(field)
+    }
+  })
+
   it('shows the catalog block once and replaces it after refresh', async () => {
     api.getProduct.mockResolvedValue(productResponse(1, 'PH'))
     api.getKafudaCatalog.mockResolvedValue({ data: { data: { options: catalogOptions, stale: true, sales_block_reason: 'catalog_stale' } } })

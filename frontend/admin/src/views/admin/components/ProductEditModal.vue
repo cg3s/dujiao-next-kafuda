@@ -101,6 +101,7 @@ const isProductCategorySelectable = (categoryID: number | null | undefined) => {
 
 type SKUFormItem = {
   direct_catalog_revision: number
+  direct_cost_configured: boolean
   id: number
   sku_code: string
   spec_values: Record<string, string>
@@ -114,6 +115,7 @@ type SKUFormItem = {
 }
 
 const originalDirectSKUs = new Map<string, Pick<SKUFormItem, 'price_amount' | 'cost_price_amount' | 'is_active' | 'sort_order' | 'direct_catalog_revision'>>()
+const directCostConfirmations = reactive(new Map<string, number>())
 let originalDirectProductActive: boolean | undefined
 
 type ManualFormField = {
@@ -150,6 +152,7 @@ const resolveEditableSKURows = (product: AdminProduct): SKUFormItem[] => {
 
 const createSKUFormItem = (raw?: Partial<AdminProductSKU>, direct = false): SKUFormItem => ({
   direct_catalog_revision: Number(raw?.direct_catalog_revision || 0),
+  direct_cost_configured: Boolean(raw?.direct_cost_configured),
   id: Number(raw?.id || 0),
   sku_code: String(raw?.sku_code || '').trim(),
   spec_values: {
@@ -519,19 +522,30 @@ const normalizeSKUsForSubmit = () => {
 
 type NormalizedSKU = ReturnType<typeof normalizeSKUsForSubmit>[number]
 
+const needsDirectCostConfirmation = (sku: SKUFormItem) => {
+  const cost = sku.cost_price_amount
+  if (sku.direct_cost_configured || cost === '' || cost < 0) return false
+  return originalDirectSKUs.get(sku.sku_code)?.cost_price_amount === cost && directCostConfirmations.get(sku.sku_code) !== cost
+}
+
+const confirmDirectCost = (sku: SKUFormItem) => {
+  if (sku.cost_price_amount !== '') directCostConfirmations.set(sku.sku_code, sku.cost_price_amount)
+}
+
 const directSKUChanges = (skus: NormalizedSKU[]) => skus.flatMap<Partial<NormalizedSKU>>((sku) => {
   const original = originalDirectSKUs.get(sku.sku_code)
   if (!original) return [sku]
   const activeChanged = sku.is_active !== original.is_active
-  const costChanged = sku.cost_price_amount !== (original.cost_price_amount === '' ? undefined : original.cost_price_amount)
+  const costConfirmed = sku.cost_price_amount !== undefined && directCostConfirmations.get(sku.sku_code) === sku.cost_price_amount
+  const includeCost = costConfirmed || sku.cost_price_amount !== (original.cost_price_amount === '' ? undefined : original.cost_price_amount)
   const priceChanged = sku.price_amount !== original.price_amount
   const sortChanged = sku.sort_order !== original.sort_order
-  if (!activeChanged && !costChanged && !priceChanged && !sortChanged) return []
+  if (!activeChanged && !includeCost && !priceChanged && !sortChanged) return []
   if (!sku.id) return [sku]
   return [{
     ...sku,
     is_active: activeChanged ? sku.is_active : undefined,
-    cost_price_amount: costChanged ? sku.cost_price_amount : undefined,
+    cost_price_amount: includeCost ? sku.cost_price_amount : undefined,
     price_amount: priceChanged ? sku.price_amount : undefined,
     sort_order: sortChanged ? sku.sort_order : undefined,
   }]
@@ -550,6 +564,7 @@ const resetDirectCatalog = () => {
   activeSKURegion.value = ''
   directAvailability.value = {}
   directReviewRequired.value = {}
+  directCostConfirmations.clear()
 }
 
 const resetForm = () => {
@@ -1181,6 +1196,13 @@ watch(
                       <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuCostPrice') }}</label>
                       <Input v-model.number="sku.cost_price_amount" type="number" step="0.01" min="0" :placeholder="t('admin.products.form.skuCostPricePlaceholder')" :disabled="editingIsMapped" />
                       <p v-if="editingIsMapped" class="mt-1 text-xs text-muted-foreground">{{ t('admin.products.form.costPriceAutoFromUpstream') }}</p>
+                      <template v-else-if="isDirect && sku.is_active">
+                        <p v-if="sku.cost_price_amount === ''" class="mt-1 text-xs text-amber-600">{{ t('kafuda.costMissing') }}</p>
+                        <div v-else-if="needsDirectCostConfirmation(sku)" class="mt-1 space-y-1">
+                          <p class="text-xs text-amber-600">{{ t('kafuda.costUnconfirmed') }}</p>
+                          <Button type="button" size="sm" variant="outline" @click="confirmDirectCost(sku)">{{ t('kafuda.confirmCost') }}</Button>
+                        </div>
+                      </template>
                     </div>
                     <div v-if="form.fulfillment_type === 'manual'" class="md:col-span-1">
                       <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuManualStock') }}</label>
