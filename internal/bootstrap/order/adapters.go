@@ -191,7 +191,7 @@ func newAdminDirectStatusReader(c *container.Container) ordertransport.AdminDire
 				info.CardChargedUSD = &charge
 			}
 		}
-		if runes := []rune(attempt.MaskedEmail); len(runes) == 8 && string(runes[1:]) == "***@***" {
+		if kafudadomain.IsMaskedAccountEmail(attempt.MaskedEmail) {
 			info.MaskedEmail = attempt.MaskedEmail
 		}
 		status.Attempt = info

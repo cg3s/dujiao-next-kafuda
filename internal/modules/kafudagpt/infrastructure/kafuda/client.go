@@ -15,6 +15,7 @@ import (
 	"time"
 
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 )
 
 const (
@@ -289,5 +290,9 @@ func maskEmail(email string) string {
 	if !ok || local == "" {
 		return ""
 	}
-	return string([]rune(local)[:1]) + "***@***"
+	masked := string([]rune(local)[:1]) + "***@***"
+	if !kafudadomain.IsMaskedAccountEmail(masked) {
+		return ""
+	}
+	return masked
 }

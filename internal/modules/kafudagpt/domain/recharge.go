@@ -5,11 +5,18 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/dujiao-next/internal/shared/money"
 )
 
 const FulfillmentType = "kafuda_gpt_direct"
+
+// IsMaskedAccountEmail accepts only a printable initial and the fixed mask.
+func IsMaskedAccountEmail(value string) bool {
+	runes := []rune(value)
+	return len(runes) == 8 && unicode.IsPrint(runes[0]) && !unicode.IsSpace(runes[0]) && string(runes[1:]) == "***@***"
+}
 
 type Stage string
 

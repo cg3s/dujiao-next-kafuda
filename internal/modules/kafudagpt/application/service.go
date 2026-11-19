@@ -395,7 +395,7 @@ func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll ti
 		// The gateway already masks account_email. Never accept a full email at
 		// the application boundary, even from an alternative gateway adapter.
 		attempt.MaskedEmail = ""
-		if result.MaskedEmail != "" && len(result.MaskedEmail) <= 32 && !containsFullEmail(result.MaskedEmail) {
+		if kafudadomain.IsMaskedAccountEmail(result.MaskedEmail) {
 			attempt.MaskedEmail = result.MaskedEmail
 		}
 		if result.ChargedUSDCents != nil {
@@ -512,10 +512,4 @@ func changeInTransaction(tx kafudacontract.Transaction, orderID, attemptID uint,
 		return err
 	}
 	return tx.SaveRecharge(record)
-}
-
-func containsFullEmail(value string) bool {
-	// The sole accepted gateway mask is the first rune followed by ***@***.
-	runes := []rune(value)
-	return len(runes) != 8 || string(runes[1:]) != "***@***"
 }

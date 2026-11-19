@@ -149,6 +149,15 @@ func TestCheckDistinguishesZeroAndMissingQuotedAmounts(t *testing.T) {
 	}
 }
 
+func TestMaskEmailDropsControlInitial(t *testing.T) {
+	if got := maskEmail("\x00buyer@example.test"); got != "" {
+		t.Fatalf("invalid account email produced a mask: %q", got)
+	}
+	if got := maskEmail("陈@example.test"); got != "陈***@***" {
+		t.Fatalf("printable account initial was lost: %q", got)
+	}
+}
+
 func TestCreateOrderHasStableIdempotencyAndNoCredential(t *testing.T) {
 	calls := 0
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
