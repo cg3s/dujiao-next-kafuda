@@ -176,6 +176,136 @@ func (*directProductTestCatalog) PurchaseTerms(context.Context, string, string, 
 	return nil, fmt.Errorf("purchase terms are outside product configuration")
 }
 
+type directCreateCatalogReadHook struct {
+	kafudacontract.Store
+	afterRead func()
+}
+
+func (s *directCreateCatalogReadHook) GetCatalog(ctx context.Context, profile string) (*kafudadomain.Catalog, error) {
+	catalog, err := s.Store.GetCatalog(ctx, profile)
+	if err == nil && catalog != nil && s.afterRead != nil {
+		afterRead := s.afterRead
+		s.afterRead = nil
+		afterRead()
+	}
+	return catalog, err
+}
+
+func TestDirectProductCreateUsesCurrentCatalogAfterPreflight(t *testing.T) {
+	for _, scenario := range []string{"stale_explicit_approval", "new_variant", "option_stops_selling"} {
+		t.Run(scenario, func(t *testing.T) {
+			svc, db := newProductServiceForTest(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			if err := db.AutoMigrate(&kafudadomain.Catalog{}); err != nil {
+				t.Fatal(err)
+			}
+			const profile = "direct-create-revision"
+			store := kafudastore.New(db)
+			ctx, now := t.Context(), time.Now().UTC().Add(-time.Minute)
+			selected := kafudadomain.CatalogOption{Plan: "plus", Country: "PH", Product: "gpt", Available: true}
+			added := kafudadomain.CatalogOption{Plan: "plus", Country: "JP", Product: "gpt", Available: true}
+			selectedCode := kafudacontract.SKUCode(selected.Plan, selected.Country)
+			addedCode := kafudacontract.SKUCode(added.Plan, added.Country)
+			save := func(at time.Time, options ...kafudadomain.CatalogOption) {
+				t.Helper()
+				if err := store.SaveCatalog(ctx, &kafudadomain.Catalog{Profile: profile, Enabled: true, SyncedAt: at, ExpiresAt: at.Add(time.Hour), Options: options}); err != nil {
+					t.Fatalf("save catalog: %v", err)
+				}
+			}
+			save(now, selected)
+			hook := &directCreateCatalogReadHook{Store: store, afterRead: func() {
+				// The initial catalog has already been read and its connection released.
+				switch scenario {
+				case "stale_explicit_approval":
+					save(now.Add(time.Second), []kafudadomain.CatalogOption{}...)
+					save(now.Add(2*time.Second), selected)
+				case "new_variant":
+					save(now.Add(time.Second), selected, added)
+				case "option_stops_selling":
+					unavailable := selected
+					unavailable.Available = false
+					save(now.Add(time.Second), unavailable)
+				}
+			}}
+			policy := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{Catalog: kafudaapp.NewCatalogService(hook, nil, profile, time.Hour)})
+			svc.Write.SetDirectCatalog(policy)
+			active, revision := true, uint64(0)
+			price, cost := decimal.NewFromInt(120), decimal.NewFromInt(45)
+			input := productwrite.CreateProductInput{
+				Slug: "direct-create-under-current-catalog", TitleJSON: jsonmap.JSON{"zh-CN": "直充商品"},
+				FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+				SKUs: []productwrite.ProductSKUInput{{
+					SKUCode: selectedCode, PriceAmount: price, CostPriceAmount: cost, CostPriceProvided: true,
+					IsActive: &active, DirectCatalogRevision: &revision, SortOrder: 13,
+				}},
+			}
+			created, err := svc.Write.Create(input)
+			if hook.afterRead != nil {
+				t.Fatal("the initial catalog read did not trigger the refresh")
+			}
+			if scenario == "stale_explicit_approval" {
+				if created != nil || !errors.Is(err, productcontract.ErrProductSKUInvalid) {
+					t.Fatalf("creation accepted approval for an earlier revision: %+v, %v", created, err)
+				}
+				for _, model := range []any{&productdomain.Product{}, &productdomain.ProductSKU{}} {
+					var count int64
+					if err := db.Model(model).Count(&count).Error; err != nil || count != 0 {
+						t.Fatalf("rejected creation left %d %T rows: %v", count, model, err)
+					}
+				}
+				options, catalogErr := policy.SKUOptions(ctx)
+				if catalogErr != nil || len(options) != 1 || !options[0].Available || options[0].CatalogRevision != revision+1 {
+					t.Fatalf("restored option did not require a new revision: %+v, %v", options, catalogErr)
+				}
+				revision = options[0].CatalogRevision
+				created, err = svc.Write.Create(input)
+			}
+			if err != nil || created == nil {
+				t.Fatalf("create using current catalog: %+v, %v", created, err)
+			}
+			product, err := svc.Read.GetAdminByID(fmt.Sprint(created.ID))
+			if err != nil || product == nil {
+				t.Fatalf("load created direct product: %+v, %v", product, err)
+			}
+			wantActive := scenario != "option_stops_selling"
+			wantRevision := revision
+			if !wantActive {
+				wantRevision++
+			}
+			if product.IsActive != wantActive || (wantActive && (!product.PriceAmount.Equal(price) || !product.CostPriceAmount.Equal(cost))) ||
+				(!wantActive && (!product.PriceAmount.IsZero() || !product.CostPriceAmount.IsZero())) {
+				t.Fatalf("product status and price did not reflect current catalog: %+v", product)
+			}
+			var configured, unconfigured bool
+			for _, sku := range product.SKUs {
+				switch sku.SKUCode {
+				case selectedCode:
+					if sku.IsActive != wantActive || !sku.DirectCostConfigured || !sku.PriceAmount.Equal(price) ||
+						!sku.CostPriceAmount.Equal(cost) || sku.DirectCatalogRevision != wantRevision || sku.SortOrder != 13 || sku.ManualStockTotal != 0 {
+						t.Fatalf("current catalog changed the configured SKU: %+v", sku)
+					}
+					configured = true
+				case addedCode:
+					if sku.IsActive || sku.DirectCostConfigured || !sku.PriceAmount.IsZero() || !sku.CostPriceAmount.IsZero() {
+						t.Fatalf("new catalog option was auto-activated or configured: %+v", sku)
+					}
+					unconfigured = true
+				default:
+					t.Fatalf("unexpected stored SKU: %+v", sku)
+				}
+			}
+			if !configured || unconfigured != (scenario == "new_variant") {
+				t.Fatalf("product creation did not merge current options: %+v", product.SKUs)
+			}
+		})
+	}
+}
+
 func TestDirectProductCreateKeepsUnconfiguredVariantsDisabled(t *testing.T) {
 	for _, configureOne := range []bool{false, true} {
 		t.Run(fmt.Sprintf("configured_%t", configureOne), func(t *testing.T) {

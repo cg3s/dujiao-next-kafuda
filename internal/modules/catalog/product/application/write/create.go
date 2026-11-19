@@ -44,7 +44,10 @@ func (s *WriteService) Create(input CreateProductInput) (*productdomain.Product,
 	if fulfillmentType == "" {
 		return nil, productcontract.ErrFulfillmentInvalid
 	}
-	if fulfillmentType == constants.FulfillmentTypeKafudaGPT {
+	isDirect := fulfillmentType == constants.FulfillmentTypeKafudaGPT
+	requestedSKUs := input.SKUs
+	catalogForUpdate, _ := s.directCatalog.(directCatalogForUpdate)
+	if isDirect {
 		options, err := s.directSKUOptions()
 		if err != nil {
 			return nil, err
@@ -102,12 +105,9 @@ func (s *WriteService) Create(input CreateProductInput) (*productdomain.Product,
 		}
 		costPriceAmount = minActiveCostPrice(normalizedSKUs)
 	}
-	if fulfillmentType == constants.FulfillmentTypeKafudaGPT {
+	if isDirect {
 		minPurchaseQuantity, maxPurchaseQuantity = 1, 1
 		stockDisplayMode = constants.ProductStockDisplayHidden
-		if !priceAmount.IsPositive() {
-			isActive = false
-		}
 	}
 	paymentChannelIDs, err := s.filterAvailablePaymentChannelIDs(input.PaymentChannelIDs)
 	if err != nil {
@@ -138,7 +138,7 @@ func (s *WriteService) Create(input CreateProductInput) (*productdomain.Product,
 		ManualStockSold:      0,
 		PaymentChannelIDs:    productdomain.EncodePaymentChannelIDs(paymentChannelIDs),
 		IsAffiliateEnabled:   isAffiliateEnabled,
-		IsActive:             isActive,
+		IsActive:             isActive && (!isDirect || priceAmount.IsPositive()),
 		SortOrder:            input.SortOrder,
 	}
 	if fulfillmentType == constants.FulfillmentTypeManual {
@@ -153,6 +153,25 @@ func (s *WriteService) Create(input CreateProductInput) (*productdomain.Product,
 		productRepo := repositories.Products
 		skuRepo := repositories.SKUs
 		cardSecretRepo := repositories.CardSecrets
+		if isDirect && catalogForUpdate != nil {
+			// Merge the administrator's original selections against the catalog locked for this write.
+			options, err := catalogForUpdate.SKUOptionsForUpdate(repositories.Catalog)
+			if err != nil {
+				return productcontract.ErrProductSKUInvalid
+			}
+			skuInputs, err := prepareDirectSKUs(requestedSKUs, nil, options)
+			if err != nil {
+				return err
+			}
+			normalizedSKUs, priceAmount, manualStockTotal, err = s.normalizeProductSKUInputs(skuInputs, fulfillmentType, nil)
+			if err != nil {
+				return err
+			}
+			product.PriceAmount = money.FromDecimal(priceAmount)
+			product.CostPriceAmount = money.FromDecimal(minActiveCostPrice(normalizedSKUs))
+			product.ManualStockTotal = manualStockTotal
+			product.IsActive = isActive && priceAmount.IsPositive()
+		}
 		if err := productRepo.Create(&product); err != nil {
 			return err
 		}

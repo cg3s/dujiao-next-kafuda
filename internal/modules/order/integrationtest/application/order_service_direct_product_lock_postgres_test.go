@@ -12,13 +12,17 @@ import (
 	"testing"
 	"time"
 
+	catalogproductbootstrap "github.com/dujiao-next/internal/bootstrap/catalogproduct"
 	"github.com/dujiao-next/internal/constants"
 	cardsecretdomain "github.com/dujiao-next/internal/modules/cardsecret/domain"
 	cardsecretstore "github.com/dujiao-next/internal/modules/cardsecret/infrastructure/gormstore"
+	categorystore "github.com/dujiao-next/internal/modules/catalog/category/infrastructure/gormstore"
 	productwrite "github.com/dujiao-next/internal/modules/catalog/product/application/write"
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
+	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
+	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
@@ -421,12 +425,119 @@ func TestPostgresDirectActivationRejectsCatalogRevisionChangedWhileWaiting(t *te
 	}
 }
 
+func TestPostgresDirectCreateWaitsForCatalogRevision(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	db := openPostgresDirectRaceDB(t, dsn)
+	f := seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-create-catalog-lock", 0, 0))
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	catalog := directCheckoutCommerce(f.store, true)
+	options, err := catalog.SKUOptions(ctx)
+	if err != nil || len(options) != 1 || !options[0].Available {
+		t.Fatalf("load the original available option: %+v, %v", options, err)
+	}
+	oldRevision := options[0].CatalogRevision
+	active := true
+	price, cost := decimal.NewFromInt(129), decimal.NewFromInt(58)
+	input := productwrite.CreateProductInput{
+		CategoryID: f.product.CategoryID, Slug: "new-direct-product", TitleJSON: map[string]any{"en-US": "New Direct product"},
+		FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+		SKUs: []productwrite.ProductSKUInput{{
+			SKUCode: options[0].SKUCode, PriceAmount: price, CostPriceAmount: cost, CostPriceProvided: true,
+			IsActive: &active, DirectCatalogRevision: &oldRevision,
+		}},
+	}
+	products := productstore.NewProductStore(db.WithContext(ctx))
+	services := catalogproductbootstrap.New(catalogproductbootstrap.Dependencies{
+		Products: products, SKUs: productstore.NewSKUStore(db.WithContext(ctx)),
+		Categories: categorystore.NewCategoryStore(db.WithContext(ctx)),
+	})
+	services.Write.SetDirectCatalog(catalog)
+
+	refresh := db.WithContext(ctx).Begin()
+	if refresh.Error != nil {
+		t.Fatal(refresh.Error)
+	}
+	var writes sync.WaitGroup
+	defer func() {
+		refresh.Rollback()
+		cancel()
+		writes.Wait()
+	}()
+	var refreshPID int
+	if err := refresh.Raw("SELECT pg_backend_pid()").Scan(&refreshPID).Error; err != nil {
+		t.Fatal(err)
+	}
+	removed, restored := *f.catalog, *f.catalog
+	removed.SyncedAt, removed.Options = f.catalog.SyncedAt.Add(time.Second), []kafudadomain.CatalogOption{}
+	restored.SyncedAt = removed.SyncedAt.Add(time.Second)
+	refreshStore := kafudastore.New(refresh)
+	for _, snapshot := range []*kafudadomain.Catalog{&removed, &restored} {
+		if err := refreshStore.SaveCatalog(ctx, snapshot); err != nil {
+			t.Fatalf("save racing catalog refresh: %v", err)
+		}
+	}
+	lockPIDs := observeRowLockPIDs(t, db, (kafudadomain.Catalog{}).TableName())
+	created := make(chan error, 1)
+	writes.Go(func() {
+		_, err := services.Write.Create(input)
+		created <- err
+	})
+	var createPID int
+	select {
+	case createPID = <-lockPIDs:
+	case err := <-created:
+		t.Fatalf("creation returned before locking the catalog row: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if createPID == refreshPID {
+		t.Fatal("creation did not use a separate PostgreSQL connection")
+	}
+	assertProductLockBlocked(t, ctx, db, createPID, refreshPID)
+	if err := refresh.Commit().Error; err != nil {
+		t.Fatalf("commit competing directory refresh: %v", err)
+	}
+	select {
+	case err := <-created:
+		if !errors.Is(err, productcontract.ErrProductSKUInvalid) {
+			t.Fatalf("creation with stale revision: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if count, err := products.CountBySlug(input.Slug, nil); err != nil || count != 0 {
+		t.Fatalf("rejected creation left %d product rows: %v", count, err)
+	}
+	var count int64
+	if err := db.Model(&productdomain.ProductSKU{}).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("rejected creation left SKU rows beyond the fixture: count=%d, err=%v", count, err)
+	}
+	options, err = catalog.SKUOptions(ctx)
+	if err != nil || len(options) != 1 || !options[0].Available || options[0].CatalogRevision != oldRevision+1 {
+		t.Fatalf("restored catalog did not advance approval revision: %+v, %v", options, err)
+	}
+	input.SKUs[0].DirectCatalogRevision = &options[0].CatalogRevision
+	approved, err := services.Write.Create(input)
+	if err != nil || approved == nil || !approved.IsActive || len(approved.SKUs) != 1 || !approved.SKUs[0].IsActive ||
+		approved.SKUs[0].DirectCatalogRevision != oldRevision+1 || !approved.SKUs[0].PriceAmount.Equal(price) || !approved.SKUs[0].CostPriceAmount.Equal(cost) {
+		t.Fatalf("creation with current approval did not retain the configured SKU: %+v, %v", approved, err)
+	}
+}
+
 func observeProductLockPIDs(t *testing.T, db *gorm.DB) <-chan int {
+	return observeRowLockPIDs(t, db, "products")
+}
+
+func observeRowLockPIDs(t *testing.T, db *gorm.DB, table string) <-chan int {
 	t.Helper()
 	// Report the backend PID just before each SELECT ... FOR UPDATE.
 	lockPIDs := make(chan int, 2)
-	if err := db.Callback().Query().Before("gorm:query").Register("test:product_lock_pid", func(tx *gorm.DB) {
-		if _, locking := tx.Statement.Clauses["FOR"]; tx.Statement.Table != "products" || !locking {
+	if err := db.Callback().Query().Before("gorm:query").Register("test:"+table+"_lock_pid", func(tx *gorm.DB) {
+		if _, locking := tx.Statement.Clauses["FOR"]; tx.Statement.Table != table || !locking {
 			return
 		}
 		var pid int
@@ -477,7 +588,7 @@ func assertProductLockBlocked(t *testing.T, ctx context.Context, db *gorm.DB, wa
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():
-			t.Fatal("the second write did not wait for the first product lock")
+			t.Fatal("the second write did not wait for the expected row lock")
 		}
 	}
 }
