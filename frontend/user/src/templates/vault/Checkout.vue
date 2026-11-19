@@ -134,7 +134,12 @@
         </div>
 
         <div v-if="previewLoading || couponRefreshing" class="mt-3 text-xs text-muted-foreground">{{ previewStatusText }}</div>
-        <div v-if="checkoutAlert" class="mt-3.5 rounded-sm px-3 py-2.5 text-[13px] font-semibold" :class="checkoutAlert.level === 'error' ? 'bg-destructive/10 text-destructive' : 'bg-warning/10 text-warning'">{{ checkoutAlert.message }}</div>
+        <div v-if="checkoutAlert" class="mt-3.5 rounded-sm px-3 py-2.5 text-[13px] font-semibold" :class="checkoutAlert.level === 'error' ? 'bg-destructive/10 text-destructive' : 'bg-warning/10 text-warning'">
+          <p>{{ checkoutAlert.message }}</p>
+          <Button v-if="canRetryDirectPreview" type="button" size="sm" variant="outline" class="mt-2 rounded-sm" @click="retryDirectPreview">
+            {{ t('errorBoundary.retry') }}
+          </Button>
+        </div>
 
         <!-- 支付方式 -->
         <div class="my-[18px] border-t pt-4">
@@ -222,7 +227,7 @@ const {
   guestCaptchaEnabled, captchaProvider, guestCaptchaPayload, guestTurnstileToken, guestTurnstileSiteKey,
   guestImageCaptchaRef, guestTurnstileRef, handleGuestCaptchaConfigStale,
   previewCurrency, previewOriginal, previewCoupon, previewPromotion, previewWholesale, previewMemberDiscount, previewTotal,
-  previewLoading, couponRefreshing, previewStatusText, hasPositiveAmount, formatDiscountPrice, checkoutAlert,
+  previewLoading, couponRefreshing, previewStatusText, canRetryDirectPreview, retryDirectPreview, hasPositiveAmount, formatDiscountPrice, checkoutAlert,
   showBalanceOption, walletLoading, walletBalance, useBalance, walletOnlyPayment,
   expectedWalletPaidDisplay, expectedOnlinePayDisplay, expectedOnlinePayCents,
   requiresOnlineChannel, paymentChannels, selectedChannelId, isChannelDisabledForAmount, channelAmountLimitHint,

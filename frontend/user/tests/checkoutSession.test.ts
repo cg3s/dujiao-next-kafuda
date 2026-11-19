@@ -55,8 +55,8 @@ test('checkout keeps order settlement within the correct browser session', { tim
   const { default: i18n } = await vite.ssrLoadModule('/src/i18n/index.ts')
 
   const mountCheckout = async (scenario: TestContext, {
-    guest = false, direct = !guest, online = guest,
-  }: { guest?: boolean; direct?: boolean; online?: boolean } = {}) => {
+    guest = false, direct = !guest, online = guest, initialPreviewFailure, coupon = '',
+  }: { guest?: boolean; direct?: boolean; online?: boolean; initialPreviewFailure?: 'network' | 'temporary' | 'validation'; coupon?: string } = {}) => {
     Object.assign(globalThis, { localStorage: memoryStorage(), sessionStorage: memoryStorage() })
     let reloads = 0
     Object.assign(browserWindow, { localStorage, sessionStorage, location: { reload: () => { reloads++ } } })
@@ -66,6 +66,7 @@ test('checkout keeps order settlement within the correct browser session', { tim
     const response = (data: unknown) => Response.json({ status_code: 0, data })
     const requests: string[] = []
     const orderRequests: string[] = []
+    const previewRequests: unknown[] = []
     const orderPath = guest ? '/api/v1/guest/orders' : '/api/v1/orders'
     const channel = { id: 12, provider_type: 'epay', channel_type: 'alipay' }
     let unavailablePath = ''
@@ -73,7 +74,15 @@ test('checkout keeps order settlement within the correct browser session', { tim
       const path = new URL(input, 'http://shop.test').pathname
       requests.push(path)
       if (path === unavailablePath) return Response.json({ status_code: 500, msg: 'Test service unavailable' }, { status: 503 })
-      if (path === `${orderPath}/preview`) return response({ total_amount: '100.00', currency: 'CNY' })
+      if (path === `${orderPath}/preview`) {
+        previewRequests.push(JSON.parse(String(opts.body)))
+        if (previewRequests.length === 1) {
+          if (initialPreviewFailure === 'network') throw new TypeError('Test connection interrupted')
+          if (initialPreviewFailure === 'temporary') return Response.json({ status_code: 500, msg: 'Test service unavailable' }, { status: 502 })
+          if (initialPreviewFailure === 'validation') return Response.json({ status_code: 400, msg: 'Retired SKU is unavailable' })
+        }
+        return response({ total_amount: '100.00', currency: 'CNY' })
+      }
       if (path === '/api/v1/wallet') return response({ balance: '300.00' })
       if (path === '/api/v1/order/payment-channels') return response([channel])
       if (path === `${orderPath}/create-and-pay`) {
@@ -99,19 +108,25 @@ test('checkout keeps order settlement within the correct browser session', { tim
     } })
     app.use(createPinia()).use(router).use(i18n).use(createHead()).mount({})
     scenario.after(() => app.unmount())
+    if (coupon) checkout.couponCode.value = coupon
     if (guest) {
       checkout.guestEmail.value = 'buyer@example.test'
       checkout.guestPassword.value = 'test-order-password'
     }
-    if (online) {
-      for (let attempt = 0; checkout.paymentChannels.value.length === 0 && attempt < 500; attempt++) await delay(10)
-      assert.equal(checkout.paymentChannels.value.length, 1)
-      checkout.handleSelectChannel(channel)
+    if (initialPreviewFailure) {
+      for (let attempt = 0; checkout.checkoutAlert.value?.level !== 'error' && attempt < 500; attempt++) await delay(10)
+      assert.equal(checkout.checkoutAlert.value?.level, 'error')
+    } else {
+      if (online) {
+        for (let attempt = 0; checkout.paymentChannels.value.length === 0 && attempt < 500; attempt++) await delay(10)
+        assert.equal(checkout.paymentChannels.value.length, 1)
+        checkout.handleSelectChannel(channel)
+      }
+      for (let attempt = 0; !checkout.canSubmit.value && attempt < 500; attempt++) await delay(10)
+      assert.equal(checkout.canSubmit.value, true)
     }
-    for (let attempt = 0; !checkout.canSubmit.value && attempt < 500; attempt++) await delay(10)
-    assert.equal(checkout.canSubmit.value, true)
     return {
-      checkout, buyNow, router, submitted: submitted.promise, requests, orderRequests,
+      checkout, buyNow, router, channel, submitted: submitted.promise, requests, orderRequests, previewRequests,
       failRequestsTo: (path: string) => { unavailablePath = path },
       acceptOrder: () => result.resolve(response({ order_no: 'ORDER-1' })),
       replaceBuyer: () => {
@@ -120,6 +135,51 @@ test('checkout keeps order settlement within the correct browser session', { tim
       },
       reloads: () => reloads,
     }
+  }
+
+  for (const failure of ['network', 'temporary'] as const) {
+    await t.test(`Direct online checkout recovers after an initial ${failure} preview failure`, async (scenario) => {
+      const page = await mountCheckout(scenario, { online: true, initialPreviewFailure: failure, coupon: 'DIRECT-COUPON' })
+      assert.equal(page.checkout.canSubmit.value, false)
+      assert.equal(page.checkout.canRetryDirectPreview.value, true)
+      assert.equal(page.checkout.paymentChannels.value.length, 0)
+      const retry = page.checkout.retryDirectPreview()
+      assert.equal(page.checkout.retryDirectPreview(), undefined)
+      assert.equal(await retry, true)
+      assert.equal(page.checkout.canRetryDirectPreview.value, false)
+      assert.equal(page.checkout.couponCode.value, 'DIRECT-COUPON')
+      assert.equal(page.buyNow.item?.skuId, 7)
+      assert.equal(page.reloads(), 0)
+      assert.equal(page.orderRequests.length, 0)
+      assert.equal(page.previewRequests.length, 2)
+      assert.deepEqual(page.previewRequests[1], page.previewRequests[0])
+
+      for (let attempt = 0; page.checkout.paymentChannels.value.length === 0 && attempt < 100; attempt++) await delay(10)
+      assert.equal(page.checkout.paymentChannels.value.length, 1)
+      assert.equal(page.requests.filter((path) => path === '/api/v1/order/payment-channels').length, 1)
+      page.checkout.handleSelectChannel(page.channel)
+      assert.equal(page.checkout.canSubmit.value, true)
+      const submit = page.checkout.handleSubmit()
+      assert.equal(await page.submitted, 'Bearer initial-buyer-test-token')
+      page.acceptOrder()
+      await submit
+      for (let attempt = 0; page.router.currentRoute.value.path !== '/pay' && attempt < 30; attempt++) await delay(10)
+      assert.equal(page.router.currentRoute.value.fullPath, '/pay?order_no=ORDER-1')
+      assert.equal(page.orderRequests.length, 1)
+    })
+  }
+
+  for (const { direct, failure } of [
+    { direct: false, failure: 'temporary' },
+    { direct: true, failure: 'validation' },
+  ] as const) {
+    await t.test(`${direct ? 'Direct validation failure' : 'ordinary checkout'} does not expose Direct preview retry`, async (scenario) => {
+      const page = await mountCheckout(scenario, { direct, online: true, initialPreviewFailure: failure })
+      assert.equal(page.checkout.canRetryDirectPreview.value, false)
+      assert.equal(page.checkout.retryDirectPreview(), undefined)
+      assert.equal(page.previewRequests.length, 1)
+      assert.equal(page.orderRequests.length, 0)
+    })
   }
 
   for (const direct of [true, false]) {

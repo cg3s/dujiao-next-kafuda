@@ -7,6 +7,7 @@ import { directCheckoutRestriction, KAFUDA_GPT_DIRECT } from '../utils/directPur
 import { useAppStore } from '../stores/app'
 import { useUserAuthStore } from '../stores/userAuth'
 import { guestOrderAPI, userOrderAPI, walletAPI, type CaptchaPayload } from '../api'
+import { ApiRequestError } from '../api/client'
 import { debounceAsync } from '../utils/debounce'
 import { type PageAlert } from '../utils/alerts'
 import { amountToCents, basisPointsToPercent, centsToAmount, parseInteger, rateToBasisPoints } from '../utils/money'
@@ -80,6 +81,7 @@ export function useCheckout() {
   const preview = ref<any>(null)
   const previewLoading = ref(false)
   const previewError = ref('')
+  const directPreviewRetryable = ref(false)
   const previewRequestId = ref(0)
   const couponRefreshing = ref(false)
   const syncingStock = ref(false)
@@ -730,6 +732,7 @@ export function useCheckout() {
   const loadPreview = async (orderPayload?: ReturnType<typeof buildOrderPayload>) => {
     if (!isCurrentSession()) return false
     const requestId = ++previewRequestId.value
+    directPreviewRetryable.value = false
     if (directCheckoutError.value || syncingStock.value || cartItems.value.length === 0
       || (isGuestCheckout.value && (!guestEmail.value.trim() || !guestPassword.value.trim() || !guestEmailValid.value))
       || cartItems.value.some((item) => itemStockExceeded(item) || itemMinNotMet(item))) {
@@ -773,6 +776,11 @@ export function useCheckout() {
         preview.value = null
         orderPaymentChannels.value = []
         previewError.value = err.message || t('checkout.previewFailed')
+        if (hasDirectItems.value && err instanceof ApiRequestError) {
+          const status = err.status ?? 0
+          directPreviewRetryable.value = err.kind === 'network' || err.kind === 'timeout'
+            || status === 408 || status === 429 || (status >= 500 && status < 600)
+        }
       }
       return false
     } finally {
@@ -784,6 +792,16 @@ export function useCheckout() {
   }
 
   const debouncedLoadPreview = debounceAsync(loadPreview, 300)
+
+  const canRetryDirectPreview = computed(() => hasDirectItems.value && directPreviewRetryable.value
+    && !directCheckoutError.value && !previewLoading.value && !submitting.value && !reloading.value)
+  const retryDirectPreview = () => {
+    if (!canRetryDirectPreview.value || !isCurrentSession()) return
+    debouncedLoadPreview.cancel()
+    debouncedLoadOrderPaymentChannels.cancel()
+    error.value = ''
+    return loadPreview()
+  }
 
   const clearSourceStore = () => {
     if (isBuyNowMode.value) {
@@ -914,6 +932,7 @@ export function useCheckout() {
       directCheckoutError.value, route.fullPath],
     () => {
       checkoutRevision++
+      directPreviewRetryable.value = false
       if (isCurrentSession() && !submitting.value) debouncedLoadPreview()
     },
     { deep: true, flush: 'sync' }
@@ -977,6 +996,7 @@ export function useCheckout() {
     preview.value = null
     previewLoading.value = false
     previewError.value = ''
+    directPreviewRetryable.value = false
     couponCode.value = ''
     couponRefreshing.value = false
     orderPaymentChannels.value = []
@@ -1254,6 +1274,8 @@ export function useCheckout() {
     previewLoading,
     couponRefreshing,
     previewStatusText,
+    canRetryDirectPreview,
+    retryDirectPreview,
     hasPositiveAmount,
     formatDiscountPrice,
     checkoutAlert,

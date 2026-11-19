@@ -233,6 +233,9 @@
             :class="['mb-4', pageAlertToneClass(checkoutAlert.level)]"
           >
             <AlertDescription>{{ checkoutAlert.message }}</AlertDescription>
+            <Button v-if="canRetryDirectPreview" type="button" size="sm" variant="outline" class="mt-2" @click="retryDirectPreview">
+              {{ t('errorBoundary.retry') }}
+            </Button>
           </Alert>
 
           <!-- Payment Channel Selection -->
@@ -338,7 +341,7 @@ const {
   guestCaptchaEnabled, captchaProvider, guestCaptchaPayload, guestTurnstileToken, guestTurnstileSiteKey,
   guestImageCaptchaRef, guestTurnstileRef, handleGuestCaptchaConfigStale,
   previewCurrency, previewOriginal, previewCoupon, previewPromotion, previewWholesale, previewMemberDiscount, previewTotal,
-  previewLoading, couponRefreshing, previewStatusText, hasPositiveAmount, formatDiscountPrice, checkoutAlert,
+  previewLoading, couponRefreshing, previewStatusText, canRetryDirectPreview, retryDirectPreview, hasPositiveAmount, formatDiscountPrice, checkoutAlert,
   showBalanceOption, walletLoading, walletBalance, useBalance, walletOnlyPayment,
   expectedWalletPaidDisplay, expectedOnlinePayDisplay, expectedOnlinePayCents,
   requiresOnlineChannel, paymentChannels, selectedChannelId, isChannelDisabledForAmount, channelAmountLimitHint,
