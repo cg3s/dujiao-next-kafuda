@@ -254,6 +254,52 @@ describe('ProductEditModal Direct SKU edits', () => {
     expect(host.querySelector('p[role="status"]')?.textContent?.trim()).toBe('kafuda.salesBlockReasons.card_product_unavailable')
   })
 
+  it('keeps a catalog read error visible and retries without refreshing the supplier', async () => {
+    api.getProduct.mockResolvedValue(productResponse(1, 'PH'))
+    api.getKafudaCatalog.mockRejectedValueOnce(Object.assign(new Error('Access denied'), { __notified: true }))
+    api.getKafudaCatalog.mockResolvedValueOnce({ data: { data: { options: catalogOptions, sales_block_reason: 'worker_not_ready' } } })
+    const context = mountModal()
+    context.productId = 1
+    context.open = true
+    await flushRequests()
+
+    expect(host.querySelector('[role="alert"]')?.textContent?.trim()).toBe('Access denied')
+    expect(host.textContent).not.toContain('kafuda.unavailable')
+    expect(host.textContent).not.toContain('kafuda.salesBlockReasons.catalog_stale')
+    expect(notifyError).not.toHaveBeenCalled()
+
+    const retry = [...host.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'kafuda.retryRead')
+    expect(retry).toBeDefined()
+    retry!.click()
+    await flushRequests()
+    expect(api.getKafudaCatalog).toHaveBeenCalledTimes(2)
+    expect(api.syncKafudaCatalog).not.toHaveBeenCalled()
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.querySelector('p[role="status"]')?.textContent?.trim()).toBe('kafuda.salesBlockReasons.worker_not_ready')
+  })
+
+  it('keeps the last loaded catalog and pending edits when refreshing fails', async () => {
+    api.getProduct.mockResolvedValue(productResponse(1, 'PH'))
+    api.syncKafudaCatalog.mockRejectedValueOnce(Object.assign(new Error('Rate limited'), { __notified: true }))
+    const context = mountModal()
+    context.productId = 1
+    context.open = true
+    await flushRequests()
+
+    const cost = host.querySelector<HTMLInputElement>('input[placeholder="admin.products.form.skuCostPricePlaceholder"]')
+    cost!.value = '5'
+    cost!.dispatchEvent(new Event('input', { bubbles: true }))
+    const refresh = [...host.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'kafuda.sync')
+    refresh!.click()
+    await flushRequests()
+
+    expect(host.querySelector('[role="alert"]')?.textContent?.trim()).toBe('Rate limited')
+    expect(host.textContent).not.toContain('kafuda.unavailable')
+    const payload = submitUpdate()
+    expect(payload.skus).toHaveLength(1)
+    expect(payload.skus[0]).toMatchObject({ id: 1, cost_price_amount: 5 })
+  })
+
   it('submits only edited fields from each region after refreshing the catalog', async () => {
     const product = productResponse(1, 'PH')
     product.data.data.skus.push(productResponse(2, 'US').data.data.skus[0]!)

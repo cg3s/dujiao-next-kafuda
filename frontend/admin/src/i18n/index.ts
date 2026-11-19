@@ -28,6 +28,7 @@ const messages = {
       lastSync: '最近同步：{time}',
       neverSynced: '尚未同步',
       failed: '直充目录加载失败，请稍后重试',
+      retryRead: '重试读取直充目录',
     },
     common: {
       api: {
@@ -4718,6 +4719,7 @@ const messages = {
       lastSync: '最近同步：{time}',
       neverSynced: '尚未同步',
       failed: '直充目錄載入失敗，請稍後重試',
+      retryRead: '重試讀取直充目錄',
     },
     common: {
       api: {
@@ -9408,6 +9410,7 @@ const messages = {
       lastSync: 'Last synced: {time}',
       neverSynced: 'Not synced yet',
       failed: 'Could not load recharge plans. Please try again later.',
+      retryRead: 'Retry loading the catalog',
     },
     common: {
       api: {

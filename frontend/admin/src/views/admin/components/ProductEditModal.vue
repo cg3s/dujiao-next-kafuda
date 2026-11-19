@@ -41,7 +41,8 @@ const paymentChannels = ref<AdminPaymentChannel[]>([])
 const editingIsMapped = ref(false)
 const initialCategoryID = ref<number | null>(null)
 const catalogBusy = ref(false)
-const catalogStale = ref(true)
+const catalogStale = ref<boolean | null>(null)
+const catalogError = ref('')
 const catalogSyncedAt = ref('')
 const catalogSalesBlockReason = ref('')
 const activeSKURegion = ref('')
@@ -558,7 +559,8 @@ const isTextLikeField = (fieldType: string) => {
 const resetDirectCatalog = () => {
   catalogRequest++
   catalogBusy.value = false
-  catalogStale.value = true
+  catalogStale.value = null
+  catalogError.value = ''
   catalogSyncedAt.value = ''
   catalogSalesBlockReason.value = ''
   activeSKURegion.value = ''
@@ -689,6 +691,7 @@ const loadDirectCatalog = async (sync: boolean) => {
   const productId = props.productId
   const isCurrent = () => request === catalogRequest && props.modelValue && props.productId === productId && isDirect.value
   catalogBusy.value = true
+  catalogError.value = ''
   try {
     const response = sync ? await adminAPI.syncKafudaCatalog() : await adminAPI.getKafudaCatalog()
     if (!isCurrent()) return
@@ -733,7 +736,9 @@ const loadDirectCatalog = async (sync: boolean) => {
     catalogSalesBlockReason.value = String(catalog.sales_block_reason || '')
     catalogSyncedAt.value = catalog.synced_at ? new Date(catalog.synced_at).toLocaleString() : ''
   } catch (error) {
-    if (isCurrent() && !isNotifiedError(error)) notifyError(t('kafuda.failed'))
+    if (isCurrent()) {
+      catalogError.value = error instanceof Error && isNotifiedError(error) && error.message ? error.message : t('kafuda.failed')
+    }
   } finally {
     if (request === catalogRequest) catalogBusy.value = false
   }
@@ -1149,7 +1154,11 @@ watch(
 
             <div v-if="isDirect" class="text-xs text-muted-foreground space-y-2">
               <p>{{ t('kafuda.tip') }}</p>
-              <p>{{ t('kafuda.lastSync', { time: catalogSyncedAt || t('kafuda.neverSynced') }) }}</p>
+              <p v-if="catalogError" class="text-amber-600" role="alert">{{ catalogError }}</p>
+              <Button v-if="catalogError && catalogStale === null" type="button" size="sm" variant="outline" :disabled="catalogBusy" @click="loadDirectCatalog(false)">
+                {{ t('kafuda.retryRead') }}
+              </Button>
+              <p v-if="catalogStale !== null">{{ t('kafuda.lastSync', { time: catalogSyncedAt || t('kafuda.neverSynced') }) }}</p>
               <p v-if="catalogStale && catalogSalesBlockReason !== 'catalog_stale'" class="text-amber-600">{{ t('kafuda.salesBlockReasons.catalog_stale') }}</p>
               <p v-if="catalogSalesBlockReason" class="text-amber-600" role="status">
                 {{ t(`kafuda.salesBlockReasons.${catalogSalesBlockReason}`) }}
@@ -1183,7 +1192,7 @@ watch(
                       <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuSpec', { lang: getCurrentLangName() }) }}</label>
                       <template v-if="isDirect">
                         <p class="text-sm">{{ sku.spec_values.plan }} · {{ sku.spec_values.country }}</p>
-                        <p v-if="!directAvailability[sku.sku_code]" class="text-xs text-amber-600">{{ t('kafuda.unavailable') }}</p>
+                        <p v-if="catalogStale !== null && !directAvailability[sku.sku_code]" class="text-xs text-amber-600">{{ t('kafuda.unavailable') }}</p>
                         <p v-else-if="directReviewRequired[sku.sku_code]" class="text-xs text-amber-600">{{ t('kafuda.review') }}</p>
                       </template>
                       <Input v-else v-model="sku.spec_values[currentLang]" :placeholder="t('admin.products.form.skuSpecPlaceholder')" :disabled="editingIsMapped" />
