@@ -168,15 +168,17 @@ func (s *Service) ExpireUndispatchedQuote(ctx context.Context, attemptID uint, q
 	if expiresAt.IsZero() || now.Before(expiresAt) {
 		return kafudadomain.ErrInvalidTransition
 	}
-	return s.RejectOrderSubmission(ctx, attemptID, quoteID, reference, kafudadomain.ReasonQuoteExpired, now)
+	return s.releaseOrderSubmission(ctx, attemptID, quoteID, reference, kafudadomain.StageWaiting, kafudadomain.ReasonQuoteExpired, now)
 }
 
-// RejectOrderSubmission releases an undispatched or definitively rejected
-// submission. An attempt already moved to review keeps its active slot.
+// InterruptUndispatchedSubmission releases a canceled submission before the
+// gateway was invoked. It preserves the prepared quote and reference.
+func (s *Service) InterruptUndispatchedSubmission(ctx context.Context, attemptID uint, quoteID, reference string, now time.Time) error {
+	return s.releaseOrderSubmission(ctx, attemptID, quoteID, reference, kafudadomain.StageWaiting, kafudadomain.ReasonSubmissionInterrupted, now)
+}
+
+// RejectOrderSubmission releases a definitively rejected submission.
 func (s *Service) RejectOrderSubmission(ctx context.Context, attemptID uint, quoteID, reference, reason string, now time.Time) error {
-	if strings.TrimSpace(quoteID) == "" || reference == "" || now.IsZero() {
-		return kafudadomain.ErrInvalidTransition
-	}
 	var stage kafudadomain.Stage
 	switch reason {
 	case kafudadomain.ReasonQuoteExpired:
@@ -184,6 +186,15 @@ func (s *Service) RejectOrderSubmission(ctx context.Context, attemptID uint, quo
 	case kafudadomain.ReasonMerchantBalanceInsufficient:
 		stage = kafudadomain.StageManualDelivery
 	default:
+		return kafudadomain.ErrInvalidTransition
+	}
+	return s.releaseOrderSubmission(ctx, attemptID, quoteID, reference, stage, reason, now)
+}
+
+// releaseOrderSubmission leaves the active slot intact if recovery already
+// changed the attempt or a supplier order has been identified.
+func (s *Service) releaseOrderSubmission(ctx context.Context, attemptID uint, quoteID, reference string, stage kafudadomain.Stage, reason string, now time.Time) error {
+	if strings.TrimSpace(quoteID) == "" || reference == "" || now.IsZero() {
 		return kafudadomain.ErrInvalidTransition
 	}
 	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {

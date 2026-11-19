@@ -28,6 +28,7 @@ const (
 	ReasonQuoteExpired                = "quote_expired"
 	ReasonQuoteUnavailable            = "quote_unavailable"
 	ReasonQuotePolicy                 = "quote_policy"
+	ReasonSubmissionInterrupted       = "submission_interrupted"
 	ReasonCostLimitExceeded           = "cost_limit_exceeded"
 	ReasonResultApplyFailed           = "result_apply_failed"
 	ReasonProcessingDeadlineExceeded  = "processing_deadline_exceeded"

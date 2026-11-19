@@ -597,6 +597,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 	t.Run("quote_expires_after_recovery", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) { testDirectQuoteExpiresBeforeDispatch(t, newFixture(t), true) })
 	})
+	t.Run("cancelled_submission", func(t *testing.T) { testDirectSubmitCancellation(t, newFixture) })
 	for _, scenario := range []struct {
 		name       string
 		stage      kafudadomain.Stage
@@ -1050,6 +1051,127 @@ func testDirectQuoteExpiresBeforeDispatch(t *testing.T, f directCheckoutFixture,
 	if err != nil || retry == nil || !retry.Created || retry.Attempt == nil ||
 		retry.Attempt.Sequence != attempt.Sequence+1 || retry.Attempt.Reference == attempt.Reference {
 		t.Fatalf("expired quote prevented a new attempt: %+v, %v", retry, err)
+	}
+}
+
+func testDirectSubmitCancellation(t *testing.T, newFixture func(*testing.T) directCheckoutFixture) {
+	t.Helper()
+	for _, scenario := range []struct {
+		name                  string
+		recoverBeforeDispatch bool
+		cancelDuringCreate    bool
+	}{
+		{name: "before_dispatch"},
+		{name: "before_dispatch_after_recovery", recoverBeforeDispatch: true},
+		{name: "during_gateway_call", cancelDuringCreate: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newFixture(t)
+			if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+				t.Fatal(err)
+			}
+			order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			paidAt := time.Now().UTC().Truncate(time.Microsecond)
+			childID := order.Children[0].ID
+			if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
+				Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": paidAt}).Error; err != nil {
+				t.Fatal(err)
+			}
+			reservation, err := kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, ordercontract.TenantScope{}, order.OrderNo, order.UserID, paidAt, paidAt.Add(time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			const quoteID = "quote_cancel_during_submission"
+			quoteCosts := kafudadomain.QuoteCosts{ServiceFeeCents: 900, CardOpenFeeCents: 50, CardLoadCents: 50, TotalCents: 1000}
+			check := kafudacontract.CheckResult{Country: "PH", PayMode: "auto_card", Plans: []kafudacontract.Quote{{
+				Plan: "plus", Status: "available", Kind: "new", QuoteID: quoteID, ExpiresAt: paidAt.Add(time.Minute), PriceCents: 900,
+				AutoCard: &kafudacontract.AutoCard{ProductCode: "checkout-card", OpenFeeCents: 50, LoadCents: 50, TotalCents: 1000},
+			}}}
+			records := kafudaapp.New(f.store)
+			attemptID, reference := reservation.Attempt.ID, reservation.Attempt.Reference
+			var recovered *kafudadomain.Attempt
+			store := &directSubmitStore{Store: f.options.OrderStore, afterCommit: func() {
+				attempt, err := f.store.GetAttempt(ctx, attemptID)
+				if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptSubmitting || attempt.NextPollAt == nil ||
+					attempt.QuoteID != quoteID || attempt.Reference != reference || !reflect.DeepEqual(attempt.QuoteCosts, &quoteCosts) {
+					t.Fatalf("expected committed submission before cancellation: %+v, %v", attempt, err)
+				}
+				if !scenario.cancelDuringCreate {
+					cancel()
+				}
+				if scenario.recoverBeforeDispatch {
+					recovery := kafudaworkflow.WithShopOrderTransitions(records, f.options.OrderStore)
+					if err := recovery.RecoverUnidentifiedSubmissions(t.Context(), *attempt.NextPollAt, 1); err != nil {
+						t.Fatal(err)
+					}
+					recovered, err = f.store.GetAttempt(t.Context(), attemptID)
+					if err != nil || recovered == nil || recovered.Status != kafudadomain.AttemptReview {
+						t.Fatalf("worker did not recover the committed attempt: %+v, %v", recovered, err)
+					}
+				}
+			}}
+			calls := 0
+			gateway := directCreateGateway{create: func(ctx context.Context, request kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
+				calls++
+				if ctx.Err() != nil || request.QuoteID != quoteID || request.Reference != reference {
+					t.Fatalf("invalid gateway request: %+v, %v", request, ctx.Err())
+				}
+				cancel()
+				return nil, ctx.Err()
+			}}
+			completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, store, records, gateway, reservation, check, time.Second)
+			wantCalls := 0
+			if scenario.cancelDuringCreate {
+				wantCalls = 1
+			}
+			if completed || calls != wantCalls || !errors.Is(err, context.Canceled) ||
+				(errors.Is(err, kafudadomain.ErrInvalidTransition) != scenario.recoverBeforeDispatch) {
+				t.Fatalf("cancelled submission: completed=%v, calls=%d, err=%v", completed, calls, err)
+			}
+
+			attempt, err := f.store.GetAttempt(t.Context(), attemptID)
+			if err != nil || attempt == nil || attempt.QuoteID != quoteID || attempt.Reference != reference ||
+				attempt.UpstreamOrderID != nil || !reflect.DeepEqual(attempt.QuoteCosts, &quoteCosts) {
+				t.Fatalf("cancelled submission lost attempt history: %+v, %v", attempt, err)
+			}
+			record, err := f.store.GetRecharge(t.Context(), childID)
+			if err != nil || record == nil || record.CurrentAttemptID == nil || *record.CurrentAttemptID != attempt.ID ||
+				!reflect.DeepEqual(record.Snapshot, reservation.Recharge.Snapshot) {
+				t.Fatalf("cancelled submission changed recharge identity: %+v, %v", record, err)
+			}
+			retryAt := time.Now().UTC()
+			if scenario.cancelDuringCreate || scenario.recoverBeforeDispatch {
+				if record.Stage != kafudadomain.StageManualReview || record.ReasonCode != "outcome_unknown" ||
+					attempt.Status != kafudadomain.AttemptReview || attempt.ActiveOrderID == nil || *attempt.ActiveOrderID != childID || attempt.NextPollAt == nil {
+					t.Fatalf("cancelled submission lost its review slot: recharge=%+v attempt=%+v", record, attempt)
+				}
+				if recovered != nil && !reflect.DeepEqual(attempt, recovered) {
+					t.Fatalf("cancelled submission overwrote the worker's attempt: before=%+v after=%+v", recovered, attempt)
+				}
+				assertDirectShopOrderStatus(t, store, order, constants.OrderStatusFulfilling, paidAt)
+				replay, err := kafudaworkflow.ReserveBuyerAttempt(store, ordercontract.TenantScope{}, order.OrderNo, order.UserID, retryAt, retryAt.Add(time.Minute))
+				if err != nil || replay == nil || replay.Created || replay.Attempt == nil || replay.Attempt.ID != attempt.ID {
+					t.Fatalf("review attempt was replaced: %+v, %v", replay, err)
+				}
+				return
+			}
+			if record.Stage != kafudadomain.StageWaiting || record.ReasonCode != kafudadomain.ReasonSubmissionInterrupted ||
+				attempt.Status != kafudadomain.AttemptFailed || attempt.ActiveOrderID != nil || attempt.NextPollAt != nil {
+				t.Fatalf("undispatched submission kept its slot: recharge=%+v attempt=%+v", record, attempt)
+			}
+			assertDirectShopOrderStatus(t, store, order, constants.OrderStatusPaid, paidAt)
+			retry, err := kafudaworkflow.ReserveBuyerAttempt(store, ordercontract.TenantScope{}, order.OrderNo, order.UserID, retryAt, retryAt.Add(time.Minute))
+			if err != nil || retry == nil || !retry.Created || retry.Attempt == nil ||
+				retry.Attempt.Sequence != attempt.Sequence+1 || retry.Attempt.Reference == reference {
+				t.Fatalf("undispatched submission prevented a new attempt: %+v, %v", retry, err)
+			}
+		})
 	}
 }
 

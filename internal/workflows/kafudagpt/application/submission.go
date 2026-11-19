@@ -35,14 +35,20 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 		return false, err
 	}
 	submitCtx, cancelSubmit := context.WithDeadline(ctx, expiresAt)
-	if checkedAt := time.Now().UTC(); !checkedAt.Before(expiresAt) {
+	interrupted := submitCtx.Err()
+	checkedAt := time.Now().UTC()
+	quoteExpired := !checkedAt.Before(expiresAt)
+	if quoteExpired || interrupted != nil {
 		cancelSubmit()
 		recoveryCtx, cancelRecovery := context.WithTimeout(context.WithoutCancel(ctx), submissionRecoveryTimeout)
 		defer cancelRecovery()
-		if err := records.ExpireUndispatchedQuote(recoveryCtx, attempt.ID, request.QuoteID, request.Reference, expiresAt, checkedAt); err != nil {
-			return false, err
+		if quoteExpired {
+			if err := records.ExpireUndispatchedQuote(recoveryCtx, attempt.ID, request.QuoteID, request.Reference, expiresAt, checkedAt); err != nil {
+				return false, err
+			}
+			return false, kafudaapp.ErrQuoteExpired
 		}
-		return false, kafudaapp.ErrQuoteExpired
+		return false, errors.Join(interrupted, records.InterruptUndispatchedSubmission(recoveryCtx, attempt.ID, request.QuoteID, request.Reference, checkedAt))
 	}
 	result, err := gateway.CreateOrder(submitCtx, request)
 	cancelSubmit()
