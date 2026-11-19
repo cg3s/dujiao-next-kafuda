@@ -8,6 +8,7 @@ import { createServer } from 'vite'
 import { createRenderer, h } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import type { useCheckout as CheckoutFactory } from '../src/composables/useCheckout.ts'
+import type { useOrderDetail as OrderDetailFactory } from '../src/composables/useOrderDetail.ts'
 import type { useBuyNowStore as BuyNowStoreFactory } from '../src/stores/buyNow.ts'
 
 function memoryStorage() {
@@ -25,8 +26,8 @@ const renderer = createRenderer({
   parentNode: () => null, nextSibling: () => null,
 })
 
-test('checkout keeps order settlement within the correct browser session', { timeout: 20_000 }, async (t) => {
-  const browserGlobals = ['window', 'document', 'localStorage', 'sessionStorage'] as const
+test('checkout and order detail keep settlement within the correct browser session', { timeout: 20_000 }, async (t) => {
+  const browserGlobals = ['window', 'document', 'navigator', 'localStorage', 'sessionStorage'] as const
   const originalGlobals = browserGlobals.map((name) => Object.getOwnPropertyDescriptor(globalThis, name))
   t.after(() => {
     browserGlobals.forEach((name, index) => {
@@ -35,9 +36,10 @@ test('checkout keeps order settlement within the correct browser session', { tim
       else Reflect.deleteProperty(globalThis, name)
     })
   })
-  const browserDocument = new EventTarget()
+  const browserDocument = Object.assign(new EventTarget(), { visibilityState: 'visible' })
   const browserWindow = Object.assign(new EventTarget(), { setTimeout, clearTimeout, performance })
-  for (const [name, value] of Object.entries({ window: browserWindow, document: browserDocument, localStorage: memoryStorage(), sessionStorage: memoryStorage() })) {
+  const browserNavigator = { onLine: true }
+  for (const [name, value] of Object.entries({ window: browserWindow, document: browserDocument, navigator: browserNavigator, localStorage: memoryStorage(), sessionStorage: memoryStorage() })) {
     Object.defineProperty(globalThis, name, { configurable: true, writable: true, value })
   }
 
@@ -50,6 +52,7 @@ test('checkout keeps order settlement within the correct browser session', { tim
   })
   t.after(() => vite.close())
   const { useCheckout } = await vite.ssrLoadModule('/src/composables/useCheckout.ts')
+  const { useOrderDetail } = await vite.ssrLoadModule('/src/composables/useOrderDetail.ts')
   const { useAppStore } = await vite.ssrLoadModule('/src/stores/app.ts')
   const { useBuyNowStore } = await vite.ssrLoadModule('/src/stores/buyNow.ts')
   const { default: i18n } = await vite.ssrLoadModule('/src/i18n/index.ts')
@@ -253,5 +256,95 @@ test('checkout keeps order settlement within the correct browser session', { tim
     assert.equal(page.router.currentRoute.value.fullPath, '/pay?guest=1&order_no=ORDER-1')
     assert.deepEqual(JSON.parse(sessionStorage.getItem('guest_order_auth') || 'null'), { email: 'buyer@example.test', order_password: 'test-order-password' })
     assert.equal(page.orderRequests.length, 1)
+  })
+
+  const mountOrderDetail = async (scenario: TestContext, direct: boolean) => {
+    Object.assign(globalThis, { localStorage: memoryStorage(), sessionStorage: memoryStorage() })
+    localStorage.setItem('user_token', 'initial-buyer-test-token')
+    browserDocument.visibilityState = 'visible'
+    browserNavigator.onLine = true
+    const response = (data: unknown) => Response.json({ status_code: 0, data })
+    const order = {
+      order_no: 'ORDER-1', status: 'pending_payment',
+      children: [{ items: [{ fulfillment_type: direct ? 'kafuda_gpt_direct' : 'manual' }] }],
+    }
+    const originalPath = '/api/v1/orders/ORDER-1'
+    const requests: string[] = []
+    const refreshed = Promise.withResolvers<Response>()
+    scenario.mock.method(globalThis, 'fetch', async (input: string, opts: RequestInit) => {
+      const path = new URL(input, 'http://shop.test').pathname
+      assert.equal(new Headers(opts.headers).get('Authorization'), 'Bearer initial-buyer-test-token')
+      requests.push(path)
+      if (path === originalPath) return requests.length === 1 ? response(order) : refreshed.promise
+      if (path === `${originalPath}/direct-status`) return response({ stage: 'waiting_session', updated_at: '2026-11-18T08:00:00Z' })
+      if (path === '/api/v1/orders/ORDER-2') return response({ ...order, order_no: 'ORDER-2', status: 'canceled' })
+      assert.fail(`Unexpected order detail request: ${path}`)
+    })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ name: 'orderDetail', path: '/orders/:order_no', component: {} }] })
+    await router.push('/orders/ORDER-1')
+    let detail!: ReturnType<typeof OrderDetailFactory>
+    const app = renderer.createApp({ setup() {
+      detail = useOrderDetail()
+      return () => h('div')
+    } })
+    app.use(createPinia()).use(router).use(i18n).use(createHead()).mount({})
+    scenario.after(() => app.unmount())
+    for (let attempt = 0; !detail.order.value && attempt < 100; attempt++) await delay(10)
+    assert.equal(detail.order.value?.status, 'pending_payment')
+    assert.equal(detail.directOrderNo.value, '')
+    assert.deepEqual(requests, [originalPath])
+    const setVisibility = (value: string) => {
+      browserDocument.visibilityState = value
+      browserDocument.dispatchEvent(new Event('visibilitychange'))
+    }
+    const setOnline = (value: boolean) => {
+      browserNavigator.onLine = value
+      browserWindow.dispatchEvent(new Event(value ? 'online' : 'offline'))
+    }
+    return { detail, requests, router, originalPath, setVisibility, setOnline, receivePayment: () => refreshed.resolve(response({ ...order, status: 'paid' })) }
+  }
+
+  await t.test('an open pending Direct order starts progress only after an authoritative paid refresh', async (scenario) => {
+    const page = await mountOrderDetail(scenario, true)
+    page.setVisibility('hidden')
+    page.setOnline(false)
+    page.setOnline(true)
+    assert.deepEqual(page.requests, [page.originalPath])
+
+    page.setVisibility('visible')
+    browserWindow.dispatchEvent(new Event('pageshow'))
+    assert.deepEqual(page.requests, [page.originalPath, page.originalPath])
+    assert.equal(page.detail.directStatus.value, null)
+    page.receivePayment()
+    for (let attempt = 0; !page.detail.directStatus.value && attempt < 100; attempt++) await delay(10)
+    assert.equal(page.detail.order.value?.status, 'paid')
+    assert.equal(page.detail.directStatus.value?.stage, 'waiting_session')
+    assert.deepEqual(page.requests, [page.originalPath, page.originalPath, `${page.originalPath}/direct-status`])
+  })
+
+  await t.test('ordinary pending order detail does not use Direct payment refresh', async (scenario) => {
+    const page = await mountOrderDetail(scenario, false)
+    page.setVisibility('hidden')
+    page.setOnline(false)
+    page.setVisibility('visible')
+    page.setOnline(true)
+    browserWindow.dispatchEvent(new Event('pageshow'))
+    assert.deepEqual(page.requests, [page.originalPath])
+    assert.equal(page.detail.order.value?.status, 'pending_payment')
+    assert.equal(page.detail.directStatus.value, null)
+  })
+
+  await t.test('a pending Direct payment refresh cannot update a different open order', async (scenario) => {
+    const page = await mountOrderDetail(scenario, true)
+    browserWindow.dispatchEvent(new Event('pageshow'))
+    assert.deepEqual(page.requests, [page.originalPath, page.originalPath])
+    await page.router.push('/orders/ORDER-2')
+    for (let attempt = 0; page.detail.order.value?.order_no !== 'ORDER-2' && attempt < 100; attempt++) await delay(10)
+    page.receivePayment()
+    await delay(10)
+    assert.equal(page.detail.order.value?.order_no, 'ORDER-2')
+    assert.equal(page.detail.order.value?.status, 'canceled')
+    assert.equal(page.detail.directStatus.value, null)
+    assert.deepEqual(page.requests, [page.originalPath, page.originalPath, '/api/v1/orders/ORDER-2'])
   })
 })

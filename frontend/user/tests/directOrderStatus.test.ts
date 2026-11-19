@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { directStatusOrderNo, isDirectOrderFulfillment, parseDirectOrderStatus, startDirectOrderPolling, type DirectOrderStatus } from '../src/utils/directOrderStatus.ts'
+import { directPendingPaymentOrderNo, directStatusOrderNo, isDirectOrderFulfillment, parseDirectOrderStatus, startDirectOrderPolling, type DirectOrderStatus } from '../src/utils/directOrderStatus.ts'
 
 const order = {
   order_no: 'ORDER-1',
@@ -19,6 +19,19 @@ test('polling targets only an eligible direct checkout parent', () => {
   assert.equal(directStatusOrderNo({ ...order, children: [] }), '')
   assert.equal(directStatusOrderNo({ ...order, children: [...order.children, ...order.children] }), '')
   assert.equal(directStatusOrderNo({ ...order, status: 'fulfilling', children: [{ items: [{ fulfillment_type: 'auto' }] }] }), '')
+})
+
+test('only pending Direct parents refresh payment status', () => {
+  const pending = { ...order, status: 'pending_payment' }
+  assert.equal(directPendingPaymentOrderNo(pending), order.order_no)
+  assert.equal(directStatusOrderNo(pending), '')
+  for (const status of ['paid', 'fulfilling', 'canceled', 'completed', 'refunded']) {
+    assert.equal(directPendingPaymentOrderNo({ ...pending, status }), '')
+  }
+  assert.equal(directPendingPaymentOrderNo(null), '')
+  assert.equal(directPendingPaymentOrderNo({ ...pending, children: [] }), '')
+  assert.equal(directPendingPaymentOrderNo({ ...pending, children: [{ items: [{ fulfillment_type: 'auto' }] }] }), '')
+  assert.equal(directPendingPaymentOrderNo({ ...pending, children: [...pending.children, ...pending.children] }), '')
 })
 
 test('manual delivery retains the direct order presentation only for a direct purchase', () => {

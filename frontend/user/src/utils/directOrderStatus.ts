@@ -24,10 +24,18 @@ export function isDirectOrderFulfillment(items?: readonly OrderItemFulfillment[]
   return fulfillmentType === KAFUDA_GPT_DIRECT || (items?.length === 1 && items[0]?.fulfillment_type === KAFUDA_GPT_DIRECT)
 }
 
-export function directStatusOrderNo(order: DirectOrderCandidate | null): string {
-  if (!order?.order_no || !['paid', 'fulfilling', 'completed', 'refunded'].includes(order.status ?? '')) return ''
+function directParentOrderNo(order: DirectOrderCandidate): string {
   const child = order.children?.length === 1 ? order.children[0] : undefined
-  return isDirectOrderFulfillment(child?.items) ? order.order_no : ''
+  return isDirectOrderFulfillment(child?.items) ? order.order_no || '' : ''
+}
+
+export function directPendingPaymentOrderNo(order: DirectOrderCandidate | null): string {
+  return order?.status === 'pending_payment' ? directParentOrderNo(order) : ''
+}
+
+export function directStatusOrderNo(order: DirectOrderCandidate | null): string {
+  if (!order || !['paid', 'fulfilling', 'completed', 'refunded'].includes(order.status ?? '')) return ''
+  return directParentOrderNo(order)
 }
 
 export function parseDirectOrderStatus(input: unknown): DirectOrderStatus | null {

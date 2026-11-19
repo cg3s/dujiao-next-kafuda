@@ -4,12 +4,13 @@ import { useI18n } from 'vue-i18n'
 import { userOrderAPI } from '../api'
 import { ApiRequestError } from '../api/client'
 import { debounceAsync } from '../utils/debounce'
-import { directStatusOrderNo, startDirectOrderPolling, type DirectOrderStatus } from '../utils/directOrderStatus'
+import { directPendingPaymentOrderNo, directStatusOrderNo, startDirectOrderPolling, type DirectOrderStatus } from '../utils/directOrderStatus'
 import { useConfirmDialog } from './useConfirmDialog'
 import { toast } from './useToast'
 import { useOrderDisplayHelpers } from './useOrderDisplayHelpers'
 
 const ORDER_LOAD_RETRY_DELAYS = [2_000, 5_000]
+const DIRECT_PAYMENT_REFRESH_INTERVAL = 10_000
 type OrderLoadMode = 'foreground' | 'retry' | 'sync'
 
 /**
@@ -29,7 +30,9 @@ export function useOrderDetail() {
   const orderNo = computed(() => String(route.params.order_no || '').trim())
   const directStatus = ref<DirectOrderStatus | null>(null)
   const directStatusUnavailable = ref(false)
-  const directOrderNo = computed(() => order.value?.order_no === orderNo.value ? directStatusOrderNo(order.value) : '')
+  const currentOrder = computed(() => order.value?.order_no === orderNo.value ? order.value : null)
+  const directOrderNo = computed(() => directStatusOrderNo(currentOrder.value))
+  const pendingDirectOrderNo = computed(() => directPendingPaymentOrderNo(currentOrder.value))
 
   const helpers = useOrderDisplayHelpers(order)
   const sessionToken = localStorage.getItem('user_token')
@@ -38,6 +41,7 @@ export function useOrderDetail() {
   let disposed = false
   let inFlight: Promise<void> | undefined
   let retryTimer: ReturnType<typeof setTimeout> | undefined
+  let directPaymentTimer: ReturnType<typeof setTimeout> | undefined
   let retries = 0
   let initialAttempted = false
   let retryableFailure = false
@@ -48,10 +52,16 @@ export function useOrderDetail() {
     retryTimer = undefined
   }
 
+  const clearDirectPaymentRefresh = () => {
+    clearTimeout(directPaymentTimer)
+    directPaymentTimer = undefined
+  }
+
   const resetOrderLoad = () => {
     orderRequest++
     inFlight = undefined
     clearInitialRetry()
+    clearDirectPaymentRefresh()
     debouncedLoadOrder.cancel()
     retries = 0
     initialAttempted = false
@@ -160,9 +170,31 @@ export function useOrderDetail() {
     return inFlight
   }
 
+  const canRefreshDirectPayment = (number: string) => !!number && pendingDirectOrderNo.value === number
+    && isCurrentSession() && document.visibilityState === 'visible' && navigator.onLine
+
+  const scheduleDirectPaymentRefresh = (number: string) => {
+    clearDirectPaymentRefresh()
+    if (canRefreshDirectPayment(number)) {
+      directPaymentTimer = setTimeout(() => void refreshDirectPayment(number), DIRECT_PAYMENT_REFRESH_INTERVAL)
+    }
+  }
+
+  const refreshDirectPayment = async (number: string) => {
+    if (pendingDirectOrderNo.value !== number) return
+    clearDirectPaymentRefresh()
+    if (!canRefreshDirectPayment(number)) return
+    await loadOrder('sync')
+    if (canRefreshDirectPayment(number)) scheduleDirectPaymentRefresh(number)
+  }
+
   const handleOrderConnectivity = () => {
     const reconnected = orderOffline.value && navigator.onLine
     orderOffline.value = !navigator.onLine
+    if (pendingDirectOrderNo.value) {
+      void refreshDirectPayment(pendingDirectOrderNo.value)
+      return
+    }
     if (!canLoadInitialOrder()) {
       clearInitialRetry()
       return
@@ -181,6 +213,8 @@ export function useOrderDetail() {
     retries = 0
     return loadOrder()
   }, 300)
+
+  watch(pendingDirectOrderNo, scheduleDirectPaymentRefresh)
 
   watch(directOrderNo, (number, _, onCleanup) => {
     directStatus.value = null
