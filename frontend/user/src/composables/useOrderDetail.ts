@@ -263,7 +263,14 @@ export function useOrderDetail() {
     if (!confirmed || !isCurrent()) return
     try {
       await userOrderAPI.cancel(number)
-      if (isCurrent()) await debouncedLoadOrder()
+      if (!isCurrent()) return
+      if (pendingDirectOrderNo.value === number) {
+        // A payment refresh started before cancellation may still carry the old status.
+        resetOrderLoad()
+        await refreshDirectPayment(number)
+      } else {
+        await debouncedLoadOrder()
+      }
     } catch {
       if (isCurrent()) toast.error(t('orderDetail.cancelFailed'))
     }

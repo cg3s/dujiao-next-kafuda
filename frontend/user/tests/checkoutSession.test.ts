@@ -271,11 +271,19 @@ test('checkout and order detail keep settlement within the correct browser sessi
     const originalPath = '/api/v1/orders/ORDER-1'
     const requests: string[] = []
     const refreshed = Promise.withResolvers<Response>()
+    let canceled = false
     scenario.mock.method(globalThis, 'fetch', async (input: string, opts: RequestInit) => {
       const path = new URL(input, 'http://shop.test').pathname
       assert.equal(new Headers(opts.headers).get('Authorization'), 'Bearer initial-buyer-test-token')
       requests.push(path)
-      if (path === originalPath) return requests.length === 1 ? response(order) : refreshed.promise
+      if (path === `${originalPath}/cancel`) {
+        canceled = true
+        return response(null)
+      }
+      if (path === originalPath) {
+        if (canceled) return response({ ...order, status: 'canceled' })
+        return requests.length === 1 ? response(order) : refreshed.promise
+      }
       if (path === `${originalPath}/direct-status`) return response({ stage: 'waiting_session', updated_at: '2026-11-18T08:00:00Z' })
       if (path === '/api/v1/orders/ORDER-2') return response({ ...order, order_no: 'ORDER-2', status: 'canceled' })
       assert.fail(`Unexpected order detail request: ${path}`)
@@ -332,6 +340,25 @@ test('checkout and order detail keep settlement within the correct browser sessi
     assert.deepEqual(page.requests, [page.originalPath])
     assert.equal(page.detail.order.value?.status, 'pending_payment')
     assert.equal(page.detail.directStatus.value, null)
+  })
+
+  await t.test('canceling a Direct order supersedes a pending payment refresh', async (scenario) => {
+    const page = await mountOrderDetail(scenario, true)
+    const { useConfirmDialog } = await vite.ssrLoadModule('/src/composables/useConfirmDialog.ts')
+    browserWindow.dispatchEvent(new Event('pageshow'))
+    assert.deepEqual(page.requests, [page.originalPath, page.originalPath])
+    const canceled = page.detail.cancelOrder()
+    useConfirmDialog().handleConfirm()
+    try {
+      for (let attempt = 0; page.detail.order.value?.status !== 'canceled' && attempt < 100; attempt++) await delay(10)
+      assert.equal(page.detail.order.value?.status, 'canceled')
+    } finally {
+      page.receivePayment()
+      await canceled
+    }
+    await delay(10)
+    assert.equal(page.detail.order.value?.status, 'canceled')
+    assert.deepEqual(page.requests, [page.originalPath, page.originalPath, `${page.originalPath}/cancel`, page.originalPath])
   })
 
   await t.test('a pending Direct payment refresh cannot update a different open order', async (scenario) => {
