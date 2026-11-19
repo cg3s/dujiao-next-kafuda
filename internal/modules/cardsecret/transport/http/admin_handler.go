@@ -323,8 +323,6 @@ func (h *AdminHandler) UpdateCardSecret(c *gin.Context) {
 		switch {
 		case errors.Is(err, cardsecretapp.ErrNotFound):
 			ginutil.RespondError(c, response.CodeNotFound, "error.card_secret_not_found", nil)
-		case errors.Is(err, cardsecretapp.ErrOrderReservation):
-			ginutil.RespondError(c, response.CodeBadRequest, "error.card_secret_reserved", nil)
 		case errors.Is(err, cardsecretapp.ErrInvalid):
 			ginutil.RespondError(c, response.CodeBadRequest, "error.card_secret_invalid", nil)
 		case errors.Is(err, cardsecretapp.ErrUpdateFailed):

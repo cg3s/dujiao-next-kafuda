@@ -258,13 +258,8 @@ func (r *Store) GetByID(id uint) (*cardsecretdomain.Secret, error) {
 	return &secret, nil
 }
 
-const withoutOrderReservation = "(status <> ? OR order_id IS NULL OR order_id = 0)"
-
 // Update updates only the supplied secret and status values.
 func (r *Store) Update(secret *cardsecretdomain.Secret) error {
-	query := r.db.Model(&cardsecretdomain.Secret{}).
-		Where("id = ? AND deleted_at IS NULL", secret.ID).
-		Where(withoutOrderReservation, cardsecretdomain.StatusReserved)
 	fields := map[string]interface{}{"updated_at": secret.UpdatedAt}
 	if secret.Secret != "" {
 		fields["secret"] = secret.Secret
@@ -272,18 +267,13 @@ func (r *Store) Update(secret *cardsecretdomain.Secret) error {
 	if secret.Status != "" {
 		fields["status"] = secret.Status
 	}
-	result := query.Updates(fields)
-	if result.Error != nil || result.RowsAffected != 0 {
-		return result.Error
+	result := r.db.Model(&cardsecretdomain.Secret{}).
+		Where("id = ? AND deleted_at IS NULL", secret.ID).
+		Updates(fields)
+	if result.Error == nil && result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
 	}
-	current, err := r.GetByID(secret.ID)
-	if err != nil {
-		return err
-	}
-	if current == nil {
-		return errors.Join(cardsecretcontract.ErrNotFound, gorm.ErrRecordNotFound)
-	}
-	return cardsecretcontract.ErrOrderReservation
+	return result.Error
 }
 
 // BatchUpdateStatus 批量更新卡密状态
@@ -296,7 +286,6 @@ func (r *Store) BatchUpdateStatus(ids []uint, status string, updatedAt time.Time
 	}
 	result := r.db.Model(&cardsecretdomain.Secret{}).
 		Where("id IN ? AND deleted_at IS NULL", ids).
-		Where(withoutOrderReservation, cardsecretdomain.StatusReserved).
 		Updates(map[string]interface{}{
 			"status":     status,
 			"updated_at": updatedAt,
@@ -312,7 +301,6 @@ func (r *Store) BatchDeleteByIDs(ids []uint) (int64, error) {
 	now := time.Now()
 	result := r.db.Model(&cardsecretdomain.Secret{}).
 		Where("id IN ? AND deleted_at IS NULL", ids).
-		Where(withoutOrderReservation, cardsecretdomain.StatusReserved).
 		Updates(map[string]interface{}{"deleted_at": now, "updated_at": now})
 	return result.RowsAffected, result.Error
 }

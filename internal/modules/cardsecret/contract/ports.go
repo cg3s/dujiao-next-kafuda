@@ -1,16 +1,10 @@
 package contract
 
 import (
-	"errors"
 	"time"
 
 	cardsecretdomain "github.com/dujiao-next/internal/modules/cardsecret/domain"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
-)
-
-var (
-	ErrNotFound         = errors.New("not found")
-	ErrOrderReservation = errors.New("card secret reserved by an order")
 )
 
 // Repository 持久化卡密库存并提供订单占用所需的原子状态迁移。
@@ -26,9 +20,7 @@ type Repository interface {
 	ListAvailableByProductForUpdate(productID, skuID uint, limit int) ([]cardsecretdomain.Secret, error)
 	ListAvailableByProductBatchForUpdate(productID, skuID, batchID uint, limit int) ([]cardsecretdomain.Secret, error)
 	GetByID(id uint) (*cardsecretdomain.Secret, error)
-	// Update returns ErrNotFound for a missing card or ErrOrderReservation for a card reserved by an order.
 	Update(secret *cardsecretdomain.Secret) error
-	// BatchUpdateStatus and BatchDeleteByIDs skip order-reserved cards and return the affected row count.
 	BatchUpdateStatus(ids []uint, status string, updatedAt time.Time) (int64, error)
 	BatchDeleteByIDs(ids []uint) (int64, error)
 	CountByProduct(productID, skuID uint) (int64, int64, int64, error)
