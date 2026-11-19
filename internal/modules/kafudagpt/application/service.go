@@ -307,12 +307,19 @@ func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll ti
 			if !nextPoll.After(now) {
 				return kafudadomain.ErrInvalidTransition
 			}
-			// A slow response cannot supersede an update made after the lookup began.
-			if startedAt.Before(attempt.UpdatedAt) {
+			// Local recovery can move an unidentified submission to review before the
+			// first supplier response arrives. That response can still bind its ID.
+			firstIdentityAfterRecovery := attempt.UpstreamOrderID == nil && attempt.Status == kafudadomain.AttemptReview &&
+				record.Stage == kafudadomain.StageManualReview && record.ReasonCode == "outcome_unknown"
+			if startedAt.Before(attempt.UpdatedAt) && !firstIdentityAfterRecovery {
 				return kafudadomain.ErrConflict
 			}
-		} else if now.Before(attempt.UpdatedAt) {
-			// An authoritative terminal result may arrive after a newer poll.
+			if now.Before(attempt.UpdatedAt) {
+				nextPoll = attempt.UpdatedAt.Add(nextPoll.Sub(now))
+			}
+		}
+		if now.Before(attempt.UpdatedAt) {
+			// Keep timestamps monotonic for accepted late results.
 			now = attempt.UpdatedAt
 		}
 		attempt.UpstreamOrderID, attempt.Status, attempt.UpdatedAt = &result.ID, next, now

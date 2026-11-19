@@ -50,13 +50,15 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 		}
 		return false, errors.Join(interrupted, records.InterruptUndispatchedSubmission(recoveryCtx, attempt.ID, request.QuoteID, request.Reference, checkedAt))
 	}
+	requestStarted := time.Now()
 	result, err := gateway.CreateOrder(submitCtx, request)
 	cancelSubmit()
 	var rejectionReason string
 	switch {
 	case err == nil && result != nil:
-		observedAt := time.Now().UTC()
-		completed, applyErr := ApplyResult(orders, attempt.OrderID, attempt.ID, *result, observedAt, observedAt, pollInterval)
+		startedAt := requestStarted.UTC()
+		receivedAt := startedAt.Add(time.Since(requestStarted))
+		completed, applyErr := ApplyResult(orders, attempt.OrderID, attempt.ID, *result, startedAt, receivedAt, pollInterval)
 		if applyErr == nil {
 			return completed, nil
 		}

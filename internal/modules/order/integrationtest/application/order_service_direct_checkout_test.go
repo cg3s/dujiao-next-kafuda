@@ -598,6 +598,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 		synctest.Test(t, func(t *testing.T) { testDirectQuoteExpiresBeforeDispatch(t, newFixture(t), true) })
 	})
 	t.Run("cancelled_submission", func(t *testing.T) { testDirectSubmitCancellation(t, newFixture) })
+	t.Run("late_create_response", func(t *testing.T) { testLateDirectCreateResponse(t, newFixture) })
 	for _, scenario := range []struct {
 		name       string
 		stage      kafudadomain.Stage
@@ -1171,6 +1172,185 @@ func testDirectSubmitCancellation(t *testing.T, newFixture func(*testing.T) dire
 				retry.Attempt.Sequence != attempt.Sequence+1 || retry.Attempt.Reference == reference {
 				t.Fatalf("undispatched submission prevented a new attempt: %+v, %v", retry, err)
 			}
+		})
+	}
+}
+
+func testLateDirectCreateResponse(t *testing.T, newFixture func(*testing.T) directCheckoutFixture) {
+	t.Helper()
+	for _, scenario := range []struct {
+		name                string
+		reportedStatus      kafudadomain.AttemptStatus
+		recoverAfterReceipt bool
+		reconcile           bool
+		wantError           error
+	}{
+		{name: "first_supplier_id", reportedStatus: kafudadomain.AttemptSubmitting},
+		{name: "response_received_before_recovery", reportedStatus: kafudadomain.AttemptSubmitting, recoverAfterReceipt: true},
+		{name: "stale_processing", reportedStatus: kafudadomain.AttemptProcessing, reconcile: true, wantError: kafudadomain.ErrConflict},
+		{name: "late_completion", reportedStatus: kafudadomain.AttemptCompleted, reconcile: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newFixture(t)
+				if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+					t.Fatal(err)
+				}
+				order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, paidAt := t.Context(), time.Now().UTC()
+				childID := order.Children[0].ID
+				if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
+					Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": paidAt}).Error; err != nil {
+					t.Fatal(err)
+				}
+				reservation, err := kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, ordercontract.TenantScope{}, order.OrderNo, order.UserID, paidAt, paidAt.Add(time.Minute))
+				if err != nil {
+					t.Fatal(err)
+				}
+				attemptID, reference := reservation.Attempt.ID, reservation.Attempt.Reference
+				const quoteID = "quote_late_create"
+				const upstreamID = uint64(100)
+				const submissionPollInterval = 10 * time.Second
+				const lookupPollInterval = 30 * time.Second
+				check := kafudacontract.CheckResult{Country: "PH", PayMode: "auto_card", Plans: []kafudacontract.Quote{{
+					Plan: "plus", Status: "available", Kind: "new", QuoteID: quoteID, ExpiresAt: paidAt.Add(2 * time.Minute), PriceCents: 900,
+					AutoCard: &kafudacontract.AutoCard{ProductCode: "checkout-card", LoadCents: 100, TotalCents: 1000},
+				}}}
+				records := kafudaapp.New(f.store)
+				store := &directSubmitStore{Store: f.options.OrderStore, afterCommit: func() { time.Sleep(45 * time.Second) }}
+				createCharge, lookupCharge := int64(900), int64(1000)
+				createRenewalCancelled, lookupRenewalCancelled := false, true
+				createResult := kafudacontract.OrderResult{ID: upstreamID, Reference: reference, Product: "gpt", Plan: "plus", Country: "PH",
+					Status: string(scenario.reportedStatus), MaskedEmail: "a***@***", ChargedUSDCents: &createCharge, RenewalCancelled: &createRenewalCancelled}
+				lookupResult := kafudacontract.OrderResult{ID: upstreamID, Reference: reference, Product: "gpt", Plan: "plus", Country: "PH",
+					Status: string(kafudadomain.AttemptProcessing), MaskedEmail: "b***@***", ChargedUSDCents: &lookupCharge, RenewalCancelled: &lookupRenewalCancelled}
+				terminal := lookupResult
+				terminal.Status = string(kafudadomain.AttemptCompleted)
+				verificationGateway := directCreateGateway{get: func(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+					if id != upstreamID {
+						t.Fatalf("lookup supplier ID = %d, want %d", id, upstreamID)
+					}
+					return &lookupResult, nil
+				}}
+				loadState := func() (*kafudadomain.Attempt, *kafudadomain.Recharge) {
+					t.Helper()
+					attempt, err := f.store.GetAttempt(ctx, attemptID)
+					if err != nil || attempt == nil {
+						t.Fatalf("load attempt: %+v, %v", attempt, err)
+					}
+					recharge, err := f.store.GetRecharge(ctx, childID)
+					if err != nil || recharge == nil || recharge.CurrentAttemptID == nil || *recharge.CurrentAttemptID != attemptID {
+						t.Fatalf("load recharge: %+v, %v", recharge, err)
+					}
+					return attempt, recharge
+				}
+				var verifiedAttempt *kafudadomain.Attempt
+				var verifiedRecharge *kafudadomain.Recharge
+				var receivedAt, recoveredAt time.Time
+				createCalls := 0
+				gateway := directCreateGateway{create: func(submitCtx context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
+					createCalls++
+					attempt, _ := loadState()
+					if req.Reference != reference || req.QuoteID != quoteID || attempt.NextPollAt == nil || attempt.Status != kafudadomain.AttemptSubmitting {
+						t.Fatalf("create started without a committed submission: %+v, request=%+v", attempt, req)
+					}
+					recoverSubmission := func() {
+						time.Sleep(time.Until(*attempt.NextPollAt))
+						recovery := kafudaworkflow.WithShopOrderTransitions(records, store)
+						if err := recovery.RecoverUnidentifiedSubmissions(ctx, time.Now().UTC(), 1); err != nil {
+							t.Fatal(err)
+						}
+						recovered, review := loadState()
+						if recovered.UpstreamOrderID != nil || recovered.Status != kafudadomain.AttemptReview ||
+							review.Stage != kafudadomain.StageManualReview || review.ReasonCode != "outcome_unknown" {
+							t.Fatalf("attempt did not enter unknown outcome review: attempt=%+v recharge=%+v", recovered, review)
+						}
+						recoveredAt = recovered.UpdatedAt
+					}
+					if scenario.recoverAfterReceipt {
+						// Run lease recovery after the response arrives and before it is applied.
+						store.beforeTransaction = recoverSubmission
+					} else {
+						recoverSubmission()
+						time.Sleep(time.Second)
+					}
+					if scenario.reconcile {
+						if completed, err := kafudaworkflow.ReconcileUnknownOrder(ctx, store, verificationGateway, childID, attemptID, upstreamID, lookupPollInterval); err != nil || completed {
+							t.Fatalf("verify supplier order while create waits: completed=%t, err=%v", completed, err)
+						}
+						verifiedAttempt, verifiedRecharge = loadState()
+						if verifiedAttempt.Status != kafudadomain.AttemptProcessing || verifiedAttempt.MaskedEmail != lookupResult.MaskedEmail ||
+							verifiedAttempt.ChargedUSDCents == nil || *verifiedAttempt.ChargedUSDCents != lookupCharge ||
+							verifiedAttempt.RenewalCancelled == nil || !*verifiedAttempt.RenewalCancelled {
+							t.Fatalf("newer lookup did not persist its supplier observations: %+v", verifiedAttempt)
+						}
+						time.Sleep(time.Second)
+					}
+					if err := submitCtx.Err(); err != nil {
+						t.Fatalf("create context ended before its response: %v", err)
+					}
+					receivedAt = time.Now().UTC()
+					return &createResult, nil
+				}}
+				completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, store, records, gateway, reservation, check, submissionPollInterval)
+				wantCompleted := scenario.reportedStatus == kafudadomain.AttemptCompleted
+				if createCalls != 1 || completed != wantCompleted || !errors.Is(err, scenario.wantError) {
+					t.Fatalf("apply delayed create response: calls=%d, completed=%t, err=%v", createCalls, completed, err)
+				}
+				attempt, recharge := loadState()
+				if attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID != upstreamID || attempt.Reference != reference || attempt.QuoteID != quoteID {
+					t.Fatalf("late create changed supplier order identity: %+v", attempt)
+				}
+				if !completed {
+					if recharge.Stage != kafudadomain.StageManualReview || recharge.ReasonCode != "outcome_unknown" ||
+						attempt.ActiveOrderID == nil || *attempt.ActiveOrderID != childID || attempt.NextPollAt == nil {
+						t.Fatalf("late create removed active review: attempt=%+v recharge=%+v", attempt, recharge)
+					}
+					if scenario.reconcile {
+						if !reflect.DeepEqual(attempt, verifiedAttempt) || !reflect.DeepEqual(recharge, verifiedRecharge) {
+							t.Fatalf("stale create replaced newer lookup: attempt=%+v recharge=%+v", attempt, recharge)
+						}
+					} else if attempt.Status != kafudadomain.AttemptReview || !attempt.NextPollAt.Equal(attempt.UpdatedAt.Add(submissionPollInterval)) ||
+						!attempt.NextPollAt.After(time.Now()) {
+						t.Fatalf("first supplier ID did not schedule follow-up: %+v", attempt)
+					}
+					if scenario.recoverAfterReceipt && (!receivedAt.Before(recoveredAt) || !attempt.UpdatedAt.Equal(recoveredAt) || !recharge.UpdatedAt.Equal(recoveredAt)) {
+						t.Fatalf("first supplier ID did not retain newer recovery time: received=%s, recovered=%s, attempt=%s, recharge=%s",
+							receivedAt, recoveredAt, attempt.UpdatedAt, recharge.UpdatedAt)
+					}
+					assertDirectShopOrderStatus(t, store, order, constants.OrderStatusFulfilling, paidAt)
+					lookupAt := *attempt.NextPollAt
+					pollGateway := directCreateGateway{get: func(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+						if id != upstreamID {
+							t.Fatalf("scheduled lookup supplier ID = %d, want %d", id, upstreamID)
+						}
+						return &terminal, nil
+					}}
+					result, err := records.PollKnownOrder(ctx, ctx, pollGateway, attemptID, lookupAt, lookupAt.Add(time.Minute), 0)
+					if err != nil || result == nil {
+						t.Fatalf("poll after late create: %+v, %v", result, err)
+					}
+					if completed, err = kafudaworkflow.ApplyResult(store, childID, attemptID, *result, lookupAt, lookupAt, submissionPollInterval); err != nil || !completed {
+						t.Fatalf("apply completion after late create: completed=%t, err=%v", completed, err)
+					}
+				}
+				finished, recharge := loadState()
+				if finished.Status != kafudadomain.AttemptCompleted || recharge.Stage != kafudadomain.StageCompleted || recharge.CompletedAt == nil ||
+					finished.ActiveOrderID != nil || finished.NextPollAt != nil {
+					t.Fatalf("late supplier completion did not settle the attempt: attempt=%+v recharge=%+v", finished, recharge)
+				}
+				if replayed, err := kafudaworkflow.ApplyResult(store, childID, attemptID, terminal, finished.UpdatedAt, finished.UpdatedAt, submissionPollInterval); err != nil || replayed {
+					t.Fatalf("late supplier completion replay: completed=%t, err=%v", replayed, err)
+				}
+				assertDirectShopOrderStatus(t, store, order, constants.OrderStatusCompleted, paidAt)
+				var deliveries int64
+				if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&deliveries).Error; err != nil || deliveries != 1 {
+					t.Fatalf("late supplier completion created %d deliveries, err=%v", deliveries, err)
+				}
+			})
 		})
 	}
 }
