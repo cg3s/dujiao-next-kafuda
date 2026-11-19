@@ -1674,6 +1674,7 @@
     "subtitle": "Check order status and fulfillment",
     "notFound": "Order not found or deleted",
     "offline": "You’re offline. The order will reload when you reconnect.",
+    "loadFailed": "The order could not be loaded right now.",
     "payNow": "Pay now",
     "cancel": "Cancel order",
     "cancelConfirm": "Confirm cancel this order?",

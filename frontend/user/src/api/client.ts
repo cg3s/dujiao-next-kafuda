@@ -16,6 +16,20 @@ export interface ApiResponse<T = any> {
     }
 }
 
+type ApiRequestErrorKind = 'network' | 'timeout' | 'http' | 'business' | 'invalid-response'
+
+export class ApiRequestError extends Error {
+    declare silentBusinessError?: boolean
+    readonly kind: ApiRequestErrorKind
+    readonly status: number | undefined
+
+    constructor(message: string, kind: ApiRequestErrorKind, status?: number) {
+        super(message)
+        this.kind = kind
+        this.status = status
+    }
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 const API_PREFIX = '/api/v1'
 
@@ -119,11 +133,11 @@ function createClient(injectAuth: boolean) {
             if (err.name === 'AbortError') {
                 const message = t('common.api.timeout')
                 console.error('Request Timeout:', message)
-                return Promise.reject(new Error(message))
+                return Promise.reject(new ApiRequestError(message, 'timeout'))
             }
             const message = t('common.api.networkError')
             console.error('Network Error:', message)
-            return Promise.reject(new Error(message))
+            return Promise.reject(new ApiRequestError(message, 'network'))
         } finally {
             clearTimeout(timer)
         }
@@ -133,7 +147,7 @@ function createClient(injectAuth: boolean) {
             if (!response.ok) {
                 const message = getHttpErrorMessage(response.status)
                 console.error('HTTP Error:', message)
-                return Promise.reject(new Error(message))
+                return Promise.reject(new ApiRequestError(message, 'http', response.status))
             }
             const blob = await response.blob()
             return { data: blob }
@@ -149,10 +163,10 @@ function createClient(injectAuth: boolean) {
                 const message = getHttpErrorMessage(status)
                 if (status === 401) expireUserAuth()
                 console.error('HTTP Error:', message)
-                return Promise.reject(new Error(message))
+                return Promise.reject(new ApiRequestError(message, 'http', status))
             }
             console.error('API Error: No response data')
-            return Promise.reject(new Error(t('common.api.responseMissing')))
+            return Promise.reject(new ApiRequestError(t('common.api.responseMissing'), 'invalid-response'))
         }
 
         // HTTP error with JSON body
@@ -161,13 +175,13 @@ function createClient(injectAuth: boolean) {
             const message = data?.msg || getHttpErrorMessage(status)
             if (status === 401) expireUserAuth()
             console.error('HTTP Error:', message)
-            return Promise.reject(new Error(message))
+            return Promise.reject(new ApiRequestError(message, 'http', status))
         }
 
         // Business error check
         if (typeof data.status_code !== 'undefined' && data.status_code !== 0) {
             if (data.status_code === 401 && expireUserAuth()) {
-                return Promise.reject(new Error(t('common.api.unauthorized')))
+                return Promise.reject(new ApiRequestError(t('common.api.unauthorized'), 'business', data.status_code))
             }
             const fallbackMessage = t('common.api.requestFailed')
             const errorMessage = data.msg || fallbackMessage
@@ -175,7 +189,8 @@ function createClient(injectAuth: boolean) {
             if (!silentBusinessError) {
                 console.error('API Error:', errorMessage)
             }
-            const businessError = new Error(errorMessage) as Error & { silentBusinessError?: boolean }
+            const status = typeof data.status_code === 'number' ? data.status_code : undefined
+            const businessError = new ApiRequestError(errorMessage, 'business', status)
             businessError.silentBusinessError = silentBusinessError
             return Promise.reject(businessError)
         }

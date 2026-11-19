@@ -1603,6 +1603,7 @@
     "subtitle": "查看订单状态与交付信息",
     "notFound": "订单不存在或已被删除",
     "offline": "网络已断开，联网后将自动重试。",
+    "loadFailed": "暂时无法加载订单。",
     "payNow": "去支付",
     "cancel": "取消订单",
     "cancelConfirm": "确认取消该订单？",

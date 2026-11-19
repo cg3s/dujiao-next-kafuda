@@ -47,7 +47,7 @@
       <EmptyState
         v-else-if="!order"
         icon="alert"
-        :title="t(orderOffline ? 'orderDetail.offline' : 'orderDetail.notFound')"
+        :title="t(orderOffline ? 'orderDetail.offline' : orderLoadFailed ? 'orderDetail.loadFailed' : 'orderDetail.notFound')"
         :action-label="orderOffline ? undefined : t('errorBoundary.retry')"
         @action="debouncedLoadOrder()"
       />
@@ -454,7 +454,7 @@ import DirectOrderStatus from '../components/DirectOrderStatus.vue'
 const { t } = useI18n()
 
 const {
-  loading, order, orderOffline, debouncedLoadOrder, cancelOrder,
+  loading, order, orderOffline, orderLoadFailed, debouncedLoadOrder, cancelOrder,
   statusLabel, statusVariant, fulfillmentTypeLabelText, fulfillmentStatusLabelText,
   formatDate, getLocalizedText, formatMoney, formatDiscountMoney, hasDiscountAmount, hasAmount,
   refundReasonText, showRefundRecordsCard, refundRecords, showTimeCard,

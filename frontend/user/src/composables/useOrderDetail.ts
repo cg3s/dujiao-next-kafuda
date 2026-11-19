@@ -2,11 +2,15 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { userOrderAPI } from '../api'
+import { ApiRequestError } from '../api/client'
 import { debounceAsync } from '../utils/debounce'
 import { directStatusOrderNo, startDirectOrderPolling, type DirectOrderStatus } from '../utils/directOrderStatus'
 import { useConfirmDialog } from './useConfirmDialog'
 import { toast } from './useToast'
 import { useOrderDisplayHelpers } from './useOrderDisplayHelpers'
+
+const ORDER_LOAD_RETRY_DELAYS = [2_000, 5_000]
+type OrderLoadMode = 'foreground' | 'retry' | 'sync'
 
 /**
  * 已登录用户订单详情逻辑（classic + vault 共用）。
@@ -20,6 +24,7 @@ export function useOrderDetail() {
   const loading = ref(true)
   const order = ref<any>(null)
   const orderOffline = ref(!navigator.onLine)
+  const orderLoadFailed = ref(false)
   const fulfillmentDownloading = ref(false)
   const orderNo = computed(() => String(route.params.order_no || '').trim())
   const directStatus = ref<DirectOrderStatus | null>(null)
@@ -30,12 +35,34 @@ export function useOrderDetail() {
   const sessionToken = localStorage.getItem('user_token')
   let orderRequest = 0
   let reloading = false
-  const isCurrentSession = () => !reloading && localStorage.getItem('user_token') === sessionToken
+  let disposed = false
+  let inFlight: Promise<void> | undefined
+  let retryTimer: ReturnType<typeof setTimeout> | undefined
+  let retries = 0
+  let initialAttempted = false
+  let retryableFailure = false
+  const isCurrentSession = () => !disposed && !reloading && localStorage.getItem('user_token') === sessionToken
+
+  const clearInitialRetry = () => {
+    clearTimeout(retryTimer)
+    retryTimer = undefined
+  }
+
+  const resetOrderLoad = () => {
+    orderRequest++
+    inFlight = undefined
+    clearInitialRetry()
+    debouncedLoadOrder.cancel()
+    retries = 0
+    initialAttempted = false
+    retryableFailure = false
+    orderLoadFailed.value = false
+  }
 
   const checkStoredSession = () => {
     if (reloading || isCurrentSession()) return
     reloading = true
-    orderRequest++
+    resetOrderLoad()
     order.value = null
     directStatus.value = null
     directStatusUnavailable.value = false
@@ -67,33 +94,82 @@ export function useOrderDetail() {
     }
   }
 
-  const loadOrder = async (showLoading = true) => {
-    if (!isCurrentSession()) return
-    const request = ++orderRequest
+  const canLoadInitialOrder = () => isCurrentSession() && !!orderNo.value && !order.value && !inFlight
+    && document.visibilityState === 'visible' && navigator.onLine
+
+  const canRetryInitialOrder = () => canLoadInitialOrder() && retryableFailure && retries < ORDER_LOAD_RETRY_DELAYS.length
+
+  const retryInitialOrder = (): void => {
+    clearInitialRetry()
+    if (!canRetryInitialOrder()) return
+    retries++
+    void loadOrder('retry')
+  }
+
+  const scheduleInitialRetry = (): void => {
+    if (retryTimer !== undefined || !canRetryInitialOrder()) return
+    retryTimer = setTimeout(retryInitialOrder, ORDER_LOAD_RETRY_DELAYS[retries])
+  }
+
+  const loadOrder = async (mode: OrderLoadMode = 'foreground'): Promise<void> => {
+    if (!isCurrentSession() || !orderNo.value) return
+    if (inFlight) return inFlight
     const number = orderNo.value
-    const isCurrent = () => isCurrentSession() && request === orderRequest && number === orderNo.value
-    if (order.value?.order_no !== number) order.value = null
     orderOffline.value = !navigator.onLine
     if (orderOffline.value) {
       loading.value = false
       return
     }
-    if (showLoading) loading.value = true
-    try {
-      const response = await userOrderAPI.detail(number, { silentBusinessError: !showLoading })
-      if (isCurrent()) order.value = response.data.data
-    } catch {
-      if (showLoading && isCurrent()) order.value = null
-    } finally {
-      if (isCurrent()) loading.value = false
-    }
+    const request = ++orderRequest
+    const isCurrent = () => isCurrentSession() && request === orderRequest && number === orderNo.value
+    clearInitialRetry()
+    initialAttempted = true
+    if (mode === 'foreground') loading.value = true
+    inFlight = (async () => {
+      try {
+        const response = await userOrderAPI.detail(number, { silentBusinessError: mode !== 'foreground' })
+        if (!isCurrent()) return
+        if (response.data.data?.order_no !== number) {
+          if (mode !== 'sync') {
+            order.value = null
+            orderLoadFailed.value = true
+            retryableFailure = false
+          }
+          return
+        }
+        order.value = response.data.data
+        orderLoadFailed.value = false
+        retryableFailure = false
+        retries = 0
+      } catch (error) {
+        if (mode === 'sync' || !isCurrent()) return
+        order.value = null
+        orderOffline.value = !navigator.onLine
+        const failure = error instanceof ApiRequestError ? error : undefined
+        const status = failure?.status ?? 0
+        orderLoadFailed.value = status !== 404 && status !== 403
+        retryableFailure = failure?.kind === 'network' || failure?.kind === 'timeout'
+          || status === 408 || (status >= 500 && status < 600)
+      }
+    })().finally(() => {
+      if (!isCurrent()) return
+      inFlight = undefined
+      loading.value = false
+      scheduleInitialRetry()
+    })
+    return inFlight
   }
 
   const handleOrderConnectivity = () => {
-    const offline = !navigator.onLine
-    if (orderOffline.value === offline) return
-    orderOffline.value = offline
-    if (orderNo.value && order.value?.order_no !== orderNo.value) void loadOrder()
+    const reconnected = orderOffline.value && navigator.onLine
+    orderOffline.value = !navigator.onLine
+    if (!canLoadInitialOrder()) {
+      clearInitialRetry()
+      return
+    }
+    if (!initialAttempted) void loadOrder()
+    else if (reconnected) retryInitialOrder()
+    else scheduleInitialRetry()
   }
 
   const handlePageResume = () => {
@@ -101,7 +177,10 @@ export function useOrderDetail() {
     handleOrderConnectivity()
   }
 
-  const debouncedLoadOrder = debounceAsync(loadOrder, 300)
+  const debouncedLoadOrder = debounceAsync(() => {
+    retries = 0
+    return loadOrder()
+  }, 300)
 
   watch(directOrderNo, (number, _, onCleanup) => {
     directStatus.value = null
@@ -118,12 +197,12 @@ export function useOrderDetail() {
         directStatusUnavailable.value = status === null
         if (!status) return
         directStatus.value = status
-        if (status.stage === 'manual_review' && order.value?.status === 'paid') void loadOrder(false)
+        if (status.stage === 'manual_review' && order.value?.status === 'paid') void loadOrder('sync')
       },
       document,
       async (stage) => {
         if (!isCurrentSession() || number !== directOrderNo.value || order.value?.status === stage) return true
-        await loadOrder(false)
+        await loadOrder('sync')
         return !isCurrentSession() || number !== directOrderNo.value || order.value?.status === stage
       },
       { isOnline: () => navigator.onLine, events: window },
@@ -131,8 +210,10 @@ export function useOrderDetail() {
   })
 
   watch(orderNo, (number) => {
+    resetOrderLoad()
+    order.value = null
     if (number) void loadOrder()
-  })
+  }, { flush: 'sync' })
 
   const cancelOrder = async () => {
     const number = order.value?.order_no
@@ -170,19 +251,20 @@ export function useOrderDetail() {
   })
 
   onUnmounted(() => {
+    disposed = true
     window.removeEventListener('storage', handleStoredSessionChange)
     window.removeEventListener('online', handleOrderConnectivity)
     window.removeEventListener('offline', handleOrderConnectivity)
     window.removeEventListener('pageshow', handlePageResume)
     document.removeEventListener('visibilitychange', handlePageResume)
-    orderRequest++
-    debouncedLoadOrder.cancel()
+    resetOrderLoad()
   })
 
   return {
     loading,
     order,
     orderOffline,
+    orderLoadFailed,
     directOrderNo,
     directStatus,
     directStatusUnavailable,

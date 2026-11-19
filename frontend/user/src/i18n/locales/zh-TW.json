@@ -1674,6 +1674,7 @@
     "subtitle": "查看訂單狀態與交付資訊",
     "notFound": "訂單不存在或已被刪除",
     "offline": "網路已中斷，恢復連線後將自動重試。",
+    "loadFailed": "暫時無法載入訂單。",
     "payNow": "去支付",
     "cancel": "取消訂單",
     "cancelConfirm": "確認取消該訂單？",
