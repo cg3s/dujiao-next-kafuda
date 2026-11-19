@@ -41,8 +41,8 @@ func (c Catalog) Revision(plan, country string) uint64 {
 	return c.AvailabilityRevisions[plan+"\x00"+country]
 }
 
-// Preserve revisions even while a pair is absent. Expiry alone does not change
-// supplier availability or invalidate an administrator's approval.
+// Preserve revisions while a pair is absent. Withdrawal and product changes
+// invalidate prior approvals. Expiry alone does not change a revision.
 func (c *Catalog) MergeAvailabilityHistory(previous *Catalog) {
 	c.AvailabilityRevisions = make(map[string]uint64)
 	if previous == nil {
@@ -51,13 +51,16 @@ func (c *Catalog) MergeAvailabilityHistory(previous *Catalog) {
 	for key, revision := range previous.AvailabilityRevisions {
 		c.AvailabilityRevisions[key] = revision
 	}
-	listed := make(map[string]bool, len(c.Options))
+	available := make(map[string]string, len(c.Options))
 	for _, option := range c.Options {
-		listed[option.Plan+"\x00"+option.Country] = c.Enabled && option.Available
+		if c.Enabled && option.Available {
+			available[option.Plan+"\x00"+option.Country] = option.Product
+		}
 	}
 	for _, option := range previous.Options {
 		key := option.Plan + "\x00" + option.Country
-		if previous.Enabled && option.Available && !listed[key] {
+		product, stillAvailable := available[key]
+		if previous.Enabled && option.Available && (!stillAvailable || product != option.Product) {
 			c.AvailabilityRevisions[key]++
 		}
 	}

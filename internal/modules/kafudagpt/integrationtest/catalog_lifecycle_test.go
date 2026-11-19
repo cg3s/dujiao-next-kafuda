@@ -63,6 +63,61 @@ func TestCatalogRemovalRevisionSurvivesConcurrentSyncAndRestart(t *testing.T) {
 	}
 }
 
+func TestCatalogProductChangeRequiresReapproval(t *testing.T) {
+	db, store, _ := database(t)
+	ctx, now := t.Context(), time.Now().UTC()
+	const plan, country = "plus", "PH"
+	initial := kafudadomain.Catalog{
+		Profile: "default", Enabled: true, SyncedAt: now, ExpiresAt: now.Add(time.Hour),
+		Options: []kafudadomain.CatalogOption{
+			{Plan: plan, Country: country, Product: "gpt", Label: "Plus", Available: true},
+			{Plan: "go", Country: country, Product: "gpt", Label: "Go", Available: true},
+		},
+		Cards: []kafudadomain.CardProduct{{ProductCode: "checkout-card"}},
+	}
+	if err := store.SaveCatalog(ctx, &initial); err != nil {
+		t.Fatal(err)
+	}
+	commerce := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+		Catalog:      kafudaapp.NewCatalogService(kafudastore.New(db), nil, initial.Profile, time.Hour),
+		SalesEnabled: true, ReferenceLookupVerified: true, ProductCode: "checkout-card", MaxCostCents: 2500,
+		AllowedKinds: []string{"new"}, WorkerReady: func(context.Context) bool { return true },
+	})
+	assertTerms := func(plan, product string, revision uint64) {
+		t.Helper()
+		terms, err := commerce.PurchaseTerms(ctx, plan, country, revision)
+		if err != nil || terms == nil || terms.Product != product {
+			t.Fatalf("purchase terms for %s revision %d = %+v, %v; want %s", plan, revision, terms, err, product)
+		}
+	}
+	assertTerms(plan, "gpt", 0)
+	for index, change := range []struct {
+		product, label string
+		revision       uint64
+	}{
+		{product: "gpt_credits", label: "Credits", revision: 1},
+		{product: "gpt_credits", label: "Credits updated", revision: 1},
+		{product: "gpt", label: "Plus", revision: 2},
+	} {
+		snapshot := initial
+		snapshot.SyncedAt = now.Add(time.Duration(index+1) * time.Second)
+		snapshot.Options = append([]kafudadomain.CatalogOption(nil), initial.Options...)
+		snapshot.Options[0].Product, snapshot.Options[0].Label = change.product, change.label
+		if err := store.SaveCatalog(ctx, &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		current, err := store.GetCatalog(ctx, initial.Profile)
+		if err != nil || current == nil || current.Revision(plan, country) != change.revision || current.Revision("go", country) != 0 {
+			t.Fatalf("refresh %d did not preserve the expected review revisions: %+v, %v", index, current, err)
+		}
+		if terms, err := commerce.PurchaseTerms(ctx, plan, country, change.revision-1); terms != nil || !errors.Is(err, kafudaapp.ErrQuoteUnavailable) {
+			t.Fatalf("old approval issued terms after a product change: %+v, %v", terms, err)
+		}
+		assertTerms(plan, change.product, change.revision)
+		assertTerms("go", "gpt", 0)
+	}
+}
+
 type failingCatalogGateway struct {
 	kafudacontract.Gateway
 	data json.RawMessage
