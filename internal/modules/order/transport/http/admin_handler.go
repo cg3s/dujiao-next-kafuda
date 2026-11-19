@@ -2,8 +2,11 @@ package orderhttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +26,7 @@ import (
 	"github.com/dujiao-next/internal/shared/money"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
 var (
@@ -211,8 +215,7 @@ func (h *AdminHandler) AdminReconcileDirect(c *gin.Context) {
 		AttemptID  uint   `json:"attempt_id" binding:"required"`
 		UpstreamID string `json:"upstream_order_id" binding:"required"`
 	}
-	if err := c.ShouldBindJSON(&input); err != nil {
-		ginutil.RespondBindError(c, err)
+	if !bindAdminActionJSON(c, &input, true) {
 		return
 	}
 	upstreamID, err := strconv.ParseUint(input.UpstreamID, 10, 64)
@@ -237,11 +240,38 @@ func (h *AdminHandler) applyDirectManualAction(c *gin.Context, action func(child
 		AttemptID uint `json:"attempt_id" binding:"required"`
 		Confirmed bool `json:"confirmed" binding:"required"`
 	}
-	if err := c.ShouldBindJSON(&input); err != nil {
-		ginutil.RespondBindError(c, err)
+	if !bindAdminActionJSON(c, &input, true) {
 		return
 	}
 	respondDirectManualAction(c, action(childID, input.AttemptID, adminID, input.Confirmed))
+}
+
+const maxDirectAdminJSONBytes = 16 << 10
+
+func bindAdminActionJSON(c *gin.Context, input any, restricted bool) bool {
+	if !restricted {
+		if err := c.ShouldBindJSON(input); err != nil {
+			ginutil.RespondBindError(c, err)
+			return false
+		}
+		return true
+	}
+
+	// Read the entire bounded body so trailing data also counts against the limit.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxDirectAdminJSONBytes)
+	body, err := io.ReadAll(c.Request.Body)
+	if err == nil {
+		err = json.Unmarshal(body, input)
+	}
+	if err == nil && binding.Validator != nil {
+		err = binding.Validator.ValidateStruct(input)
+	}
+	if err != nil {
+		// Decoding errors may include untrusted input. Return only the local message.
+		ginutil.RespondError(c, response.CodeBadRequest, "error.bad_request", nil)
+		return false
+	}
+	return true
 }
 
 func respondDirectManualAction(c *gin.Context, err error) {

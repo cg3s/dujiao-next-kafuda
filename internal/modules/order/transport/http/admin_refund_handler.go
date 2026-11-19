@@ -219,8 +219,7 @@ func (h *AdminRefundHandler) adminRefundOrderToWallet(c *gin.Context, direct boo
 		return
 	}
 	var req AdminRefundOrderToWalletRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		ginutil.RespondBindError(c, err)
+	if !bindAdminActionJSON(c, &req, direct) {
 		return
 	}
 	var adminID uint
@@ -295,8 +294,7 @@ func (h *AdminRefundHandler) adminManualRefundOrder(c *gin.Context, direct bool)
 		return
 	}
 	var req AdminManualRefundOrderRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		ginutil.RespondBindError(c, err)
+	if !bindAdminActionJSON(c, &req, direct) {
 		return
 	}
 	var adminID uint
