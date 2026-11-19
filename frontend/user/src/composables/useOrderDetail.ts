@@ -26,17 +26,39 @@ export function useOrderDetail() {
   const directOrderNo = computed(() => order.value?.order_no === orderNo.value ? directStatusOrderNo(order.value) : '')
 
   const helpers = useOrderDisplayHelpers(order)
+  const sessionToken = localStorage.getItem('user_token')
+  let orderRequest = 0
+  let reloading = false
+  const isCurrentSession = () => !reloading && localStorage.getItem('user_token') === sessionToken
 
-  const handleDownloadFulfillment = async (orderNo: string) => {
-    if (fulfillmentDownloading.value) return
+  const checkStoredSession = () => {
+    if (reloading || isCurrentSession()) return
+    reloading = true
+    orderRequest++
+    order.value = null
+    directStatus.value = null
+    directStatusUnavailable.value = false
+    loading.value = true
+    // 重新经过路由鉴权，并丢弃旧账号的页面状态。
+    window.location.reload()
+  }
+  const handleStoredSessionChange = (event: StorageEvent) => {
+    if (event.storageArea === localStorage && (event.key === 'user_token' || event.key === null)) {
+      checkStoredSession()
+    }
+  }
+
+  const handleDownloadFulfillment = async (number: string) => {
+    if (fulfillmentDownloading.value || !isCurrentSession()) return
     fulfillmentDownloading.value = true
     try {
-      const res = await userOrderAPI.downloadFulfillment(orderNo)
+      const res = await userOrderAPI.downloadFulfillment(number)
+      if (!isCurrentSession()) return
       const blob = new Blob([res.data], { type: 'text/plain; charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `fulfillment-${orderNo}.txt`
+      a.download = `fulfillment-${number}.txt`
       a.click()
       URL.revokeObjectURL(url)
     } catch {} finally {
@@ -44,18 +66,19 @@ export function useOrderDetail() {
     }
   }
 
-  let orderRequest = 0
   const loadOrder = async (showLoading = true) => {
+    if (!isCurrentSession()) return
     const request = ++orderRequest
     const number = orderNo.value
+    const isCurrent = () => isCurrentSession() && request === orderRequest && number === orderNo.value
     if (showLoading) loading.value = true
     try {
       const response = await userOrderAPI.detail(number, { silentBusinessError: !showLoading })
-      if (request === orderRequest && number === orderNo.value) order.value = response.data.data
+      if (isCurrent()) order.value = response.data.data
     } catch {
-      if (showLoading && request === orderRequest && number === orderNo.value) order.value = null
+      if (showLoading && isCurrent()) order.value = null
     } finally {
-      if (request === orderRequest) loading.value = false
+      if (isCurrent()) loading.value = false
     }
   }
 
@@ -67,11 +90,12 @@ export function useOrderDetail() {
     if (!number) return
     onCleanup(startDirectOrderPolling(
       async () => {
+        if (!isCurrentSession()) return null
         const response = await userOrderAPI.directStatus(number)
         return response.data.data
       },
       (status) => {
-        if (number !== directOrderNo.value) return
+        if (!isCurrentSession() || number !== directOrderNo.value) return
         directStatusUnavailable.value = status === null
         if (!status) return
         directStatus.value = status
@@ -79,9 +103,9 @@ export function useOrderDetail() {
       },
       document,
       async (stage) => {
-        if (number !== directOrderNo.value || order.value?.status === stage) return true
+        if (!isCurrentSession() || number !== directOrderNo.value || order.value?.status === stage) return true
         await loadOrder(false)
-        return number !== directOrderNo.value || order.value?.status === stage
+        return !isCurrentSession() || number !== directOrderNo.value || order.value?.status === stage
       },
     ))
   })
@@ -92,7 +116,8 @@ export function useOrderDetail() {
 
   const cancelOrder = async () => {
     const number = order.value?.order_no
-    if (!number || number !== orderNo.value) return
+    const isCurrent = () => isCurrentSession() && number === orderNo.value
+    if (!number || !isCurrent()) return
     const confirmed = await showConfirm({
       title: t('orderDetail.cancel'),
       message: t('orderDetail.cancelConfirm'),
@@ -100,16 +125,21 @@ export function useOrderDetail() {
       cancelText: t('common.cancel'),
       variant: 'danger',
     })
-    if (!confirmed || number !== orderNo.value) return
+    if (!confirmed || !isCurrent()) return
     try {
       await userOrderAPI.cancel(number)
-      if (number === orderNo.value) await debouncedLoadOrder()
+      if (isCurrent()) await debouncedLoadOrder()
     } catch {
-      toast.error(t('orderDetail.cancelFailed'))
+      if (isCurrent()) toast.error(t('orderDetail.cancelFailed'))
     }
   }
 
   onMounted(() => {
+    window.addEventListener('storage', handleStoredSessionChange)
+    window.addEventListener('pageshow', checkStoredSession)
+    document.addEventListener('visibilitychange', checkStoredSession)
+    checkStoredSession()
+    if (!isCurrentSession()) return
     if (!route.params.order_no) {
       router.push('/me/orders')
       return
@@ -118,6 +148,9 @@ export function useOrderDetail() {
   })
 
   onUnmounted(() => {
+    window.removeEventListener('storage', handleStoredSessionChange)
+    window.removeEventListener('pageshow', checkStoredSession)
+    document.removeEventListener('visibilitychange', checkStoredSession)
     orderRequest++
     debouncedLoadOrder.cancel()
   })
