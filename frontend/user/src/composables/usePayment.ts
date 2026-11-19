@@ -11,6 +11,7 @@ import { copyText } from '../utils/clipboard'
 import { amountToCents, centsToAmount } from '../utils/money'
 import { buildSkuDisplayTextFromSnapshot } from '../utils/sku'
 import {
+  buildMemberPaymentResumePath,
   getCachedPaymentRestorePolicy,
   getPaymentResetPolicy,
   isCustomerSurchargePayment,
@@ -70,6 +71,12 @@ export function usePayment() {
   const orderPaymentChannels = ref<any[]>([])
   const orderPaymentChannelsLoaded = ref(false)
   const orderPaymentChannelsRequestId = ref(0)
+  const sessionToken = localStorage.getItem('user_token')
+  let paymentContextVersion = 0
+  let orderRequestId = 0
+  let walletRequestId = 0
+  let reloading = false
+  let disposed = false
 
   const readRouteQueryValue = (key: string) => readPaymentQueryValue(route.query, key)
   const rechargeBizType = computed(() => readRouteQueryValue('biz_type').toLowerCase())
@@ -89,11 +96,23 @@ export function usePayment() {
   })
   const hasPaymentReturnMarker = computed(() => PAYMENT_RETURN_MARKERS.some(marker => readRouteQueryValue(marker) === '1'))
   const paymentOrderContext = computed(() => `${isGuest.value ? 'guest' : 'member'}:${orderNoQuery.value}`)
+  const capturePaymentContext = () => {
+    const version = paymentContextVersion
+    const context = paymentOrderContext.value
+    return () => !disposed && !reloading && route.name === 'payment' && version === paymentContextVersion
+      && context === paymentOrderContext.value && (isGuest.value || sessionToken === localStorage.getItem('user_token'))
+  }
   let returnedPaymentContext: string | null = null
+  let returnedPaymentMarkers: string[] = []
   // 同步后会清理回跳参数，同一笔订单应继续在商城等待支付确认。
   watch([paymentOrderContext, hasPaymentReturnMarker], ([context, hasMarker]) => {
-    if (hasMarker) returnedPaymentContext = context
-    else if (returnedPaymentContext !== context) returnedPaymentContext = null
+    if (hasMarker) {
+      returnedPaymentContext = context
+      returnedPaymentMarkers = PAYMENT_RETURN_MARKERS.filter(marker => readRouteQueryValue(marker) === '1')
+    } else if (returnedPaymentContext !== context) {
+      returnedPaymentContext = null
+      returnedPaymentMarkers = []
+    }
   }, { immediate: true })
 
   const orderNoResolved = computed(() => {
@@ -262,6 +281,7 @@ export function usePayment() {
   const qrRenderVersion = ref(0)
 
   const renderQRCodeImage = async () => {
+    const isCurrent = capturePaymentContext()
     const qr = qrDisplayContent.value
     const currentVersion = qrRenderVersion.value + 1
     qrRenderVersion.value = currentVersion
@@ -284,10 +304,10 @@ export function usePayment() {
         margin: 1,
         errorCorrectionLevel: 'M',
       })
-      if (currentVersion !== qrRenderVersion.value) return
+      if (!isCurrent() || currentVersion !== qrRenderVersion.value) return
       qrImageUrl.value = dataURL
     } catch (err) {
-      if (currentVersion !== qrRenderVersion.value) return
+      if (!isCurrent() || currentVersion !== qrRenderVersion.value) return
       qrImageUrl.value = ''
     }
   }
@@ -500,6 +520,9 @@ export function usePayment() {
   })
 
   const loadOrderPaymentChannels = async () => {
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent()) return
+    const requestID = ++orderPaymentChannelsRequestId.value
     if (isGuest.value) {
       orderPaymentChannels.value = []
       orderPaymentChannelsLoaded.value = false
@@ -523,18 +546,17 @@ export function usePayment() {
       return
     }
 
-    const requestID = ++orderPaymentChannelsRequestId.value
     try {
       const response = await userOrderAPI.getPaymentChannels({
         order_no: orderNoResolved.value,
         amount,
       })
-      if (requestID !== orderPaymentChannelsRequestId.value) return
+      if (!isCurrent() || requestID !== orderPaymentChannelsRequestId.value) return
       const channels = response.data.data
       orderPaymentChannels.value = Array.isArray(channels) ? channels : []
       orderPaymentChannelsLoaded.value = true
     } catch {
-      if (requestID !== orderPaymentChannelsRequestId.value) return
+      if (!isCurrent() || requestID !== orderPaymentChannelsRequestId.value) return
       orderPaymentChannels.value = []
       orderPaymentChannelsLoaded.value = false
     }
@@ -543,19 +565,26 @@ export function usePayment() {
   const debouncedLoadOrderPaymentChannels = debounceAsync(loadOrderPaymentChannels, 250)
 
   const loadWallet = async () => {
-    if (isGuest.value) return
+    const isSameContext = capturePaymentContext()
+    if (isGuest.value || !isSameContext()) return
+    const requestID = ++walletRequestId
+    const isCurrent = () => isSameContext() && requestID === walletRequestId
     walletLoading.value = true
     try {
       const response = await walletAPI.account()
-      walletBalance.value = String(response.data.data?.balance || '0')
+      if (isCurrent()) walletBalance.value = String(response.data.data?.balance || '0')
     } catch {
-      walletBalance.value = '0'
+      if (isCurrent()) walletBalance.value = '0'
     } finally {
-      walletLoading.value = false
+      if (isCurrent()) walletLoading.value = false
     }
   }
 
   const loadOrder = async (options?: { silent?: boolean }) => {
+    const isSameContext = capturePaymentContext()
+    if (!isSameContext()) return
+    const requestID = ++orderRequestId
+    const isCurrent = () => isSameContext() && requestID === orderRequestId
     const silent = options?.silent && !!order.value
     if (!silent) {
       loading.value = true
@@ -577,6 +606,7 @@ export function usePayment() {
           email: guestAuth.value.email,
           order_password: guestAuth.value.order_password,
         }, { silentBusinessError: true })
+        if (!isCurrent()) return
         order.value = response.data.data
         guestAuthError.value = ''
       } else {
@@ -587,10 +617,11 @@ export function usePayment() {
           return
         }
         const response = await userOrderAPI.detail(orderNoQuery.value, { silentBusinessError: true })
+        if (!isCurrent()) return
         order.value = response.data.data
       }
     } catch (err) {
-      if (!silent) {
+      if (isCurrent() && !silent) {
         order.value = null
         orderPaymentChannels.value = []
         orderPaymentChannelsLoaded.value = false
@@ -600,7 +631,7 @@ export function usePayment() {
       }
     } finally {
       try {
-        if (order.value) {
+        if (isCurrent() && order.value) {
           if (orderCanceled.value) {
             if (!silent) {
               error.value = t('payment.orderCanceled')
@@ -621,9 +652,7 @@ export function usePayment() {
           }
         }
       } finally {
-        if (!silent) {
-          loading.value = false
-        }
+        if (isCurrent()) loading.value = false
       }
     }
   }
@@ -652,7 +681,8 @@ export function usePayment() {
   }
 
   const captureCurrentPayment = async (options?: { silent?: boolean }) => {
-    if (capturing.value || !shouldCaptureCurrentPayment()) return
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent() || capturing.value || !shouldCaptureCurrentPayment()) return
     capturing.value = true
     if (!options?.silent) {
       error.value = ''
@@ -675,20 +705,29 @@ export function usePayment() {
         await paymentAPI.capture(paymentID)
       }
     } catch (err: any) {
-      if (!options?.silent) {
+      if (isCurrent() && !options?.silent) {
         error.value = err?.message || t('payment.captureFailed')
       }
     } finally {
-      capturing.value = false
+      if (isCurrent()) capturing.value = false
     }
   }
 
   const startPolling = () => {
-    if (pollTimer.value) return
-    pollTimer.value = window.setInterval(async () => {
-      await captureCurrentPayment({ silent: true })
-      await debouncedLoadOrder({ silent: true })
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent() || pollTimer.value) return
+    let polling = false
+    const timer = window.setInterval(async () => {
+      if (!isCurrent() || pollTimer.value !== timer || polling) return
+      polling = true
+      try {
+        await captureCurrentPayment({ silent: true })
+        if (isCurrent() && pollTimer.value === timer) await debouncedLoadOrder({ silent: true })
+      } finally {
+        polling = false
+      }
     }, 5000)
+    pollTimer.value = timer
   }
 
   const stopPolling = () => {
@@ -698,9 +737,11 @@ export function usePayment() {
   }
 
   const handleCopyPayLink = async () => {
-    if (!payLink.value) return
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent() || !payLink.value) return
     try {
       await copyText(payLink.value)
+      if (!isCurrent()) return
       copied.value = true
       if (copiedTimer.value) {
         window.clearTimeout(copiedTimer.value)
@@ -710,14 +751,16 @@ export function usePayment() {
         copiedTimer.value = null
       }, 1500)
     } catch (err: any) {
-      error.value = err?.message || t('payment.copyFailed')
+      if (isCurrent()) error.value = err?.message || t('payment.copyFailed')
     }
   }
 
   const handleCopyWalletAddress = async () => {
-    if (!cryptoWalletAddress.value) return
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent() || !cryptoWalletAddress.value) return
     try {
       await copyText(cryptoWalletAddress.value)
+      if (!isCurrent()) return
       walletAddressCopied.value = true
       if (walletAddressCopiedTimer.value) {
         window.clearTimeout(walletAddressCopiedTimer.value)
@@ -727,12 +770,13 @@ export function usePayment() {
         walletAddressCopiedTimer.value = null
       }, 1500)
     } catch (err: any) {
-      error.value = err?.message || t('payment.copyFailed')
+      if (isCurrent()) error.value = err?.message || t('payment.copyFailed')
     }
   }
 
   const openPayLinkInCompatibleWindow = (automatic = false) => {
-    if (!payLink.value) return
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent() || !payLink.value) return
     if (isTelegramMiniApp.value) {
       telegramMiniAppStore.openLink(payLink.value)
     } else if (resolvePaymentLinkNavigationTarget(automatic) === 'current-tab') {
@@ -753,12 +797,15 @@ export function usePayment() {
   }
 
   const handleOpenPayLink = () => {
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent()) return
     error.value = ''
     openPayLinkInCompatibleWindow()
   }
 
   const loadLatestPayment = async () => {
-    if (!order.value || order.value.status !== 'pending_payment') return
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent() || !order.value || order.value.status !== 'pending_payment') return
     if (paymentResult.value) return
     if (isGuest.value && !hasGuestAuth.value) return
     const orderNo = orderNoResolved.value
@@ -775,7 +822,7 @@ export function usePayment() {
       } else {
         response = await paymentAPI.latest({ order_no: orderNo })
       }
-      if (paymentOrderContext.value !== context || orderNoResolved.value !== orderNo || order.value?.status !== 'pending_payment' || paymentResult.value) return
+      if (!isCurrent() || orderNoResolved.value !== orderNo || order.value?.status !== 'pending_payment' || paymentResult.value) return
       const data = response.data.data
       if (data && (data.pay_url || data.qr_code)) {
         cachedPayment.value = data
@@ -836,17 +883,23 @@ export function usePayment() {
     })
   }
 
-  const capturePaypalIfNeeded = async () => {
-    if (capturing.value) return
+  const captureGatewayReturnIfNeeded = async () => {
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent() || capturing.value || paymentProviderType.value !== 'official') return
     const paymentID = currentPaymentID()
     if (!paymentID) return
-    if (!(paymentProviderType.value === 'official' && paymentChannelType.value === 'paypal')) return
-    const returnFlag = readRouteQueryValue('pp_return').toLowerCase()
-    const token = readRouteQueryValue('token')
-    const payerId = readRouteQueryValue('payer_id') || readRouteQueryValue('PayerID')
-    if (returnFlag !== '1' && token === '' && payerId === '') return
+    const channel = paymentChannelType.value
+    if (channel === 'paypal') {
+      const payerID = readRouteQueryValue('payer_id') || readRouteQueryValue('PayerID')
+      if (readRouteQueryValue('pp_return') !== '1' && !readRouteQueryValue('token') && !payerID) return
+    } else if (channel === 'stripe') {
+      if (readRouteQueryValue('stripe_return') !== '1' && !readRouteQueryValue('session_id')) return
+    } else {
+      return
+    }
     if (!orderNoResolved.value || !order.value || order.value.status !== 'pending_payment') return
 
+    const returnPath = route.fullPath
     capturing.value = true
     error.value = ''
     try {
@@ -862,77 +915,52 @@ export function usePayment() {
       } else {
         await paymentAPI.capture(paymentID)
       }
+      if (!isCurrent()) return
       await debouncedLoadOrder({ silent: true })
+      if (!isCurrent() || route.fullPath !== returnPath) return
       await router.replace({
         path: route.path,
         query: buildPayRouteQuery(),
       })
     } catch (err: any) {
-      error.value = err?.message || t('payment.captureFailed')
+      if (isCurrent()) error.value = err?.message || t('payment.captureFailed')
     } finally {
-      capturing.value = false
+      if (isCurrent()) capturing.value = false
     }
   }
 
-  const captureStripeIfNeeded = async () => {
-    if (capturing.value) return
-    const paymentID = currentPaymentID()
-    if (!paymentID) return
-    if (!(paymentProviderType.value === 'official' && paymentChannelType.value === 'stripe')) return
-    const returnFlag = readRouteQueryValue('stripe_return').toLowerCase()
-    const sessionID = readRouteQueryValue('session_id')
-    if (returnFlag !== '1' && sessionID === '') return
-    if (!orderNoResolved.value || !order.value || order.value.status !== 'pending_payment') return
-
-    capturing.value = true
-    error.value = ''
-    try {
-      if (isGuest.value) {
-        if (!hasGuestAuth.value) {
-          guestAuthError.value = t('payment.guestAuthRequired')
-          return
-        }
-        await guestOrderAPI.capturePayment(paymentID, {
-          email: guestAuth.value.email,
-          order_password: guestAuth.value.order_password,
-        })
-      } else {
-        await paymentAPI.capture(paymentID)
-      }
-      await debouncedLoadOrder({ silent: true })
-      await router.replace({
-        path: route.path,
-        query: buildPayRouteQuery(),
-      })
-    } catch (err: any) {
-      error.value = err?.message || t('payment.captureFailed')
-    } finally {
-      capturing.value = false
-    }
-  }
+  const officialCapturePending = () => capturing.value && paymentProviderType.value === 'official'
+    && ['paypal', 'stripe'].includes(paymentChannelType.value)
 
   const syncPaymentReturnIfNeeded = async () => {
     // 支持所有支付方式的回调同步跳转
     if (!hasPaymentReturnMarker.value) return
     if (!orderNoQuery.value) return
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent() || officialCapturePending()) return
+    const returnPath = route.fullPath
 
     try {
       await debouncedLoadOrder({ silent: true })
-      await loadLatestPayment()
+      if (isCurrent()) await loadLatestPayment()
     } finally {
-      await router.replace({
-        path: route.path,
-        query: buildPayRouteQuery(),
-      })
+      if (isCurrent() && order.value && route.fullPath === returnPath && !officialCapturePending()) {
+        await router.replace({
+          path: route.path,
+          query: buildPayRouteQuery(),
+        })
+      }
     }
   }
 
-  const performPayment = async () => {
+  const performPayment = async (isCurrent: () => boolean) => {
+    if (!isCurrent() || submitting.value) return
     error.value = ''
-    if (!orderNoResolved.value) {
+    if (!order.value || !orderNoResolved.value) {
       error.value = t('payment.orderNotFound')
       return
     }
+    if (order.value.status !== 'pending_payment') return
     if (requiresOnlineChannel.value && !selectedChannelId.value) {
       error.value = t('payment.selectChannelError')
       return
@@ -971,6 +999,7 @@ export function usePayment() {
           order_no: orderNoResolved.value,
           channel_id: selectedChannelId.value,
         })
+        if (!isCurrent()) return
         paymentResult.value = response.data.data
         if (paymentResult.value?.pay_url || paymentResult.value?.qr_code) {
           cachedPayment.value = paymentResult.value
@@ -987,6 +1016,7 @@ export function usePayment() {
           payload.channel_id = selectedChannelId.value
         }
         const response = await paymentAPI.create(payload)
+        if (!isCurrent()) return
         const created = response.data.data || {}
         if (created.order_paid && !created.payment_id) {
           paymentResult.value = null
@@ -999,7 +1029,7 @@ export function usePayment() {
             debouncedLoadOrder({ silent: true }),
             loadWallet(),
           ])
-          redirectToOrderDetail()
+          if (isCurrent()) redirectToOrderDetail()
           return
         }
         paymentResult.value = created
@@ -1011,18 +1041,20 @@ export function usePayment() {
         void captureCurrentPayment({ silent: true })
         await loadWallet()
       }
+      if (!isCurrent()) return
       window.scrollTo({ top: 0, behavior: 'smooth' })
       if (shouldAutoOpenPaymentLink(paymentResult.value)) {
         openPayLinkInCompatibleWindow(true)
       }
     } catch (err: any) {
-      error.value = err.message || t('payment.createFailed')
+      if (isCurrent()) error.value = err.message || t('payment.createFailed')
     } finally {
-      submitting.value = false
+      if (isCurrent()) submitting.value = false
     }
   }
 
-  const handlePayment = debounceAsync(performPayment, 200)
+  const debouncedPerformPayment = debounceAsync(performPayment, 200)
+  const handlePayment = () => debouncedPerformPayment(capturePaymentContext())
 
   const shouldRedirect = (status?: string) => {
     if (!status) return false
@@ -1035,7 +1067,8 @@ export function usePayment() {
   }
 
   const redirectToOrderDetail = () => {
-    if (redirected.value || redirecting.value) return
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent() || redirected.value || redirecting.value) return
     const resolvedOrderNo = String(order.value?.order_no || orderNoQuery.value || '').trim()
     if (!resolvedOrderNo) return
 
@@ -1059,23 +1092,23 @@ export function usePayment() {
       redirectTimer.value = null
     }
 
-    redirectTimer.value = window.setTimeout(async () => {
+    const timer = window.setTimeout(async () => {
+      if (!isCurrent() || redirectTimer.value !== timer) return
+      redirectTimer.value = null
       try {
         const failure = await router.push(target)
-        if (failure && !isNavigationFailure(failure, NavigationFailureType.duplicated)) {
+        if (isCurrent() && failure && !isNavigationFailure(failure, NavigationFailureType.duplicated)) {
           resetRedirectState()
           window.location.assign(fallbackPath)
         }
       } catch (_err) {
-        resetRedirectState()
-        window.location.assign(fallbackPath)
-      } finally {
-        if (redirectTimer.value !== null) {
-          window.clearTimeout(redirectTimer.value)
-          redirectTimer.value = null
+        if (isCurrent()) {
+          resetRedirectState()
+          window.location.assign(fallbackPath)
         }
       }
     }, 600)
+    redirectTimer.value = timer
   }
 
   const resetPayment = (reason: PaymentResetReason = 'generic') => {
@@ -1096,18 +1129,57 @@ export function usePayment() {
   }
 
   const resetPaymentRouteState = () => {
+    paymentContextVersion++
     stopPolling()
     stopCountdown()
+    debouncedLoadOrder.cancel()
     resetPayment('route_change')
+    debouncedLoadOrderPaymentChannels.cancel()
+    debouncedPerformPayment.cancel()
+    submitting.value = false
+    capturing.value = false
     cachedPayment.value = null
     selectedChannelId.value = null
     order.value = null
     orderPaymentChannels.value = []
     orderPaymentChannelsLoaded.value = false
+    walletBalance.value = '0'
+    walletLoading.value = false
+    useBalance.value = walletOnlyPayment.value
+    loading.value = !!orderNoQuery.value
+    guestAuthError.value = ''
+    qrRenderVersion.value++
+    qrImageUrl.value = ''
+    copied.value = false
+    walletAddressCopied.value = false
+    for (const timer of [redirectTimer, copiedTimer, walletAddressCopiedTimer]) {
+      if (timer.value !== null) window.clearTimeout(timer.value)
+      timer.value = null
+    }
+  }
+
+  const checkStoredSession = () => {
+    if (disposed || reloading || route.name !== 'payment' || isGuest.value || sessionToken === localStorage.getItem('user_token')) return
+    reloading = true
+    resetPaymentRouteState()
+    // 保留已清理的安全回跳标记，重新鉴权后继续等待订单入账。
+    const resume = buildMemberPaymentResumePath(window.location.search)
+    if (resume && returnedPaymentContext === paymentOrderContext.value && returnedPaymentMarkers.length && !hasPaymentReturnMarker.value) {
+      const query = new URLSearchParams(resume.slice('/pay?'.length))
+      for (const marker of returnedPaymentMarkers) query.set(marker, '1')
+      window.location.replace(`/pay?${query}`)
+      return
+    }
+    window.location.reload()
+  }
+
+  const handleStoredSessionChange = (event: StorageEvent) => {
+    if (event.storageArea === localStorage && (event.key === 'user_token' || event.key === null)) checkStoredSession()
   }
 
   const restoreCachedPayment = () => {
-    if (!cachedPayment.value) return
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent() || !cachedPayment.value) return
     const restorePolicy = getCachedPaymentRestorePolicy()
     paymentResult.value = cachedPayment.value
     selectedChannelId.value = cachedPayment.value.channel_id || null
@@ -1124,7 +1196,8 @@ export function usePayment() {
   }
 
   const handleChangePaymentMethod = () => {
-    resetPayment('change_payment_method')
+    const isCurrent = capturePaymentContext()
+    if (isCurrent()) resetPayment('change_payment_method')
   }
 
   const formatDate = (raw?: string) => {
@@ -1196,6 +1269,11 @@ export function usePayment() {
   }
 
   onMounted(() => {
+    window.addEventListener('storage', handleStoredSessionChange)
+    window.addEventListener('pageshow', checkStoredSession)
+    document.addEventListener('visibilitychange', checkStoredSession)
+    checkStoredSession()
+    if (reloading) return
     if (isRechargeReturn.value && rechargeNoQuery.value) {
       void redirectToWalletRecharge()
       return
@@ -1232,16 +1310,14 @@ export function usePayment() {
     }
   )
 
-  watch(
-    () => [isGuest.value, orderNoQuery.value],
-    async ([, orderNo], [, previousOrderNo]) => {
-      if (!previousOrderNo || orderNo === previousOrderNo) return
-      resetPaymentRouteState()
-      if (!orderNo) return
-      await loadOrder()
-      void loadWallet()
-    }
-  )
+  watch(paymentOrderContext, () => {
+    if (route.name !== 'payment' || reloading) return
+    resetPaymentRouteState()
+    checkStoredSession()
+    if (reloading || !orderNoQuery.value) return
+    void loadOrder()
+    void loadWallet()
+  }, { flush: 'sync' })
 
   watch(
     () => [isGuest.value, orderNoResolved.value, requiresOnlineChannel.value, expectedOnlinePayCents.value, order.value?.status],
@@ -1254,8 +1330,7 @@ export function usePayment() {
   watch(
     () => [currentPaymentID(), paymentProviderType.value, paymentChannelType.value, route.fullPath, order.value?.status],
     () => {
-      void capturePaypalIfNeeded()
-      void captureStripeIfNeeded()
+      void captureGatewayReturnIfNeeded()
       void syncPaymentReturnIfNeeded()
     },
     { immediate: true }
@@ -1288,25 +1363,16 @@ export function usePayment() {
   })
 
   onUnmounted(() => {
-    stopPolling()
-    stopCountdown()
-    if (redirectTimer.value) {
-      window.clearTimeout(redirectTimer.value)
-      redirectTimer.value = null
-    }
-    if (copiedTimer.value) {
-      window.clearTimeout(copiedTimer.value)
-      copiedTimer.value = null
-    }
-    if (walletAddressCopiedTimer.value) {
-      window.clearTimeout(walletAddressCopiedTimer.value)
-      walletAddressCopiedTimer.value = null
-    }
-    debouncedLoadOrder.cancel()
-    debouncedLoadOrderPaymentChannels.cancel()
+    disposed = true
+    window.removeEventListener('storage', handleStoredSessionChange)
+    window.removeEventListener('pageshow', checkStoredSession)
+    document.removeEventListener('visibilitychange', checkStoredSession)
+    resetPaymentRouteState()
   })
 
   const handleGuestAuthSubmit = async () => {
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent()) return
     guestAuthError.value = ''
     if (!hasGuestAuth.value) {
       guestAuthError.value = t('payment.guestAuthRequired')
@@ -1320,7 +1386,10 @@ export function usePayment() {
   }
 
   const handleRefresh = async () => {
+    const isCurrent = capturePaymentContext()
+    if (!isCurrent()) return
     await captureCurrentPayment()
+    if (!isCurrent()) return
     await Promise.all([
       debouncedLoadOrder(),
       loadWallet(),
