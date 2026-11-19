@@ -31,7 +31,7 @@
         size="xs"
         class="absolute left-2 top-2 md:left-4 md:top-4 z-30 tracking-wider shadow-sm"
       >
-        {{ t('products.stockStatus.outOfStock') }}
+        {{ getStockStatusLabel(product) }}
       </Badge>
 
       <!-- Tags -->

@@ -49,7 +49,7 @@
         </div>
         <span v-if="priceSignal" class="inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[11px] font-semibold" :class="priceSignal.tone">{{ priceSignal.label }}</span>
       </div>
-      <span v-if="soldOut" class="inline-flex flex-none items-center rounded-full border-2 border-hairline-strong px-3.5 py-1.5 text-[13px] font-bold text-foreground" aria-disabled="true">{{ t('products.stockStatus.outOfStock') }}</span>
+      <span v-if="soldOut" class="inline-flex flex-none items-center rounded-full border-2 border-hairline-strong px-3.5 py-1.5 text-[13px] font-bold text-foreground" aria-disabled="true">{{ getStockStatusLabel(product) }}</span>
       <button
         v-else
         type="button"
@@ -109,7 +109,7 @@ const coverImage = computed(() => {
 
 const stockPill = computed<{ tone: string; icon: Component; label: string }>(() => {
   if (soldOut.value) {
-    return { tone: 'bg-secondary text-muted-foreground', icon: XCircle, label: t('products.stockStatus.outOfStock') }
+    return { tone: 'bg-secondary text-muted-foreground', icon: XCircle, label: getStockStatusLabel(props.product) }
   }
   if (props.product?.stock_status === 'low_stock') {
     return { tone: 'bg-[color:var(--gold-soft)] text-[color:var(--gold-strong)]', icon: AlarmClock, label: getStockStatusLabel(props.product) }

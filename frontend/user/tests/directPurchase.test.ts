@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { directCheckoutRestriction, isDirectSkuAvailable, KAFUDA_GPT_DIRECT } from '../src/utils/directPurchase.ts'
 import { resolveCardDisplayPrice } from '../src/utils/productPricing.ts'
@@ -57,4 +58,17 @@ test('direct product cards calculate member pricing only for available SKUs', ()
   const product = { fulfillment_type: KAFUDA_GPT_DIRECT, price_amount: '100.00', skus: [unavailable, { ...availableSku, price_amount: '100.00' }] }
   assert.equal(resolveCardDisplayPrice(product, 3, 80), '80.00')
   assert.equal(resolveCardDisplayPrice({ ...product, skus: [unavailable] }, 3, 80), null)
+})
+
+test('Classic and Vault product browsing use shared availability labels', () => {
+  for (const view of [
+    'components/ProductCard.vue',
+    'components/ProductListItem.vue',
+    'templates/vault/components/VaultProductCard.vue',
+    'templates/vault/components/VaultProductListItem.vue',
+  ]) {
+    const source = readFileSync(new URL(`../src/${view}`, import.meta.url), 'utf8')
+    assert.match(source, /getStockStatusLabel\(/, view)
+    assert.doesNotMatch(source, /products\.stockStatus\.outOfStock/, view)
+  }
 })

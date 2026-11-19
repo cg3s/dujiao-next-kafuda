@@ -22,7 +22,7 @@
       </div>
       <!-- Sold out overlay -->
       <div v-if="isSoldOut(product)" class="absolute inset-0 bg-black/50 flex items-center justify-center">
-        <span class="text-white text-[10px] font-bold">{{ t('products.stockStatus.outOfStock') }}</span>
+        <span class="max-w-full text-center text-white text-[10px] font-bold [overflow-wrap:anywhere]">{{ getStockStatusLabel(product) }}</span>
       </div>
     </div>
 

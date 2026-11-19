@@ -11,7 +11,7 @@
     >
       <img v-if="coverImage" :src="coverImage" :alt="title" loading="lazy" class="absolute inset-0 h-full w-full object-cover" @error="imageErrored = true" />
       <Package v-else class="relative z-[1] h-6 w-6 text-white" />
-      <span v-if="soldOut" class="absolute inset-0 grid place-items-center bg-black/55 text-[10px] font-bold text-white">{{ t('products.stockStatus.outOfStock') }}</span>
+      <span v-if="soldOut" class="absolute inset-0 z-[2] grid place-items-center bg-black/55 text-center text-[10px] font-bold text-white [overflow-wrap:anywhere]">{{ getStockStatusLabel(product) }}</span>
     </span>
 
     <!-- Info -->
@@ -112,7 +112,7 @@ const coverImage = computed(() => {
 
 const stockPill = computed<{ tone: string; icon: Component; label: string }>(() => {
   if (soldOut.value) {
-    return { tone: 'bg-secondary text-muted-foreground', icon: XCircle, label: t('products.stockStatus.outOfStock') }
+    return { tone: 'bg-secondary text-muted-foreground', icon: XCircle, label: getStockStatusLabel(props.product) }
   }
   if (props.product?.stock_status === 'low_stock') {
     return { tone: 'bg-[color:var(--gold-soft)] text-[color:var(--gold-strong)]', icon: AlarmClock, label: getStockStatusLabel(props.product) }

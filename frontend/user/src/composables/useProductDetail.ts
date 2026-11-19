@@ -310,7 +310,6 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
   }
 
   const purchaseType = computed(() => isDirect.value ? 'member' : (product.value?.purchase_type || 'member'))
-  const requiresLogin = computed(() => purchaseType.value === 'member' && !userAuthStore.isAuthenticated)
   const requiresSKUSelection = computed(() => activeSkus.value.length > 1 && !selectedSku.value)
   const stockBelowMinPurchase = computed(() => {
     const limit = quantityEffectiveLimit.value
@@ -328,6 +327,9 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
     if (stockBelowMinPurchase.value) return false
     return true
   })
+  const requiresLogin = computed(() =>
+    purchaseType.value === 'member' && !userAuthStore.isAuthenticated && (!isDirect.value || canPurchase.value),
+  )
   const cannotPurchaseReason = computed(() => {
     if (!product.value) return ''
     if (requiresLogin.value) return ''
@@ -572,14 +574,16 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
         currentImage.value = images.value[0] || ''
       }
       syncSelectedSku()
-      await nextTick()
-      options.onLoaded?.()
     } catch (error) {
       console.error('Failed to load product:', error)
       product.value = null
       selectedSkuId.value = 0
     } finally {
       loading.value = false
+    }
+    if (product.value) {
+      await nextTick()
+      options.onLoaded?.()
     }
   }
 
