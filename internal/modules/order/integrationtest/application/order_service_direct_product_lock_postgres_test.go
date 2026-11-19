@@ -18,6 +18,7 @@ import (
 	productwrite "github.com/dujiao-next/internal/modules/catalog/product/application/write"
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
+	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
@@ -263,6 +264,151 @@ func TestPostgresDirectCatalogOnlyEditPreservesConcurrentSKUChanges(t *testing.T
 		!sku.PriceAmount.Equal(price) || !sku.CostPriceAmount.Equal(cost) || sku.SortOrder != sortOrder ||
 		sku.DirectCatalogRevision != option.CatalogRevision {
 		t.Fatalf("catalog merge overwrote the configured SKU: %+v", sku)
+	}
+}
+
+func TestPostgresDirectActivationRejectsCatalogRevisionChangedWhileWaiting(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	db := openPostgresDirectRaceDB(t, dsn)
+	f := seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-catalog-revision-lock", 0, 0))
+	if err := db.Model(&f.product).UpdateColumn("is_active", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&f.sku).UpdateColumn("is_active", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	lockPIDs := observeProductLockPIDs(t, db)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	beforeCommit, release := make(chan struct{}), make(chan struct{})
+	commit := sync.OnceFunc(func() { close(release) })
+	var writes sync.WaitGroup
+	defer func() {
+		cancel()
+		commit()
+		writes.Wait()
+	}()
+	scopedDB := db.WithContext(ctx)
+	orders := orderstore.New(scopedDB, "test-guest-credential-secret-with-32-bytes")
+	products := productstore.NewProductStore(scopedDB)
+	productID := strconv.FormatUint(uint64(f.product.ID), 10)
+	before, err := products.GetAdminByID(productID)
+	if err != nil || before == nil || len(before.SKUs) != 1 {
+		t.Fatalf("expected persisted direct product: %+v, %v", before, err)
+	}
+	sku := before.SKUs[0]
+	catalog := directCheckoutCommerce(f.store, true)
+	options, err := catalog.SKUOptions(ctx)
+	if err != nil || len(options) != 1 || !options[0].Available || options[0].CatalogRevision != sku.DirectCatalogRevision {
+		t.Fatalf("expected available option for original revision: %+v, %v", options, err)
+	}
+	oldRevision := options[0].CatalogRevision
+	writer := productwrite.NewWriteService(productwrite.Options{
+		Products: products, SKUs: productstore.NewSKUStore(scopedDB), Orders: orders,
+	})
+	writer.SetDirectCatalog(catalog)
+	active := true
+	const title = "Approved after catalog restoration"
+	price, cost := decimal.NewFromInt(129), decimal.NewFromInt(58)
+	input := productwrite.CreateProductInput{
+		CategoryID: f.product.CategoryID, Slug: f.product.Slug, TitleJSON: map[string]any{"en-US": title},
+		FulfillmentType: constants.FulfillmentTypeKafudaGPT, IsActive: &active,
+		SKUs: []productwrite.ProductSKUInput{{
+			ID: sku.ID, SKUCode: sku.SKUCode, PriceAmount: price, CostPriceAmount: cost,
+			CostPriceProvided: true, IsActive: &active, DirectCatalogRevision: &oldRevision,
+		}},
+	}
+
+	holderResult, writerResult := make(chan error, 1), make(chan error, 1)
+	heldOrders := directProductLockStore{Store: orders, beforeCommit: beforeCommit, release: release}
+	writes.Go(func() {
+		holderResult <- heldOrders.WithinTransaction(func(tx ordercontract.Transaction) error {
+			return tx.Products().LockByIDs([]uint{f.product.ID})
+		})
+	})
+	select {
+	case <-beforeCommit:
+	case err := <-holderResult:
+		t.Fatalf("holder returned before taking the product lock: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	var holder int
+	select {
+	case holder = <-lockPIDs:
+	case <-ctx.Done():
+		t.Fatal("holder did not issue a product lock query")
+	}
+	writes.Go(func() {
+		_, err := writer.Update(productID, input)
+		writerResult <- err
+	})
+	var waiter int
+	select {
+	case waiter = <-lockPIDs:
+	case err := <-writerResult:
+		t.Fatalf("activation returned before taking the product lock: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if holder == waiter {
+		t.Fatal("activation did not use an independent PostgreSQL connection")
+	}
+	assertProductLockBlocked(t, ctx, db, waiter, holder)
+
+	removed, restored := *f.catalog, *f.catalog
+	removed.SyncedAt, removed.Options = f.catalog.SyncedAt.Add(time.Second), []kafudadomain.CatalogOption{}
+	restored.SyncedAt = removed.SyncedAt.Add(time.Second)
+	for _, snapshot := range []*kafudadomain.Catalog{&removed, &restored} {
+		if err := f.store.SaveCatalog(ctx, snapshot); err != nil {
+			t.Fatalf("refresh catalog while activation waits: %v", err)
+		}
+	}
+	options, err = catalog.SKUOptions(ctx)
+	if err != nil || len(options) != 1 || !options[0].Available || options[0].CatalogRevision != oldRevision+1 {
+		t.Fatalf("restored option did not receive a new approval revision: %+v, %v", options, err)
+	}
+	commit()
+	select {
+	case err := <-holderResult:
+		if err != nil {
+			t.Fatalf("product lock holder failed: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case err := <-writerResult:
+		if !errors.Is(err, productcontract.ErrProductSKUInvalid) {
+			t.Fatalf("activation with old catalog revision returned %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	unchanged, err := products.GetAdminByID(productID)
+	if err != nil || unchanged == nil || len(unchanged.SKUs) != 1 || unchanged.IsActive ||
+		unchanged.TitleJSON["en-US"] == title || !unchanged.PriceAmount.Equal(before.PriceAmount.Decimal) ||
+		!unchanged.CostPriceAmount.Equal(before.CostPriceAmount.Decimal) {
+		t.Fatalf("rejected activation changed product: %+v, %v", unchanged, err)
+	}
+	got := unchanged.SKUs[0]
+	if got.ID != sku.ID || got.IsActive || got.DirectCatalogRevision != oldRevision ||
+		!got.PriceAmount.Equal(sku.PriceAmount.Decimal) || !got.CostPriceAmount.Equal(sku.CostPriceAmount.Decimal) {
+		t.Fatalf("rejected activation changed original SKU: %+v", got)
+	}
+
+	currentRevision := options[0].CatalogRevision
+	input.SKUs[0].DirectCatalogRevision = &currentRevision
+	approved, err := writer.Update(productID, input)
+	if err != nil || approved == nil || !approved.IsActive || approved.TitleJSON["en-US"] != title || len(approved.SKUs) != 1 {
+		t.Fatalf("activation with current revision failed: %+v, %v", approved, err)
+	}
+	got = approved.SKUs[0]
+	if got.ID != sku.ID || !got.IsActive || got.DirectCatalogRevision != currentRevision ||
+		!got.PriceAmount.Equal(price) || !got.CostPriceAmount.Equal(cost) {
+		t.Fatalf("current revision did not preserve and update the original SKU: %+v", got)
 	}
 }
 

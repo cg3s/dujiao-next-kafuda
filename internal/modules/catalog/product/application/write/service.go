@@ -46,6 +46,7 @@ type CardSecretStockRepository interface {
 
 // TransactionRepositories 是一次商品写事务内绑定的仓储集合。
 type TransactionRepositories struct {
+	Catalog     kafudacontract.CatalogForUpdate
 	Orders      interface{ CountOrderItemsByProduct(uint) (int64, error) }
 	Products    ProductRepository
 	SKUs        SKURepository

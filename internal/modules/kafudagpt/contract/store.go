@@ -15,9 +15,14 @@ type CheckoutInput struct {
 	CreatedAt time.Time
 }
 
+// CatalogForUpdate reads the cache through the current database transaction.
+type CatalogForUpdate interface {
+	GetCatalogForUpdate(string) (*kafudadomain.Catalog, error)
+}
+
 // CheckoutRepository is bound to the order creation transaction.
 type CheckoutRepository interface {
-	GetCatalogForUpdate(string) (*kafudadomain.Catalog, error)
+	CatalogForUpdate
 	CreateCheckout(CheckoutInput) error
 }
 

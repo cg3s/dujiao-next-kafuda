@@ -42,8 +42,12 @@ func validateDirectTypeChange(product *productdomain.Product, repositories Trans
 	return nil
 }
 
-// directSKUOptions runs before the write transaction. Catalog reads must never
-// acquire the global SQLite connection while the product transaction holds it.
+type directCatalogForUpdate interface {
+	SKUOptionsForUpdate(kafudacontract.CatalogForUpdate) ([]kafudacontract.SKUOption, error)
+}
+
+// directSKUOptions is the pre-transaction reader for creation and policies
+// without a transaction-bound catalog.
 func (s *WriteService) directSKUOptions() ([]kafudacontract.SKUOption, error) {
 	if s.directCatalog == nil {
 		return nil, productcontract.ErrProductSKUInvalid

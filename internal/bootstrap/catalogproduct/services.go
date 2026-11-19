@@ -15,6 +15,7 @@ import (
 	productapplication "github.com/dujiao-next/internal/modules/catalog/product/application"
 	productadmin "github.com/dujiao-next/internal/modules/catalog/product/application/admin"
 	productwrite "github.com/dujiao-next/internal/modules/catalog/product/application/write"
+	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 
 	"gorm.io/gorm"
@@ -117,6 +118,7 @@ func (unit *productWriteUnitOfWork) WithinTransaction(fn func(repositories produ
 			cardSecrets = unit.cardSecrets.BindTx(tx)
 		}
 		return fn(productwrite.TransactionRepositories{
+			Catalog:     kafudastore.New(tx),
 			Products:    unit.products.BindTx(tx),
 			SKUs:        skus,
 			CardSecrets: cardSecrets,

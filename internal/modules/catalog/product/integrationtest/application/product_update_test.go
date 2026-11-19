@@ -1,11 +1,13 @@
 package integrationtest
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
 	"testing"
+	"time"
 
 	cardsecretdomain "github.com/dujiao-next/internal/modules/cardsecret/domain"
 	cardsecretgormstore "github.com/dujiao-next/internal/modules/cardsecret/infrastructure/gormstore"
@@ -13,7 +15,10 @@ import (
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productgormstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
+	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
+	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	ordergormstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
@@ -140,6 +145,143 @@ func TestDirectProductEditPreservesConcurrentSKUConfiguration(t *testing.T) {
 						t.Errorf("edit replaced the fallback SKU configuration: %+v", sku)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestDirectProductEditUsesCurrentCatalogAfterPreflight(t *testing.T) {
+	for _, scenario := range []struct {
+		name             string
+		explicitApproval bool
+	}{
+		{name: "metadata_after_pair_reappears"},
+		{name: "stale_explicit_approval", explicitApproval: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			svc, db := newProductServiceForTest(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+			if err := db.AutoMigrate(&kafudadomain.Catalog{}); err != nil {
+				t.Fatal(err)
+			}
+			const profile = "regional-checkout"
+			const plan, country = "plus", "PH"
+			const card = "regional-card"
+			ctx, syncedAt := t.Context(), time.Now().UTC().Add(-time.Minute)
+			store := kafudastore.New(db)
+			pair := kafudadomain.CatalogOption{Plan: plan, Country: country, Product: "gpt", Label: "Plus", Available: true}
+			saveCatalog := func(at time.Time, options []kafudadomain.CatalogOption) {
+				t.Helper()
+				if err := store.SaveCatalog(ctx, &kafudadomain.Catalog{
+					Profile: profile, Enabled: true, SyncedAt: at, ExpiresAt: at.Add(time.Hour),
+					Options: options, Cards: []kafudadomain.CardProduct{{ProductCode: card}},
+				}); err != nil {
+					t.Fatalf("save catalog at %s: %v", at, err)
+				}
+			}
+			saveCatalog(syncedAt, []kafudadomain.CatalogOption{pair})
+			policy := kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
+				Catalog:      kafudaapp.NewCatalogService(store, nil, profile, time.Hour),
+				SalesEnabled: true, ReferenceLookupVerified: true, ProductCode: card,
+				MaxCostCents: 2500, AllowedKinds: []string{"new"}, WorkerReady: func(context.Context) bool { return true },
+			})
+			svc.Write.SetDirectCatalog(policy)
+			code := kafudacontract.SKUCode(plan, country)
+			active, initialRevision := true, uint64(0)
+			input := productwrite.CreateProductInput{
+				Slug: "direct-regional-catalog", TitleJSON: jsonmap.JSON{"zh-CN": "原商品"},
+				FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+				SKUs: []productwrite.ProductSKUInput{{
+					SKUCode: code, PriceAmount: decimal.NewFromInt(100), CostPriceAmount: decimal.NewFromInt(45),
+					CostPriceProvided: true, IsActive: &active, DirectCatalogRevision: &initialRevision, SortOrder: 23,
+				}},
+			}
+			product, err := svc.Write.Create(input)
+			if err != nil || product == nil {
+				t.Fatalf("create direct product: %+v, %v", product, err)
+			}
+			id := fmt.Sprint(product.ID)
+			product, err = svc.Read.GetAdminByID(id)
+			if err != nil || product == nil || len(product.SKUs) != 1 || !product.SKUs[0].IsActive ||
+				product.SKUs[0].DirectCatalogRevision != initialRevision {
+				t.Fatalf("load initially approved SKU: %+v, %v", product, err)
+			}
+			skuID := product.SKUs[0].ID
+			removePair := func() {
+				saveCatalog(syncedAt.Add(time.Second), []kafudadomain.CatalogOption{})
+			}
+			if !scenario.explicitApproval {
+				removePair()
+			}
+			newSale, newCost := decimal.NewFromInt(130), decimal.NewFromInt(55)
+			const currentRevision uint64 = 1
+			const newerTitle = "复核后的商品"
+			newer := input
+			newer.TitleJSON = jsonmap.JSON{"zh-CN": newerTitle}
+			orders := productUpdateTransactionHook{Store: ordergormstore.New(db, "test-guest-credential-secret-with-32-bytes"), before: func() {
+				if scenario.explicitApproval {
+					removePair()
+				}
+				saveCatalog(syncedAt.Add(2*time.Second), []kafudadomain.CatalogOption{pair})
+				options, err := policy.SKUOptions(ctx)
+				if err != nil || len(options) != 1 || options[0].SKUCode != code ||
+					!options[0].Available || options[0].CatalogRevision != currentRevision {
+					t.Fatalf("restored catalog did not keep removal history: %+v, %v", options, err)
+				}
+				reviewedRevision := options[0].CatalogRevision
+				newer.SKUs = []productwrite.ProductSKUInput{{
+					ID: skuID, SKUCode: code, PriceAmount: newSale, CostPriceAmount: newCost, CostPriceProvided: true,
+					IsActive: &active, DirectCatalogRevision: &reviewedRevision, SortOrder: 34,
+				}}
+				if _, err := svc.Write.Update(id, newer); err != nil {
+					t.Fatalf("approve the restored SKU during the older edit: %v", err)
+				}
+			}}
+			editor := productwrite.NewWriteService(productwrite.Options{
+				Products: productgormstore.NewProductStore(db), SKUs: productgormstore.NewSKUStore(db),
+				CardSecrets: cardsecretgormstore.New(db), Orders: orders,
+			})
+			editor.SetDirectCatalog(policy)
+			const editedTitle = "较早的商品编辑"
+			input.TitleJSON = jsonmap.JSON{"zh-CN": editedTitle}
+			input.SKUs = nil
+			wantTitle := editedTitle
+			if scenario.explicitApproval {
+				input.SKUs = []productwrite.ProductSKUInput{{
+					ID: skuID, SKUCode: code, PriceAmount: decimal.NewFromInt(120),
+					IsActive: &active, DirectCatalogRevision: &initialRevision, SortOrder: 26,
+				}}
+				wantTitle = newerTitle
+			}
+			_, err = editor.Update(id, input)
+			if scenario.explicitApproval {
+				if !errors.Is(err, productcontract.ErrProductSKUInvalid) {
+					t.Errorf("older explicit approval should be rejected against current revision: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("save metadata against restored catalog: %v", err)
+			}
+			product, err = svc.Read.GetAdminByID(id)
+			if err != nil || product == nil || len(product.SKUs) != 1 {
+				t.Fatalf("load saved direct product: %+v, %v", product, err)
+			}
+			if !product.IsActive || product.TitleJSON["zh-CN"] != wantTitle ||
+				!product.PriceAmount.Equal(newSale) || !product.CostPriceAmount.Equal(newCost) {
+				t.Errorf("older edit altered the reviewed product or lost the permitted title update: %+v", product)
+			}
+			sku := product.SKUs[0]
+			if sku.ID != skuID || !sku.IsActive || sku.DirectCatalogRevision != currentRevision || !sku.DirectCostConfigured ||
+				!sku.PriceAmount.Equal(newSale) || !sku.CostPriceAmount.Equal(newCost) || sku.SortOrder != 34 {
+				t.Errorf("older edit altered the reviewed SKU configuration: %+v", sku)
+			}
+			terms, err := policy.PurchaseTerms(ctx, plan, country, sku.DirectCatalogRevision)
+			if err != nil || terms == nil || terms.PaymentProfile != profile {
+				t.Errorf("purchase terms lost the approved catalog profile: %+v, %v", terms, err)
 			}
 		})
 	}

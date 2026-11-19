@@ -37,6 +37,22 @@ func (s *CommerceService) SKUOptions(ctx context.Context) ([]kafudacontract.SKUO
 	return CatalogSKUOptions(catalog), nil
 }
 
+// SKUOptionsForUpdate reads the last known options from the caller's locked
+// cache row. Product edits use it after taking the product lock.
+func (s *CommerceService) SKUOptionsForUpdate(reader kafudacontract.CatalogForUpdate) ([]kafudacontract.SKUOption, error) {
+	if reader == nil || s.options.Catalog == nil {
+		return nil, kafudadomain.ErrInvalidCatalog
+	}
+	catalog, err := reader.GetCatalogForUpdate(s.options.Catalog.profile)
+	if err != nil {
+		return nil, err
+	}
+	if catalog == nil {
+		return nil, kafudadomain.ErrInvalidCatalog
+	}
+	return CatalogSKUOptions(catalog), nil
+}
+
 // CatalogSKUOptions derives the configuration options from a single catalog snapshot.
 func CatalogSKUOptions(catalog *kafudadomain.Catalog) []kafudacontract.SKUOption {
 	result := make([]kafudacontract.SKUOption, 0, len(catalog.Options))

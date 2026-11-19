@@ -128,10 +128,14 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 
 	isDirect := fulfillmentType == constants.FulfillmentTypeKafudaGPT
 	var directOptions []kafudacontract.SKUOption
+	var catalogForUpdate directCatalogForUpdate
 	if isDirect {
-		directOptions, err = s.directSKUOptions()
-		if err != nil {
-			return nil, err
+		catalogForUpdate, _ = s.directCatalog.(directCatalogForUpdate)
+		if catalogForUpdate == nil {
+			directOptions, err = s.directSKUOptions()
+			if err != nil {
+				return nil, err
+			}
 		}
 		product.PurchaseType, product.MinPurchaseQuantity, product.MaxPurchaseQuantity = constants.ProductPurchaseMember, 1, 1
 		product.StockDisplayMode = constants.ProductStockDisplayHidden
@@ -191,8 +195,14 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 			}
 		}
 		if isDirect {
-			// Merge omitted fields from the locked SKU rows, which may have
-			// changed since the edit and the catalog were read.
+			// Match checkout's product-to-catalog lock order and merge
+			// against the rows visible after taking the product lock.
+			if catalogForUpdate != nil {
+				directOptions, err = catalogForUpdate.SKUOptionsForUpdate(repositories.Catalog)
+				if err != nil {
+					return productcontract.ErrProductSKUInvalid
+				}
+			}
 			if err := normalizeSKUs(skuRepo); err != nil {
 				return err
 			}
@@ -270,7 +280,11 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 	}
 	if transactions, ok := s.orders.(OrderTransactions); ok {
 		err = transactions.WithinTransaction(func(tx ordercontract.Transaction) error {
-			return write(TransactionRepositories{Products: tx.Products(), SKUs: tx.ProductSKUs(), CardSecrets: tx.CardSecrets(), Orders: tx.Orders()})
+			repositories := TransactionRepositories{Products: tx.Products(), SKUs: tx.ProductSKUs(), CardSecrets: tx.CardSecrets(), Orders: tx.Orders()}
+			if catalogForUpdate != nil {
+				repositories.Catalog = tx.KafudaGPT()
+			}
+			return write(repositories)
 		})
 	} else if directTypeChange {
 		return nil, productcontract.ErrFulfillmentInvalid
