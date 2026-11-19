@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -41,6 +42,29 @@ type kafudaPollTestGateway struct {
 type kafudaDeadlineTestGateway struct {
 	kafudacontract.Gateway
 	ids []uint64
+}
+
+type kafudaBlockingPollTestGateway struct {
+	kafudacontract.Gateway
+	result  kafudacontract.OrderResult
+	calls   atomic.Int32
+	started chan struct{}
+	release chan struct{}
+}
+
+func (g *kafudaBlockingPollTestGateway) GetOrder(ctx context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+	if g.calls.Add(1) == 1 {
+		close(g.started)
+		select {
+		case <-g.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if id != g.result.ID {
+		return nil, fmt.Errorf("unexpected supplier order ID: %d", id)
+	}
+	return &g.result, nil
 }
 
 func (g *kafudaDeadlineTestGateway) GetOrder(ctx context.Context, id uint64) (*kafudacontract.OrderResult, error) {
@@ -255,6 +279,65 @@ func TestKafudaPollStopsCurrentBatchWhenUpstreamRateLimits(t *testing.T) {
 	remaining, err := store.DueKnownOrderPolls(ctx, time.Now().UTC(), 10)
 	if err != nil || len(remaining) != 1 || remaining[0].UpstreamOrderID == nil || *remaining[0].UpstreamOrderID == gateway.ids[0] || !remaining[0].NextPollAt.Equal(due) {
 		t.Fatalf("rate limit changed an unqueried attempt: %+v, %v", remaining, err)
+	}
+}
+
+func TestKafudaConcurrentPollsClaimKnownOrder(t *testing.T) {
+	gateway := &kafudaBlockingPollTestGateway{started: make(chan struct{}), release: make(chan struct{})}
+	c, store, due, _ := newKafudaPollBatch(t, gateway, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	attempts, err := store.DueKnownOrderPolls(ctx, time.Now().UTC(), 1)
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("expected one due attempt: %+v, %v", attempts, err)
+	}
+	attempt := attempts[0]
+	gateway.result = kafudacontract.OrderResult{
+		ID: 1, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing",
+	}
+	var firstErr error
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		firstErr = c.pollKnownKafudaOrders(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-finished
+	}()
+	select {
+	case <-gateway.started:
+	case <-finished:
+		t.Fatalf("first worker finished before supplier lookup: %v", firstErr)
+	case <-ctx.Done():
+		t.Fatal("first worker did not reach supplier lookup")
+	}
+
+	if err := c.pollKnownKafudaOrders(ctx); err != nil {
+		t.Fatalf("overlapping worker: %v", err)
+	}
+	if calls := gateway.calls.Load(); calls != 1 {
+		t.Fatalf("overlapping workers made %d supplier lookups, want 1", calls)
+	}
+	pending, err := store.GetAttempt(ctx, attempt.ID)
+	if err != nil || pending == nil || pending.NextPollAt == nil || !pending.NextPollAt.Equal(due) ||
+		!pending.UpdatedAt.Equal(attempt.UpdatedAt) {
+		t.Fatalf("overlapping worker changed the pending schedule: %+v, %v", pending, err)
+	}
+
+	close(gateway.release)
+	select {
+	case <-finished:
+		if firstErr != nil {
+			t.Fatalf("first worker: %v", firstErr)
+		}
+	case <-ctx.Done():
+		t.Fatal("first worker did not finish after supplier response")
+	}
+	stored, err := store.GetAttempt(ctx, attempt.ID)
+	if err != nil || stored == nil || stored.Status != kafudadomain.AttemptProcessing || stored.NextPollAt == nil ||
+		!stored.UpdatedAt.After(attempt.UpdatedAt) || stored.NextPollAt.Sub(stored.UpdatedAt) != c.Config.KafudaPollInterval() {
+		t.Fatalf("winning worker did not schedule next lookup: %+v, %v", stored, err)
 	}
 }
 

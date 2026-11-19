@@ -147,6 +147,79 @@ func TestCardChargePollLease(t *testing.T) {
 	}
 }
 
+func TestKnownOrderPollLease(t *testing.T) {
+	store := newCardChargeStore(t)
+	ctx := t.Context()
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	dueAt, observedAt := now.Add(-time.Second), now.Add(-time.Minute)
+	orderID, upstreamID := uint(10), uint64(20)
+	attempt := kafudadomain.Attempt{
+		OrderID: orderID, Sequence: 1, ActiveOrderID: &orderID, Reference: "known-order",
+		Status: kafudadomain.AttemptProcessing, UpstreamOrderID: &upstreamID, NextPollAt: &dueAt,
+		CreatedAt: observedAt, UpdatedAt: observedAt,
+	}
+	if err := store.CreateAttempt(&attempt); err != nil {
+		t.Fatal(err)
+	}
+	until := now.Add(time.Minute)
+	if claimed, err := store.ClaimKnownOrderPoll(ctx, attempt, now, until); claimed || err != nil {
+		t.Fatalf("claim without a current recharge = %t, %v", claimed, err)
+	}
+	recharge := kafudadomain.Recharge{
+		OrderID: orderID, CurrentAttemptID: &attempt.ID, Stage: kafudadomain.StageProcessing,
+		Version: 1, CreatedAt: observedAt, UpdatedAt: observedAt,
+	}
+	if err := store.db.Create(&recharge).Error; err != nil {
+		t.Fatal(err)
+	}
+	stale := attempt
+	stale.UpdatedAt = stale.UpdatedAt.Add(-time.Second)
+	if claimed, err := store.ClaimKnownOrderPoll(ctx, stale, now, until); claimed || err != nil {
+		t.Fatalf("claim with stale observation = %t, %v", claimed, err)
+	}
+
+	type claim struct {
+		obtained bool
+		err      error
+	}
+	const workers = 2
+	claims := make(chan claim, workers)
+	for range workers {
+		go func() {
+			obtained, err := store.ClaimKnownOrderPoll(ctx, attempt, now, until)
+			claims <- claim{obtained, err}
+		}()
+	}
+	obtained := 0
+	for range workers {
+		result := <-claims
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.obtained {
+			obtained++
+		}
+	}
+	if obtained != 1 {
+		t.Fatalf("claims obtained = %d, want 1", obtained)
+	}
+	stored, err := store.GetAttempt(ctx, attempt.ID)
+	if err != nil || stored == nil || stored.KnownOrderPollLeaseUntil == nil || !stored.KnownOrderPollLeaseUntil.Equal(until) ||
+		stored.NextPollAt == nil || !stored.NextPollAt.Equal(dueAt) || !stored.UpdatedAt.Equal(observedAt) {
+		t.Fatalf("claim changed stored poll schedule or did not set the lease: %+v, %v", stored, err)
+	}
+	if due, err := store.DueKnownOrderPolls(ctx, until.Add(-time.Microsecond), 2); err != nil || len(due) != 0 {
+		t.Fatalf("attempt eligible before lease expiry: %+v, %v", due, err)
+	}
+	due, err := store.DueKnownOrderPolls(ctx, until, 2)
+	if err != nil || len(due) != 1 || due[0].ID != attempt.ID {
+		t.Fatalf("attempt unavailable at lease expiry: %+v, %v", due, err)
+	}
+	if claimed, err := store.ClaimKnownOrderPoll(ctx, due[0], until, until.Add(time.Minute)); err != nil || !claimed {
+		t.Fatalf("claim at lease expiry = %t, %v", claimed, err)
+	}
+}
+
 func newCardChargeStore(t *testing.T) *Store {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})

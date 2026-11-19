@@ -133,6 +133,8 @@ type Attempt struct {
 	ChargedUSDCents  *int64        `json:"-"`
 	RenewalCancelled *bool         `json:"-"`
 	NextPollAt       *time.Time    `gorm:"index" json:"-"`
+	// KnownOrderPollLeaseUntil coordinates concurrent workers without moving NextPollAt.
+	KnownOrderPollLeaseUntil *time.Time `json:"-"`
 	// NextCardChargePollAt schedules reconciliation of a completed attempt's missing card charge.
 	NextCardChargePollAt *time.Time `json:"-"`
 	CreatedAt            time.Time  `json:"-"`

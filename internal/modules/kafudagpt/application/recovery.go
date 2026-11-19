@@ -15,12 +15,26 @@ var (
 	ErrKnownOrderRateLimited  = errors.New("kafuda known order lookup rate limited")
 )
 
-const DefaultPollReviewAfter = 24 * time.Hour
+const (
+	DefaultPollReviewAfter = 24 * time.Hour
+	knownOrderPollLease    = time.Minute
+)
 
-// PollKnownOrder performs a read-only lookup outside the database transaction.
+type KnownOrderPollLease struct {
+	AttemptID   uint
+	ScheduledAt time.Time
+	Until       time.Time
+}
+
+type KnownOrderPoll struct {
+	kafudacontract.OrderResult
+	Lease KnownOrderPollLease
+}
+
+// PollKnownOrder claims a due attempt before looking it up outside the database transaction.
 // A failed lookup is rescheduled with the task context even if its lookup budget expires.
 // The caller applies a successful result with the corresponding shop order update.
-func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudacontract.Gateway, attemptID uint, now, retryAt time.Time, reviewAfter time.Duration) (*kafudacontract.OrderResult, error) {
+func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudacontract.Gateway, attemptID uint, now, retryAt time.Time, reviewAfter time.Duration) (*KnownOrderPoll, error) {
 	if gateway == nil || now.IsZero() || !retryAt.After(now) {
 		return nil, kafudadomain.ErrInvalidTransition
 	}
@@ -47,13 +61,24 @@ func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudac
 	if err := lookupCtx.Err(); err != nil {
 		return nil, err
 	}
+	lease := KnownOrderPollLease{
+		AttemptID: attempt.ID, ScheduledAt: *attempt.NextPollAt,
+		Until: now.Add(knownOrderPollLease).UTC().Truncate(time.Microsecond),
+	}
+	claimed, err := s.store.ClaimKnownOrderPoll(lookupCtx, *attempt, now, lease.Until)
+	if err != nil {
+		return nil, err
+	}
+	if !claimed {
+		return nil, kafudadomain.ErrConflict
+	}
 	result, err := gateway.GetOrder(lookupCtx, *attempt.UpstreamOrderID)
 	if err == nil && result != nil && result.ID == *attempt.UpstreamOrderID &&
 		result.Reference == attempt.Reference && result.Product == record.Snapshot.Product &&
 		result.Plan == record.Snapshot.Plan && result.Country == record.Snapshot.Country {
 		_, allowed := supplierResultStatus(attempt.Status, kafudadomain.AttemptStatus(result.Status))
 		if allowed && (result.ChargedUSDCents == nil || *result.ChargedUSDCents >= 0) {
-			return result, nil
+			return &KnownOrderPoll{OrderResult: *result, Lease: lease}, nil
 		}
 	}
 	// Start backoff when the lookup ends, so a slow request cannot consume it.
@@ -68,7 +93,7 @@ func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudac
 		}
 	}
 	// Never return raw gateway errors, which may contain upstream payloads.
-	rescheduleErr := s.rescheduleKnownOrderPoll(ctx, attemptID, *attempt.NextPollAt, now, failedAt, retryAt, reviewAfter, "lookup_deadline_exceeded")
+	rescheduleErr := s.rescheduleKnownOrderPoll(ctx, lease, now, failedAt, retryAt, reviewAfter, "lookup_deadline_exceeded")
 	if rateLimited {
 		return nil, errors.Join(ErrKnownOrderLookupFailed, ErrKnownOrderRateLimited, rescheduleErr)
 	}
@@ -77,26 +102,29 @@ func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudac
 
 // RescheduleKnownOrderResult retries a verified lookup whose local application
 // failed. After the review deadline, the attempt remains active for polling.
-func (s *Service) RescheduleKnownOrderResult(ctx context.Context, attemptID uint, scheduledAt, startedAt, now, nextPoll time.Time, reviewAfter time.Duration) error {
-	return s.rescheduleKnownOrderPoll(ctx, attemptID, scheduledAt, startedAt, now, nextPoll, reviewAfter, kafudadomain.ReasonResultApplyFailed)
+func (s *Service) RescheduleKnownOrderResult(ctx context.Context, lease KnownOrderPollLease, startedAt, now, nextPoll time.Time, reviewAfter time.Duration) error {
+	return s.rescheduleKnownOrderPoll(ctx, lease, startedAt, now, nextPoll, reviewAfter, kafudadomain.ReasonResultApplyFailed)
 }
 
-func (s *Service) rescheduleKnownOrderPoll(ctx context.Context, attemptID uint, scheduledAt, startedAt, now, nextPoll time.Time, reviewAfter time.Duration, reason string) error {
-	if scheduledAt.IsZero() || startedAt.Before(scheduledAt) || now.Before(startedAt) || !nextPoll.After(now) {
+func (s *Service) rescheduleKnownOrderPoll(ctx context.Context, lease KnownOrderPollLease, startedAt, now, nextPoll time.Time, reviewAfter time.Duration, reason string) error {
+	if lease.AttemptID == 0 || lease.ScheduledAt.IsZero() || startedAt.Before(lease.ScheduledAt) ||
+		!lease.Until.After(startedAt) || now.Before(startedAt) || !nextPoll.After(now) {
 		return kafudadomain.ErrInvalidTransition
 	}
 	if reviewAfter <= 0 {
 		reviewAfter = DefaultPollReviewAfter
 	}
-	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
+	return s.change(ctx, lease.AttemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 		if !attempt.Status.Active() || attempt.Status == kafudadomain.AttemptChecking ||
 			attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID == 0 {
 			return kafudadomain.ErrInvalidTransition
 		}
-		if attempt.NextPollAt == nil || !attempt.NextPollAt.Equal(scheduledAt) || startedAt.Before(attempt.UpdatedAt) {
+		if attempt.KnownOrderPollLeaseUntil == nil || !attempt.KnownOrderPollLeaseUntil.Equal(lease.Until) ||
+			attempt.NextPollAt == nil || !attempt.NextPollAt.Equal(lease.ScheduledAt) || startedAt.Before(attempt.UpdatedAt) {
 			return kafudadomain.ErrConflict
 		}
 		attempt.NextPollAt, attempt.UpdatedAt = &nextPoll, now
+		attempt.KnownOrderPollLeaseUntil = nil
 		if now.Sub(attempt.CreatedAt) >= reviewAfter && record.Stage != kafudadomain.StageManualReview {
 			attempt.Status = kafudadomain.AttemptReview
 			record.Stage, record.ReasonCode = kafudadomain.StageManualReview, reason

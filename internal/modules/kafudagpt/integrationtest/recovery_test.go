@@ -96,10 +96,11 @@ func TestRecoveryDoesNotReleaseSubmittedOrUnknownAttempts(t *testing.T) {
 	}
 	review := polls[1]
 	due, retry := now.Add(time.Second), now.Add(2*time.Minute)
-	if err := service.RescheduleKnownOrderResult(ctx, review.ID, due, due, due, retry, time.Second); err != nil {
+	lease := claimTestKnownOrderPoll(t, ctx, store, review, due)
+	if err := service.RescheduleKnownOrderResult(ctx, lease, due, due, retry, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.RescheduleKnownOrderResult(ctx, review.ID, due, due, due, retry.Add(time.Minute), time.Second); !errors.Is(err, kafudadomain.ErrConflict) {
+	if err := service.RescheduleKnownOrderResult(ctx, lease, due, due, retry.Add(time.Minute), time.Second); !errors.Is(err, kafudadomain.ErrConflict) {
 		t.Fatalf("duplicate lookup failure overwrote the new schedule: %v", err)
 	}
 	reviewRecord, err := store.GetRecharge(ctx, review.OrderID)
@@ -129,6 +130,20 @@ func TestRecoveryDoesNotReleaseSubmittedOrUnknownAttempts(t *testing.T) {
 			t.Fatalf("recovery released submitted order %d: %+v, %v", orderID, again, err)
 		}
 	}
+}
+
+func claimTestKnownOrderPoll(t *testing.T, ctx context.Context, store kafudacontract.Store, attempt kafudadomain.Attempt, now time.Time) kafudaapp.KnownOrderPollLease {
+	t.Helper()
+	if attempt.NextPollAt == nil {
+		t.Fatal("known order does not have a poll schedule")
+	}
+	lease := kafudaapp.KnownOrderPollLease{
+		AttemptID: attempt.ID, ScheduledAt: *attempt.NextPollAt, Until: now.Add(time.Minute).UTC().Truncate(time.Microsecond),
+	}
+	if claimed, err := store.ClaimKnownOrderPoll(ctx, attempt, now, lease.Until); err != nil || !claimed {
+		t.Fatalf("claim known order poll: claimed=%t, err=%v", claimed, err)
+	}
+	return lease
 }
 
 // Advance after the database scan to exercise a stale recovery candidate using
@@ -269,8 +284,9 @@ func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
 				t.Fatalf("lookup changed the attempt unexpectedly: %+v, %v", stored, err)
 			}
 			if scenario == "completed" {
-				if !stored.NextPollAt.Equal(due) || !stored.UpdatedAt.Equal(now) {
-					t.Fatalf("successful lookup unexpectedly wrote a schedule: %+v", stored)
+				if !stored.NextPollAt.Equal(due) || !stored.UpdatedAt.Equal(now) ||
+					stored.KnownOrderPollLeaseUntil == nil || !stored.KnownOrderPollLeaseUntil.Equal(got.Lease.Until) {
+					t.Fatalf("successful lookup must hold its lease and leave the schedule unchanged: %+v", stored)
 				}
 			} else {
 				delay := retry.Sub(due)
@@ -282,7 +298,7 @@ func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
 					}
 				}
 				minimumDue := due.Add(delay)
-				if actualDelay := stored.NextPollAt.Sub(stored.UpdatedAt); actualDelay != delay ||
+				if actualDelay := stored.NextPollAt.Sub(stored.UpdatedAt); actualDelay != delay || stored.KnownOrderPollLeaseUntil != nil ||
 					stored.NextPollAt.Before(minimumDue) || stored.NextPollAt.After(minimumDue.Add(30*time.Second)) {
 					t.Fatalf("next poll = %v, delay = %v, want due no earlier than %v with delay %v", stored.NextPollAt, actualDelay, minimumDue, delay)
 				}
@@ -299,6 +315,99 @@ func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
 				if err != nil || record == nil || record.Stage != kafudadomain.StageCompleted {
 					t.Fatalf("late success did not complete: %+v, %v", record, err)
 				}
+			}
+		})
+	}
+}
+
+func TestExpiredKnownOrderPollFencesOlderWorker(t *testing.T) {
+	for _, oldStatus := range []string{"processing", "completed"} {
+		t.Run(oldStatus, func(t *testing.T) {
+			_, store, service := database(t)
+			ctx, now := t.Context(), time.Now().UTC().Truncate(time.Microsecond)
+			const orderID = 10
+			prepare(t, service, orderID, now)
+			attempt := reserve(t, service, orderID, now).Attempt
+			due := now.Add(time.Minute)
+			if err := service.MarkSubmitting(ctx, attempt.ID, "quo_lease", now, due); err != nil {
+				t.Fatal(err)
+			}
+			processing := kafudacontract.OrderResult{
+				ID: 101, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing",
+			}
+			if err := service.RecordResult(ctx, attempt.ID, processing, now, due); err != nil {
+				t.Fatal(err)
+			}
+			previousResponse := processing
+			previousResponse.Status = oldStatus
+			first, err := service.PollKnownOrder(ctx, ctx, &knownOrderLookupGateway{result: &previousResponse},
+				attempt.ID, due, due.Add(time.Minute), time.Hour)
+			if err != nil || first == nil {
+				t.Fatalf("initial poll = %+v, %v", first, err)
+			}
+
+			// Leave the first result unapplied, as if its worker stopped after GET.
+			replacement := kafudaapp.New(store)
+			expires := first.Lease.Until
+			gateway := &knownOrderLookupGateway{result: &processing}
+			beforeExpiry := expires.Add(-time.Microsecond)
+			if polled, err := replacement.PollKnownOrder(ctx, ctx, gateway, attempt.ID, beforeExpiry, expires.Add(time.Minute), time.Hour); polled != nil ||
+				!errors.Is(err, kafudadomain.ErrConflict) || gateway.id != 0 {
+				t.Fatalf("live lease allowed a second lookup: %+v, %v, upstream ID %d", polled, err, gateway.id)
+			}
+			second, err := replacement.PollKnownOrder(ctx, ctx, gateway, attempt.ID, expires, expires.Add(time.Minute), time.Hour)
+			if err != nil || second == nil || gateway.id != processing.ID || !second.Lease.Until.After(expires) || !second.Lease.ScheduledAt.Equal(due) {
+				t.Fatalf("expired lease was not replaced on the original schedule: %+v, %v", second, err)
+			}
+			received := expires.Add(time.Second)
+			next := received.Add(10 * time.Second)
+			if err := service.RescheduleKnownOrderResult(ctx, first.Lease, due, received, next, time.Hour); !errors.Is(err, kafudadomain.ErrConflict) {
+				t.Fatalf("old worker overwrote replacement lease on failure: %v", err)
+			}
+			apply := func(polled *kafudaapp.KnownOrderPoll, startedAt time.Time) (bool, error) {
+				var completed bool
+				err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
+					var err error
+					completed, err = kafudaapp.RecordResultInTransaction(tx, orderID, attempt.ID, polled.OrderResult,
+						startedAt, received, next, time.Hour, polled.Lease.Until)
+					return err
+				})
+				return completed, err
+			}
+			if oldStatus == "processing" {
+				if completed, err := apply(first, due); completed || !errors.Is(err, kafudadomain.ErrConflict) {
+					t.Fatalf("old processing result was accepted: completed=%t, err=%v", completed, err)
+				}
+			}
+			stillOwned, err := store.GetAttempt(ctx, attempt.ID)
+			if err != nil || stillOwned == nil || stillOwned.ActiveOrderID == nil || *stillOwned.ActiveOrderID != orderID ||
+				stillOwned.Status != kafudadomain.AttemptProcessing || !stillOwned.UpdatedAt.Equal(now) ||
+				stillOwned.NextPollAt == nil || !stillOwned.NextPollAt.Equal(due) || stillOwned.KnownOrderPollLeaseUntil == nil ||
+				!stillOwned.KnownOrderPollLeaseUntil.Equal(second.Lease.Until) {
+				t.Fatalf("stale worker altered active ownership or schedule: %+v, %v", stillOwned, err)
+			}
+			if oldStatus == "completed" {
+				if completed, err := apply(first, due); err != nil || !completed {
+					t.Fatalf("verified late terminal result was lost: completed=%t, err=%v", completed, err)
+				}
+				if completed, err := apply(second, expires); completed || !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+					t.Fatalf("progress reopened terminal result: completed=%t, err=%v", completed, err)
+				}
+			} else if completed, err := apply(second, expires); err != nil || completed {
+				t.Fatalf("replacement owner could not save progress: completed=%t, err=%v", completed, err)
+			}
+			finished, err := store.GetAttempt(ctx, attempt.ID)
+			if err != nil || finished == nil || finished.Reference != attempt.Reference || finished.KnownOrderPollLeaseUntil != nil ||
+				!finished.UpdatedAt.Equal(received) {
+				t.Fatalf("applied result did not release its lease: %+v, %v", finished, err)
+			}
+			if oldStatus == "completed" {
+				if finished.Status != kafudadomain.AttemptCompleted || finished.ActiveOrderID != nil || finished.NextPollAt != nil {
+					t.Fatalf("terminal result left active state: %+v", finished)
+				}
+			} else if finished.Status != kafudadomain.AttemptProcessing || finished.ActiveOrderID == nil || *finished.ActiveOrderID != orderID ||
+				finished.NextPollAt == nil || !finished.NextPollAt.Equal(next) {
+				t.Fatalf("progress lost the original active slot or next schedule: %+v", finished)
 			}
 		})
 	}

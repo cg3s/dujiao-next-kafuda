@@ -122,6 +122,7 @@ func (s *Store) SaveAttempt(record *kafudadomain.Attempt) error {
 		"status": record.Status, "active_order_id": record.ActiveOrderID, "upstream_order_id": record.UpstreamOrderID,
 		"masked_email": record.MaskedEmail, "charged_usd_cents": record.ChargedUSDCents,
 		"renewal_cancelled": record.RenewalCancelled, "next_poll_at": record.NextPollAt, "updated_at": record.UpdatedAt,
+		"known_order_poll_lease_until": record.KnownOrderPollLeaseUntil,
 	}
 	if record.Status == kafudadomain.AttemptSubmitting {
 		// The first checking-to-submitting transition freezes the quote.
@@ -161,11 +162,36 @@ func (s *Store) DueKnownOrderPolls(ctx context.Context, now time.Time, limit int
 		limit = 100
 	}
 	var result []kafudadomain.Attempt
-	err := s.db.WithContext(ctx).
-		Where("active_order_id IS NOT NULL AND upstream_order_id > 0 AND next_poll_at <= ?", now).
-		Where("status IN ?", []kafudadomain.AttemptStatus{kafudadomain.AttemptSubmitting, kafudadomain.AttemptProcessing, kafudadomain.AttemptReview}).
+	err := s.dueKnownOrderPolls(ctx, now).
 		Order("next_poll_at ASC, id ASC").Limit(limit).Find(&result).Error
 	return result, err
+}
+
+// ClaimKnownOrderPoll grants an expiring lease without altering the schedule or
+// observation timestamps used to apply the supplier result.
+func (s *Store) ClaimKnownOrderPoll(ctx context.Context, candidate kafudadomain.Attempt, now, leaseUntil time.Time) (bool, error) {
+	if now.IsZero() || !leaseUntil.After(now) {
+		return false, kafudadomain.ErrInvalidTransition
+	}
+	if candidate.NextPollAt == nil || candidate.UpstreamOrderID == nil {
+		return false, nil
+	}
+	result := s.dueKnownOrderPolls(ctx, now).
+		Where("id = ? AND order_id = ? AND upstream_order_id = ? AND status = ?", candidate.ID, candidate.OrderID, *candidate.UpstreamOrderID, candidate.Status).
+		Where("next_poll_at = ? AND updated_at = ? AND updated_at <= ?", *candidate.NextPollAt, candidate.UpdatedAt, now).
+		Where(`EXISTS (
+			SELECT 1 FROM kafuda_gpt_recharges AS recharge
+			WHERE recharge.order_id = kafuda_gpt_attempts.order_id AND recharge.current_attempt_id = kafuda_gpt_attempts.id
+		)`).
+		UpdateColumn("known_order_poll_lease_until", leaseUntil)
+	return result.RowsAffected == 1, result.Error
+}
+
+func (s *Store) dueKnownOrderPolls(ctx context.Context, now time.Time) *gorm.DB {
+	return s.db.WithContext(ctx).Model(&kafudadomain.Attempt{}).
+		Where("active_order_id = order_id AND upstream_order_id > 0 AND next_poll_at <= ?", now).
+		Where("status IN ?", []kafudadomain.AttemptStatus{kafudadomain.AttemptSubmitting, kafudadomain.AttemptProcessing, kafudadomain.AttemptReview}).
+		Where("(known_order_poll_lease_until IS NULL OR known_order_poll_lease_until <= ?)", now)
 }
 
 // Keep checking leases separate from upstream polling so a backlog of unknown

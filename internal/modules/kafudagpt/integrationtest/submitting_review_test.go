@@ -33,7 +33,12 @@ func TestReviewedAttemptAcceptsSubmittingWithoutClearingReview(t *testing.T) {
 			}
 			if reason == kafudadomain.ReasonResultApplyFailed {
 				retry := due.Add(time.Second)
-				if err := service.RescheduleKnownOrderResult(ctx, attempt.ID, due, due, due, retry, time.Minute); err != nil {
+				stored, err := store.GetAttempt(ctx, attempt.ID)
+				if err != nil || stored == nil {
+					t.Fatalf("known order poll fixture: %+v, %v", stored, err)
+				}
+				lease := claimTestKnownOrderPoll(t, ctx, store, *stored, due)
+				if err := service.RescheduleKnownOrderResult(ctx, lease, due, due, retry, time.Minute); err != nil {
 					t.Fatal(err)
 				}
 				due = retry
@@ -55,7 +60,7 @@ func TestReviewedAttemptAcceptsSubmittingWithoutClearingReview(t *testing.T) {
 			retryAt := receivedAt.Add(time.Minute)
 			apply := func(startedAt, received, retry time.Time) error {
 				return store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
-					completed, applyErr := kafudaapp.RecordResultInTransaction(tx, attempt.OrderID, attempt.ID, *got, startedAt, received, retry, 0)
+					completed, applyErr := kafudaapp.RecordResultInTransaction(tx, attempt.OrderID, attempt.ID, got.OrderResult, startedAt, received, retry, 0, got.Lease.Until)
 					if completed {
 						t.Error("submitting result cannot complete the recharge")
 					}
@@ -114,7 +119,10 @@ func TestRecoveredUnknownSubmissionBindsMatchingSubmitting(t *testing.T) {
 	if err != nil || got == nil || got.Status != "processing" || gateway.id != matched.ID {
 		t.Fatalf("known order did not resume progress: %+v, %v (id %d)", got, err, gateway.id)
 	}
-	if err := service.RecordResult(ctx, attempt.ID, *got, retry, retry.Add(time.Minute)); err != nil {
+	if err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
+		_, err := kafudaapp.RecordResultInTransaction(tx, attempt.OrderID, attempt.ID, got.OrderResult, retry, retry, retry.Add(time.Minute), 0, got.Lease.Until)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	record, err := store.GetRecharge(ctx, attempt.OrderID)

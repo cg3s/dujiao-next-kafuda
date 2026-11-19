@@ -172,7 +172,7 @@ func TestRechargeCompletionCanShareCallerTransaction(t *testing.T) {
 	result := kafudacontract.OrderResult{ID: 101, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed"}
 	orderWriteErr := errors.New("shop order update failed")
 	if err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
-		completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, now, time.Time{}, 0)
+		completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, now, time.Time{}, 0, time.Time{})
 		if err != nil || !completed {
 			t.Fatalf("expected fresh completion: %t, %v", completed, err)
 		}
@@ -190,7 +190,7 @@ func TestRechargeCompletionCanShareCallerTransaction(t *testing.T) {
 	}
 	for _, wantFresh := range []bool{true, false} {
 		if err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
-			completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, now, time.Time{}, 0)
+			completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, now, time.Time{}, 0, time.Time{})
 			if err != nil || completed != wantFresh {
 				t.Fatalf("fresh completion = %t, %v; want %t", completed, err, wantFresh)
 			}
@@ -218,7 +218,7 @@ func TestStalePollCannotRegressScheduleAndLateCompletionStillConverges(t *testin
 		var completed bool
 		err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
 			var err error
-			completed, err = kafudaapp.RecordResultInTransaction(tx, 10, id, result, startedAt, receivedAt, next, 0)
+			completed, err = kafudaapp.RecordResultInTransaction(tx, 10, id, result, startedAt, receivedAt, next, 0, time.Time{})
 			return err
 		})
 		return completed, err
@@ -278,7 +278,7 @@ func TestCompletionUsesSupplierRenewalResultFromCompletedResponse(t *testing.T) 
 			apply := func(at, nextPoll time.Time, wantCompleted bool) {
 				t.Helper()
 				err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
-					completed, err := kafudaapp.RecordResultInTransaction(tx, orderID, attempt.ID, result, at, at, nextPoll, 0)
+					completed, err := kafudaapp.RecordResultInTransaction(tx, orderID, attempt.ID, result, at, at, nextPoll, 0, time.Time{})
 					if err == nil && completed != wantCompleted {
 						t.Errorf("apply %s result completed = %t, want %t", result.Status, completed, wantCompleted)
 					}
@@ -329,7 +329,8 @@ func TestOverCapChargeRequiresReviewAndKeepsSupplierOutcome(t *testing.T) {
 					t.Fatalf("in-flight attempt must retain its slot and schedule: %+v, %v", attempt, err)
 				}
 				failedAt := *attempt.NextPollAt
-				if err := service.RescheduleKnownOrderResult(ctx, id, *attempt.NextPollAt, failedAt, failedAt, failedAt.Add(time.Minute), kafudaapp.DefaultPollReviewAfter); err != nil {
+				lease := claimTestKnownOrderPoll(t, ctx, store, *attempt, failedAt)
+				if err := service.RescheduleKnownOrderResult(ctx, lease, failedAt, failedAt, failedAt.Add(time.Minute), kafudaapp.DefaultPollReviewAfter); err != nil {
 					t.Fatal(err)
 				}
 				now = failedAt

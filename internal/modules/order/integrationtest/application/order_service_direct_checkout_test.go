@@ -838,7 +838,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				if err != nil {
 					t.Fatal(err)
 				}
-				completed, err = kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, *result, at, at, time.Minute)
+				completed, err = kafudaworkflow.ApplyPolledResult(f.options.OrderStore, childID, attempt.ID, *result, at, at, time.Minute, 0)
 				if err != nil || !completed {
 					t.Fatalf("polled order completion: completed=%t, err=%v", completed, err)
 				}
@@ -1333,7 +1333,7 @@ func testLateDirectCreateResponse(t *testing.T, newFixture func(*testing.T) dire
 					if err != nil || result == nil {
 						t.Fatalf("poll after late create: %+v, %v", result, err)
 					}
-					if completed, err = kafudaworkflow.ApplyResult(store, childID, attemptID, *result, lookupAt, lookupAt, submissionPollInterval); err != nil || !completed {
+					if completed, err = kafudaworkflow.ApplyPolledResult(store, childID, attemptID, *result, lookupAt, lookupAt, submissionPollInterval, 0); err != nil || !completed {
 						t.Fatalf("apply completion after late create: completed=%t, err=%v", completed, err)
 					}
 				}
@@ -1440,7 +1440,7 @@ func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, orde
 	if err != nil || result == nil || result.Status != string(supplierStatus) {
 		t.Fatalf("subsequent intermediate result not accepted: %+v, %v", result, err)
 	}
-	if completed, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, *result, lookupAt, lookupAt, pollInterval); err != nil || completed {
+	if completed, err := kafudaworkflow.ApplyPolledResult(f.options.OrderStore, childID, attempt.ID, *result, lookupAt, lookupAt, pollInterval, 0); err != nil || completed {
 		t.Fatalf("apply intermediate result: completed=%t, %v", completed, err)
 	}
 	stored = assertPendingLookup(3)
@@ -1450,7 +1450,7 @@ func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, orde
 		t.Fatalf("terminal result not found: %+v, %v, calls=%d", result, err, calls)
 	}
 	for _, wantCompleted := range []bool{true, false} {
-		completed, err := kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, *result, lookupAt, lookupAt, pollInterval)
+		completed, err := kafudaworkflow.ApplyPolledResult(f.options.OrderStore, childID, attempt.ID, *result, lookupAt, lookupAt, pollInterval, 0)
 		if err != nil || completed != wantCompleted {
 			t.Fatalf("late completion: completed=%t, %v; want %t", completed, err, wantCompleted)
 		}

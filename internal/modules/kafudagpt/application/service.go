@@ -263,13 +263,13 @@ func (s *Service) MarkUnknown(ctx context.Context, attemptID uint, now, nextPoll
 // RecordResult consumes a normalized query/create response, not arbitrary text.
 // A terminal duplicate is a no-op. Old terminal events never reopen a recharge.
 func (s *Service) RecordResult(ctx context.Context, attemptID uint, result kafudacontract.OrderResult, now, nextPoll time.Time) error {
-	return s.change(ctx, attemptID, resultUpdate(result, now, now, nextPoll, 0))
+	return s.change(ctx, attemptID, resultUpdate(result, now, now, nextPoll, 0, time.Time{}))
 }
 
 // RecordResultInTransaction allows the caller to complete the shop order in
 // the same transaction. The returned flag is true only for a fresh completion.
-func RecordResultInTransaction(tx kafudacontract.Transaction, orderID, attemptID uint, result kafudacontract.OrderResult, startedAt, now, nextPoll time.Time, reviewAfter time.Duration) (bool, error) {
-	update := resultUpdate(result, startedAt, now, nextPoll, reviewAfter)
+func RecordResultInTransaction(tx kafudacontract.Transaction, orderID, attemptID uint, result kafudacontract.OrderResult, startedAt, now, nextPoll time.Time, reviewAfter time.Duration, pollLeaseUntil time.Time) (bool, error) {
+	update := resultUpdate(result, startedAt, now, nextPoll, reviewAfter, pollLeaseUntil)
 	completed := false
 	err := changeInTransaction(tx, orderID, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 		if err := update(record, attempt); err != nil {
@@ -281,7 +281,7 @@ func RecordResultInTransaction(tx kafudacontract.Transaction, orderID, attemptID
 	return completed && err == nil, err
 }
 
-func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll time.Time, reviewAfter time.Duration) func(*kafudadomain.Recharge, *kafudadomain.Attempt) error {
+func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll time.Time, reviewAfter time.Duration, pollLeaseUntil time.Time) func(*kafudadomain.Recharge, *kafudadomain.Attempt) error {
 	return func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 		if result.ID == 0 || result.Reference != attempt.Reference || result.Product != record.Snapshot.Product || result.Plan != record.Snapshot.Plan || result.Country != record.Snapshot.Country {
 			return kafudadomain.ErrInvalidTransition
@@ -306,6 +306,9 @@ func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll ti
 		if next.Active() {
 			if !nextPoll.After(now) {
 				return kafudadomain.ErrInvalidTransition
+			}
+			if !pollLeaseUntil.IsZero() && (attempt.KnownOrderPollLeaseUntil == nil || !attempt.KnownOrderPollLeaseUntil.Equal(pollLeaseUntil)) {
+				return kafudadomain.ErrConflict
 			}
 			// Local recovery can move an unidentified submission to review before the
 			// first supplier response arrives. That response can still bind its ID.
@@ -337,6 +340,9 @@ func resultUpdate(result kafudacontract.OrderResult, startedAt, now, nextPoll ti
 			attempt.RenewalCancelled = result.RenewalCancelled
 		}
 		attempt.NextPollAt = nil
+		if !next.Active() || !pollLeaseUntil.IsZero() {
+			attempt.KnownOrderPollLeaseUntil = nil
+		}
 		if next.Active() {
 			attempt.NextPollAt = &nextPoll
 		} else {
