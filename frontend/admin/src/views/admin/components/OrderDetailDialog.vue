@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Package } from 'lucide-vue-next'
 import { adminAPI } from '@/api/admin'
@@ -47,6 +47,15 @@ const { t, locale } = useI18n()
 const detailLoading = ref(false)
 const detailError = ref('')
 const selectedOrder = ref<AdminOrder | null>(null)
+const openOrderId = computed(() => props.modelValue ? props.order?.id : undefined)
+let detailSession = 0
+let detailRequest = 0
+
+const captureOrderContext = (orderId: number) => {
+  const session = detailSession
+  return () => session === detailSession && openOrderId.value === orderId
+}
+
 const auth = useAdminAuthStore()
 const isOpenDirectOrder = (order: AdminOrder) => order.status === 'paid' || order.status === 'fulfilling'
 const directCompleting = ref(false)
@@ -54,6 +63,8 @@ const handleDirectManualAction = async (action: 'complete' | 'release') => {
   const order = selectedOrder.value
   const recharge = order?.direct_recharge
   if (!order || !isOpenDirectOrder(order) || recharge?.stage !== 'manual_delivery' || !recharge.attempt || recharge.attempt.active || directCompleting.value) return
+  const isCurrent = captureOrderContext(order.id)
+  if (!isCurrent()) return
   directCompleting.value = true
   try {
     const confirmed = await confirmAction({
@@ -61,15 +72,15 @@ const handleDirectManualAction = async (action: 'complete' | 'release') => {
       description: t(`admin.orders.directReview.${action}Prompt`),
       variant: 'destructive',
     })
-    if (!confirmed || selectedOrder.value !== order) return
+    if (!confirmed || !isCurrent()) return
     const submit = action === 'release' ? adminAPI.releaseDirectOrder : adminAPI.completeDirectOrder
     await submit(recharge.child_id, recharge.attempt.id)
-    if (selectedOrder.value === order) await fetchOrderDetail(order.id)
+    if (isCurrent()) await fetchOrderDetail(order.id)
     emit('refresh')
   } catch {
     // The shared API client displays the error.
   } finally {
-    directCompleting.value = false
+    if (isCurrent()) directCompleting.value = false
   }
 }
 const reconcileOrderID = ref('')
@@ -84,15 +95,17 @@ const reconcileDirect = async () => {
   const target = directReconciliation.value
   const upstreamID = reconcileOrderID.value.trim()
   if (!target || directCompleting.value || !/^\d{1,20}$/.test(upstreamID)) return
+  const isCurrent = captureOrderContext(target.order.id)
+  if (!isCurrent()) return
   directCompleting.value = true
   try {
     await adminAPI.reconcileDirectOrder(target.recharge.child_id, target.attempt.id, upstreamID)
-    if (selectedOrder.value === target.order) await fetchOrderDetail(target.order.id)
+    if (isCurrent()) await fetchOrderDetail(target.order.id)
     emit('refresh')
   } catch {
     // The shared API client displays the error.
   } finally {
-    directCompleting.value = false
+    if (isCurrent()) directCompleting.value = false
   }
 }
 watch(selectedOrder, () => { reconcileOrderID.value = '' })
@@ -548,37 +561,43 @@ const canManualConfirmPayment = (order: AdminOrder | null) => {
 }
 
 const submitManualConfirm = async () => {
-  if (!selectedOrder.value || !canManualConfirmPayment(selectedOrder.value)) return
+  const order = selectedOrder.value
+  if (!order || !canManualConfirmPayment(order) || manualConfirmSubmitting.value) return
   manualConfirmError.value = ''
   manualConfirmSuccess.value = ''
-  if (!manualConfirmPaymentId.value) {
+  const paymentId = manualConfirmPaymentId.value
+  if (!paymentId) {
     manualConfirmError.value = t('admin.orders.manualConfirmSelectRequired')
     return
   }
-  const confirmed = await confirmAction({
-    title: t('admin.orders.manualConfirmTitle'),
-    description: t('admin.orders.manualConfirmPrompt'),
-    variant: 'destructive',
-  })
-  if (!confirmed) return
 
+  const isCurrent = captureOrderContext(order.id)
+  if (!isCurrent()) return
   manualConfirmSubmitting.value = true
   try {
-    await adminAPI.manualConfirmOrderPayment(Number(selectedOrder.value.id), {
-      payment_id: manualConfirmPaymentId.value,
+    const confirmed = await confirmAction({
+      title: t('admin.orders.manualConfirmTitle'),
+      description: t('admin.orders.manualConfirmPrompt'),
+      variant: 'destructive',
+    })
+    if (!confirmed || !isCurrent()) return
+    await adminAPI.manualConfirmOrderPayment(order.id, {
+      payment_id: paymentId,
       provider_ref: manualConfirmForm.providerRef.trim() || undefined,
       remark: manualConfirmForm.remark.trim() || undefined,
     })
-    manualConfirmSuccess.value = t('admin.orders.manualConfirmSuccess')
-    manualConfirmForm.providerRef = ''
-    manualConfirmForm.remark = ''
-    manualConfirmPaymentId.value = null
-    await fetchOrderDetail(Number(selectedOrder.value.id))
+    if (isCurrent()) {
+      manualConfirmSuccess.value = t('admin.orders.manualConfirmSuccess')
+      manualConfirmForm.providerRef = ''
+      manualConfirmForm.remark = ''
+      manualConfirmPaymentId.value = null
+      await fetchOrderDetail(order.id)
+    }
     emit('refresh')
   } catch (err: any) {
-    manualConfirmError.value = err?.message || t('admin.orders.manualConfirmFailed')
+    if (isCurrent()) manualConfirmError.value = err?.message || t('admin.orders.manualConfirmFailed')
   } finally {
-    manualConfirmSubmitting.value = false
+    if (isCurrent()) manualConfirmSubmitting.value = false
   }
 }
 
@@ -609,34 +628,43 @@ const formatFeeRate = (channel: AdminPayment | { fee_rate: number | string; fixe
 }
 
 const fetchOrderDetail = async (orderId: number) => {
+  const isInSession = captureOrderContext(orderId)
+  if (!isInSession()) return
+  const request = ++detailRequest
+  const isCurrent = () => isInSession() && detailRequest === request
   detailLoading.value = true
   detailError.value = ''
   selectedOrder.value = null
   procurementOrder.value = null
   try {
     const response = await adminAPI.getOrder(orderId)
-    selectedOrder.value = response.data.data
-    if (selectedOrder.value?.direct_recharge) manualRefundForm.paymentFeeRefunded = false
-    ensureRefundTabAvailable(selectedOrder.value)
+    if (!isCurrent()) return
+    const order: AdminOrder | null = response.data.data
+    selectedOrder.value = order
+    if (order?.direct_recharge) manualRefundForm.paymentFeeRefunded = false
+    ensureRefundTabAvailable(order)
+    if (!order?.order_no) return
     try {
-      const procRes = await adminAPI.getProcurementOrders({ order_no: selectedOrder.value?.order_no, page_size: 1 })
+      const procRes = await adminAPI.getProcurementOrders({ order_no: order.order_no, page_size: 1 })
       const procList = procRes.data.data
-      if (Array.isArray(procList) && procList.length > 0) {
+      if (isCurrent() && Array.isArray(procList) && procList.length > 0) {
         procurementOrder.value = procList[0]
       }
     } catch {
       // silently ignore - procurement order may not exist
     }
   } catch (err: any) {
-    detailError.value = err?.message || t('admin.orders.detailFetchFailed')
+    if (isCurrent()) detailError.value = err?.message || t('admin.orders.detailFetchFailed')
   } finally {
-    detailLoading.value = false
+    if (isCurrent()) detailLoading.value = false
   }
 }
 
 const submitRefundToWallet = async () => {
   const order = selectedOrder.value
   if (!order || refundSubmitting.value) return
+  const isCurrent = captureOrderContext(order.id)
+  if (!isCurrent()) return
   refundError.value = ''
   refundSuccess.value = ''
   if (!canRefundToWallet(order)) {
@@ -667,26 +695,30 @@ const submitRefundToWallet = async () => {
         description: t('admin.orders.directReview.walletRefundPrompt', { amount: refundableAmountDisplay(order) }),
         variant: 'destructive',
       })
-      if (!confirmed || selectedOrder.value !== order) return
+      if (!confirmed || !isCurrent()) return
       await adminAPI.refundDirectOrderToWallet(order.id, { ...data, attempt_id: attempt.id, confirmed: true })
     } else {
       await adminAPI.refundOrderToWallet(order.id, data)
     }
-    refundSuccess.value = t('admin.orders.refundSuccess')
-    refundForm.amount = ''
-    refundForm.remark = ''
-    if (selectedOrder.value === order) await fetchOrderDetail(order.id)
+    if (isCurrent()) {
+      refundSuccess.value = t('admin.orders.refundSuccess')
+      refundForm.amount = ''
+      refundForm.remark = ''
+      await fetchOrderDetail(order.id)
+    }
     emit('refresh')
   } catch (err: any) {
-    refundError.value = err?.message || t('admin.orders.refundFailed')
+    if (isCurrent()) refundError.value = err?.message || t('admin.orders.refundFailed')
   } finally {
-    refundSubmitting.value = false
+    if (isCurrent()) refundSubmitting.value = false
   }
 }
 
 const submitManualRefund = async () => {
   const order = selectedOrder.value
   if (!order || manualRefundSubmitting.value) return
+  const isCurrent = captureOrderContext(order.id)
+  if (!isCurrent()) return
   manualRefundError.value = ''
   manualRefundSuccess.value = ''
   if (!canManualRefund(order)) {
@@ -718,32 +750,46 @@ const submitManualRefund = async () => {
         description: t('admin.orders.directReview.manualRefundPrompt', { amount: refundableAmountDisplay(order) }),
         variant: 'destructive',
       })
-      if (!confirmed || selectedOrder.value !== order) return
+      if (!confirmed || !isCurrent()) return
       await adminAPI.manualRefundDirectOrder(order.id, { ...data, attempt_id: attempt.id, confirmed: true })
     } else {
       await adminAPI.manualRefundOrder(order.id, data)
     }
-    manualRefundSuccess.value = t('admin.orders.manualRefundSuccess')
-    manualRefundForm.amount = ''
-    manualRefundForm.reason = ''
-    manualRefundForm.paymentFeeRefunded = true
-    if (selectedOrder.value === order) await fetchOrderDetail(order.id)
+    if (isCurrent()) {
+      manualRefundSuccess.value = t('admin.orders.manualRefundSuccess')
+      manualRefundForm.amount = ''
+      manualRefundForm.reason = ''
+      manualRefundForm.paymentFeeRefunded = true
+      await fetchOrderDetail(order.id)
+    }
     emit('refresh')
   } catch (err: any) {
-    manualRefundError.value = err?.message || t('admin.orders.refundFailed')
+    if (isCurrent()) manualRefundError.value = err?.message || t('admin.orders.refundFailed')
   } finally {
-    manualRefundSubmitting.value = false
+    if (isCurrent()) manualRefundSubmitting.value = false
   }
 }
 
-const handleClose = () => {
-  emit('update:modelValue', false)
+const resetDetail = () => {
+  detailSession++
   selectedOrder.value = null
+  procurementOrder.value = null
+  detailLoading.value = false
   detailError.value = ''
+  directCompleting.value = false
+  reconcileOrderID.value = ''
+  refundSubmitting.value = false
+  manualRefundSubmitting.value = false
+  manualConfirmSubmitting.value = false
   refundTab.value = 'wallet'
   resetRefundForm()
   resetManualRefundForm()
   resetManualConfirmForm()
+}
+
+const handleClose = () => {
+  resetDetail()
+  emit('update:modelValue', false)
 }
 
 const handleOpenFulfillment = (order: AdminOrder, parentId?: number) => {
@@ -751,35 +797,12 @@ const handleOpenFulfillment = (order: AdminOrder, parentId?: number) => {
   emit('openFulfillment', order, parentId)
 }
 
-// Watch for the order prop to trigger detail fetch
-watch(
-  () => props.order,
-  (newOrder) => {
-    if (newOrder && props.modelValue) {
-      refundTab.value = defaultRefundTab(newOrder)
-      resetRefundForm()
-      resetManualRefundForm()
-      resetManualConfirmForm()
-      fetchOrderDetail(newOrder.id)
-    }
-  }
-)
+watch(openOrderId, (orderId) => {
+  resetDetail()
+  if (orderId !== undefined) void fetchOrderDetail(orderId)
+}, { immediate: true })
 
-watch(
-  () => props.modelValue,
-  (open) => {
-    if (open && props.order) {
-      refundTab.value = defaultRefundTab(props.order)
-      resetRefundForm()
-      resetManualRefundForm()
-      resetManualConfirmForm()
-      fetchOrderDetail(props.order.id)
-    }
-    if (!open) {
-      handleClose()
-    }
-  }
-)
+onUnmounted(() => { detailSession++ })
 </script>
 
 <template>
