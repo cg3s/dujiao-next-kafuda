@@ -37,6 +37,7 @@ import (
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
 	"github.com/gin-gonic/gin"
+	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/shopspring/decimal"
@@ -46,18 +47,22 @@ import (
 
 func TestRedisKafudaProductionShopStartsSellingAndFulfills(t *testing.T) {
 	t.Run("sqlite", func(t *testing.T) {
-		testRedisKafudaProductionShop(t, 13, "")
+		testRedisKafudaProductionShop(t, 13, "", false)
 	})
 	t.Run("postgres", func(t *testing.T) {
 		dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 		if dsn == "" {
 			t.Skip("TEST_POSTGRES_DSN is empty")
 		}
-		testRedisKafudaProductionShop(t, 12, dsn)
+		testRedisKafudaProductionShop(t, 12, dsn, false)
 	})
 }
 
-func testRedisKafudaProductionShop(t *testing.T, redisDB int, postgresDSN string) {
+func TestRedisKafudaCatalogRefreshOutrunsLongOrderPoll(t *testing.T) {
+	testRedisKafudaProductionShop(t, 11, "", true)
+}
+
+func testRedisKafudaProductionShop(t *testing.T, redisDB int, postgresDSN string, shortCatalogTTL bool) {
 	t.Helper()
 	redis, inspector := kafudaRedisFixture(t, redisDB)
 	ctx := t.Context()
@@ -141,6 +146,18 @@ func testRedisKafudaProductionShop(t *testing.T, redisDB int, postgresDSN string
 		Server: config.ServerConfig{Mode: gin.TestMode}, Web: config.WebConfig{AdminPath: "/admin"}, Queue: *redis,
 		KafudaGPT: config.KafudaGPTConfig{APIBaseURL: supplier.URL, APIKey: apiKey, SalesEnabled: true, ReferenceLookupVerified: true,
 			ProductCode: cardCode, MaxCostCents: 2500, AllowedKinds: []string{"new"}, CatalogTTLSeconds: 3600, PollIntervalSeconds: 5},
+	}
+	if shortCatalogTTL {
+		cfg.KafudaGPT.CatalogTTLSeconds = 24
+		cfg.KafudaGPT.PollIntervalSeconds = 120
+		// Establish the queue without running a task so worker readiness can be
+		// measured independently of the first catalog or order tick.
+		opt, _ := queue.BuildServerConfig(redis)
+		client := asynq.NewClient(opt)
+		t.Cleanup(func() { _ = client.Close() })
+		if _, err := client.Enqueue(queue.NewKafudaRecoverChecksTask(), asynq.Queue(queue.DefaultQueue), asynq.ProcessIn(5*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	deps, err := container.NewContainer(cfg)
 	if err != nil {
@@ -234,6 +251,14 @@ func testRedisKafudaProductionShop(t *testing.T, redisDB int, postgresDSN string
 	worker := startWorker()
 	assertAvailability(false)
 	request(http.MethodPost, orders+"/preview", items+"}", response.CodeOK, nil)
+	if shortCatalogTTL {
+		awaitKafudaRedis(t, time.Until(catalog.ExpiresAt)+3*time.Second, func() bool {
+			assertAvailability(false)
+			return !time.Now().Before(catalog.ExpiresAt)
+		})
+		request(http.MethodPost, orders+"/preview", items+"}", response.CodeOK, nil)
+		return
+	}
 	if err := inspector.PauseQueue(queue.DefaultQueue); err != nil {
 		t.Fatal(err)
 	}

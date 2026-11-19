@@ -62,6 +62,15 @@ func (c *Config) KafudaPollInterval() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+// KafudaCatalogRefreshInterval lets the worker check freshness independently of order polling.
+func (c *Config) KafudaCatalogRefreshInterval() time.Duration {
+	if c == nil || !c.KafudaGPT.SalesEnabled || c.KafudaGPT.CatalogTTLSeconds <= 0 {
+		return 0
+	}
+	seconds := max(1, min(60, c.KafudaGPT.CatalogTTLSeconds/4))
+	return time.Duration(seconds) * time.Second
+}
+
 // AppConfig 应用级配置
 type AppConfig struct {
 	SecretKey  string `mapstructure:"secret_key"`  // 通用加密密钥（AES-256，用于加密存储敏感信息）

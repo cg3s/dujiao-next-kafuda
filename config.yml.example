@@ -57,7 +57,7 @@ kafuda_gpt:
   allowed_kinds: [new]                  # 仅接受已验证业务类型；升级等能力须单独确认
   sales_enabled: false                 # 仅控制新购，关停后仍处理已付订单
   reference_lookup_verified: false     # 验证控制台按 reference 人工查单渠道后设为 true
-  catalog_ttl_seconds: 3600             # worker 在缓存到期前刷新目录
+  catalog_ttl_seconds: 3600             # worker 按有效期独立调度目录刷新
   poll_review_after_seconds: 86400      # 直充尝试迟迟无结论时转待核对，继续查单
   poll_interval_seconds: 10            # 周期扫描与正常查单间隔，限制在 5–900 秒
   review_after_seconds: 900

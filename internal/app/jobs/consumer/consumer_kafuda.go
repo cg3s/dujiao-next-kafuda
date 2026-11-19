@@ -40,15 +40,23 @@ func (c *Consumer) handleKafudaRecoverChecks(ctx context.Context, _ *asynq.Task)
 	if module.Gateway == nil {
 		return recoveryErr
 	}
-	pollErr := c.pollKnownKafudaOrders(ctx)
-	if c.Config != nil && c.Config.KafudaGPT.SalesEnabled && module.Catalog != nil {
-		refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		if err := module.Catalog.RefreshBeforeExpiry(refreshCtx, c.Config.KafudaPollInterval()); err != nil {
-			logger.Warnw("kafuda_scheduled_catalog_refresh_failed")
-		}
+	return errors.Join(recoveryErr, c.pollKnownKafudaOrders(ctx))
+}
+
+func (c *Consumer) handleKafudaRefreshCatalog(ctx context.Context, _ *asynq.Task) error {
+	if c == nil || c.Container == nil || c.KafudaGPT == nil || c.KafudaGPT.Gateway == nil || c.KafudaGPT.Catalog == nil {
+		return nil
 	}
-	return errors.Join(recoveryErr, pollErr)
+	interval := c.Config.KafudaCatalogRefreshInterval()
+	if interval == 0 {
+		return nil
+	}
+	refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := c.KafudaGPT.Catalog.RefreshBeforeExpiry(refreshCtx, interval); err != nil {
+		logger.Warnw("kafuda_scheduled_catalog_refresh_failed")
+	}
+	return nil
 }
 
 func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {

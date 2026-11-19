@@ -393,6 +393,7 @@ const (
 	TaskProcurementPollStatus       = "procurement:poll_status"
 	TaskProcurementSyncAccepted     = "procurement:sync_accepted"
 	TaskKafudaRecoverChecks         = "kafuda_gpt:recover_checks"
+	TaskKafudaRefreshCatalog        = "kafuda_gpt:refresh_catalog"
 	TaskUpstreamSyncProducts        = "upstream:sync_products"
 	TaskUpstreamSyncStock           = "upstream:sync_stock"
 	TaskReconciliationRun           = "reconciliation:run"

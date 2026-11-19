@@ -63,6 +63,17 @@ func registerPeriodicTasks(scheduler *asynq.Scheduler, consumer *jobconsumer.Con
 			logger.Infow("scheduler_register_kafuda_recover_checks_ok", "entry_id", entryID)
 		}
 	}
+	if consumer.Container != nil && consumer.KafudaGPT != nil && consumer.KafudaGPT.Gateway != nil && consumer.KafudaGPT.Catalog != nil {
+		if interval := consumer.Config.KafudaCatalogRefreshInterval(); interval > 0 {
+			task := queue.NewKafudaRefreshCatalogTask()
+			entryID, err := scheduler.Register("@every "+interval.String(), task, asynq.Queue(queue.DefaultQueue), asynq.Unique(time.Minute))
+			if err != nil {
+				logger.Warnw("scheduler_register_kafuda_refresh_catalog_failed", "error", err)
+			} else {
+				logger.Infow("scheduler_register_kafuda_refresh_catalog_ok", "entry_id", entryID)
+			}
+		}
+	}
 	if consumer.AffiliateService != nil {
 		task := queue.NewAffiliateConfirmCommissionsTask()
 		entryID, err := scheduler.Register("@every 1m", task, asynq.Queue(queue.DefaultQueue))
