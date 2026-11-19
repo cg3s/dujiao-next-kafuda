@@ -129,7 +129,8 @@ func newDirectAuthorizer(c *container.Container) ordertransport.DirectAuthorizer
 			return ordertransport.ErrOrderNotFound
 		case errors.Is(err, kafudadomain.ErrInvalidTransition):
 			return ordertransport.ErrOrderStatusInvalid
-		case err == kafudaapp.ErrQuotePolicy, err == kafudaapp.ErrQuoteUnavailable, err == kafudaapp.ErrQuoteRegionLocked:
+		case err == kafudaapp.ErrQuotePolicy, err == kafudaapp.ErrQuoteUnavailable, err == kafudaapp.ErrQuoteRegionLocked,
+			err == kafudacontract.ErrMerchantBalanceInsufficient:
 			return nil
 		default:
 			return mapOrderTransportError(err)

@@ -152,7 +152,7 @@ func testDirectSalesStopPreservesPaidOrderAndSKURehearsal(t *testing.T, postgres
 		t.Fatal(err)
 	}
 	// Rebuild the handlers and commerce policy around the same paid checkout and SKU.
-	stopped, router, buyer, other := assembleDirectRehearsalRouter(t, f.withSalesEnabled(false), storefrontDir, "", adminDir, nil)
+	stopped, router, buyer, other := assembleDirectRehearsalRouter(t, f.withSalesEnabled(false), storefrontDir, "", adminDir, directRehearsalOptions{})
 	if reason := stopped.commerce.SalesBlockReason(t.Context()); reason != "sales_disabled" {
 		t.Fatalf("replacement server did not stop new sales: %q", reason)
 	}

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/signal"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -24,11 +25,14 @@ import (
 	walletwiring "github.com/dujiao-next/internal/bootstrap/wallet"
 	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/constants"
+	coupondomain "github.com/dujiao-next/internal/modules/coupon/domain"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	userauthapp "github.com/dujiao-next/internal/modules/identity/userauth/application"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
+	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderhttp "github.com/dujiao-next/internal/modules/order/transport/http"
 	paymentapp "github.com/dujiao-next/internal/modules/payment/application"
 	paymentcontract "github.com/dujiao-next/internal/modules/payment/contract"
@@ -61,6 +65,7 @@ type directRehearsalOptions struct {
 	productType      string
 	renewalCancelled *bool
 	postgresDSN      string
+	wrapBuyerGateway func(kafudacontract.Gateway) kafudacontract.Gateway
 }
 
 func newDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigin string, adminDirs ...string) (directCheckoutFixture, *gin.Engine, string, string) {
@@ -87,17 +92,18 @@ func newConfiguredDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigi
 	}
 	gin.SetMode(gin.TestMode)
 	f := newDirectCheckoutFixture(t, productType, options.postgresDSN)
-	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &paymentdomain.Payment{}, &paymentdomain.PaymentChannel{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &paymentdomain.Payment{}, &paymentdomain.PaymentChannel{},
+		&walletdomain.Account{}, &walletdomain.Transaction{}, &coupondomain.CouponUsage{}); err != nil {
 		t.Fatal(err)
 	}
 	account := walletdomain.Account{UserID: f.users[0].ID, Balance: money.FromDecimal(decimal.NewFromInt(200))}
 	if err := f.db.Create(&account).Error; err != nil {
 		t.Fatal(err)
 	}
-	return assembleDirectRehearsalRouter(t, f, storefrontDir, onlineOrigin, adminDir, options.renewalCancelled)
+	return assembleDirectRehearsalRouter(t, f, storefrontDir, onlineOrigin, adminDir, options)
 }
 
-func assembleDirectRehearsalRouter(t *testing.T, f directCheckoutFixture, storefrontDir, onlineOrigin, adminDir string, renewalCancelled *bool) (directCheckoutFixture, *gin.Engine, string, string) {
+func assembleDirectRehearsalRouter(t *testing.T, f directCheckoutFixture, storefrontDir, onlineOrigin, adminDir string, options directRehearsalOptions) (directCheckoutFixture, *gin.Engine, string, string) {
 	t.Helper()
 	if adminDir != "" && storefrontDir == "" {
 		t.Fatal("admin rehearsal requires built storefront assets")
@@ -114,11 +120,15 @@ func assembleDirectRehearsalRouter(t *testing.T, f directCheckoutFixture, storef
 		}
 		online, paymentRegistry = newDirectRehearsalOnlinePayment(t, f, payments, onlineOrigin)
 	}
+	buyerGateway := newDirectRehearsalBuyerGateway(f)
+	if options.wrapBuyerGateway != nil {
+		buyerGateway = options.wrapBuyerGateway(buyerGateway)
+	}
 	deps := &container.Container{
 		OrderStore: f.options.OrderStore, OrderService: orderapp.NewOrderService(f.options), UserStore: f.options.UserStore,
 		WalletRepo: wallets, WalletService: walletService, PaymentStore: payments, PaymentChannelStore: channels,
 		KafudaGPT: &kafudawiring.Module{
-			Store: f.store, Commerce: f.commerce, Gateway: newDirectRehearsalBuyerGateway(f),
+			Store: f.store, Commerce: f.commerce, Gateway: buyerGateway,
 			Records: kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), f.options.OrderStore),
 		},
 		PaymentService: paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{
@@ -157,17 +167,20 @@ func assembleDirectRehearsalRouter(t *testing.T, f directCheckoutFixture, storef
 		writeDirectRehearsalPage(c, token, f.product.ID, f.sku.ID, f.planLabel, storefrontSlug, online != nil, f.adminTokens["support"])
 	})
 	member := router.Group("/api/v1", func(c *gin.Context) {
-		c.Request = c.Request.WithContext(resellercontract.WithTenantContext(c.Request.Context(), f.tenant))
+		if _, ok := resellercontract.TenantFromContext(c.Request.Context()); !ok {
+			c.Request = c.Request.WithContext(resellercontract.WithTenantContext(c.Request.Context(), f.tenant))
+		}
 	}, middleware.UserJWTAuthMiddleware(jwtSecret, f.options.UserStore))
 	orders := orderwiring.New(deps)
 	orderhttp.RegisterUserPreviewRoute(member, orders.Preview)
 	orderhttp.RegisterUserCreateRoute(member, orders.Create)
 	orderhttp.RegisterUserCreateAndPayRoute(member, orders.Create)
 	orderhttp.RegisterUserReadRoutes(member, orders.User)
+	orderhttp.RegisterUserCancelRoute(member, orders.User)
 	orderhttp.RegisterUserDirectAuthorizationRoute(member, orders.User)
 	orderhttp.RegisterUserPaymentChannelsRoute(member, orders.User)
 	member.GET("/wallet", walletwiring.New(deps).User.GetWallet)
-	newDirectRehearsalActions(f, adminDir != "", renewalCancelled).register(member)
+	newDirectRehearsalActions(f, adminDir != "", options.renewalCancelled).register(member)
 	if online != nil {
 		online.register(router, member, deps)
 	}
@@ -183,7 +196,22 @@ func TestDirectBuyerFlowRehearsal(t *testing.T) {
 
 func TestDirectBuyerAuthorizationRehearsal(t *testing.T) {
 	forEachDirectRehearsalDatabase(t, func(t *testing.T, dsn string) {
-		f, router, buyer, other := newConfiguredDirectRehearsalRouter(t, "", "", "", directRehearsalOptions{postgresDSN: dsn})
+		checks, creates := 0, 0
+		f, router, buyer, other := newConfiguredDirectRehearsalRouter(t, "", "", "", directRehearsalOptions{
+			postgresDSN: dsn,
+			wrapBuyerGateway: func(gateway kafudacontract.Gateway) kafudacontract.Gateway {
+				return directRehearsalGateway{Gateway: gateway,
+					check: func(ctx context.Context, req kafudacontract.CheckRequest) (*kafudacontract.CheckResult, error) {
+						checks++
+						return gateway.Check(ctx, req)
+					},
+					create: func(ctx context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
+						creates++
+						return gateway.CreateOrder(ctx, req)
+					},
+				}
+			},
+		})
 		const orders = "/api/v1/orders"
 		checkout := fmt.Sprintf(`{"items":[{"product_id":%d,"sku_id":%d,"quantity":1}]`, f.product.ID, f.sku.ID)
 		type createdOrder struct {
@@ -203,10 +231,28 @@ func TestDirectBuyerAuthorizationRehearsal(t *testing.T) {
 		const private = "abc-private-access-token"
 		validBody := fmt.Sprintf(`{"session":%q}`, fmt.Sprintf(`{"sessionToken":%q,"accessToken":%q}`, directRehearsalSession, private))
 		authorize(draft.OrderNo, validBody, buyer, response.CodeBadRequest)
+		readDirectRehearsalJSON(t, router, http.MethodPost, orders+"/"+draft.OrderNo+"/cancel", "", buyer, response.CodeOK, nil)
+		authorize(draft.OrderNo, validBody, buyer, response.CodeBadRequest)
+		authorize(paid.OrderNo, validBody, "", response.CodeUnauthorized)
 		authorize(paid.OrderNo, validBody, other, response.CodeNotFound)
+		for _, scenario := range []struct {
+			tenant resellercontract.TenantContext
+			code   int
+		}{
+			{resellercontract.ResellerTenantContext("reseller.example.test", 9, 11, "reseller.example.test"), response.CodeUnauthorized},
+			{resellercontract.UnavailableTenantContext("unavailable.example.test", "fixture"), response.CodeNotFound},
+		} {
+			scoped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				router.ServeHTTP(w, r.WithContext(resellercontract.WithTenantContext(r.Context(), scenario.tenant)))
+			})
+			readDirectRehearsalJSON(t, scoped, http.MethodPost, orders+"/"+paid.OrderNo+"/direct-authorize", validBody, buyer, scenario.code, nil)
+		}
 		authorize(paid.OrderNo, `{"session":"eyJfixture.abc.def"}`, buyer, response.CodeBadRequest)
 		authorize(paid.OrderNo, `{"session":"local-rehearsal-session","access_token":"ignored"}`, buyer, response.CodeBadRequest)
 		authorize(paid.OrderNo, validBody+strings.Repeat(" ", 32<<10), buyer, response.CodeBadRequest)
+		if checks != 0 || creates != 0 {
+			t.Fatal("a rejected request reached the supplier")
+		}
 		if msg := authorize(paid.OrderNo, `{"session":"expired-fixture"}`, buyer, response.CodeBadRequest); !strings.Contains(msg, "expired") {
 			t.Fatal("invalid sessions should offer the buyer a retry")
 		}
@@ -218,6 +264,9 @@ func TestDirectBuyerAuthorizationRehearsal(t *testing.T) {
 		}
 		authorize(paid.OrderNo, validBody, buyer, response.CodeOK)
 		authorize(paid.OrderNo, validBody, buyer, response.CodeBadRequest)
+		if checks != 2 || creates != 1 {
+			t.Fatalf("expected one expired check and one valid submission, got %d checks and %d supplier orders", checks, creates)
+		}
 		readDirectRehearsalJSON(t, router, http.MethodGet, progressPath, "", buyer, response.CodeOK, &progress)
 		if progress.Stage != string(kafudadomain.StageCompleted) {
 			t.Fatalf("buyer sees stage %q after successful submission", progress.Stage)
@@ -234,6 +283,120 @@ func TestDirectBuyerAuthorizationRehearsal(t *testing.T) {
 		var deliveries int64
 		if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Count(&deliveries).Error; err != nil || deliveries != 1 {
 			t.Fatalf("expected a single fulfillment, got %d (%v)", deliveries, err)
+		}
+	})
+}
+
+func TestDirectBuyerQuotePolicyRehearsal(t *testing.T) {
+	forEachDirectRehearsalDatabase(t, func(t *testing.T, dsn string) {
+		for _, scenario := range []struct {
+			name         string
+			mutate       func(*kafudacontract.CheckResult)
+			createErr    error
+			reason       string
+			refundAndTry bool
+		}{
+			{name: "locked_account", mutate: func(r *kafudacontract.CheckResult) { r.RegionLocked = true }, reason: kafudadomain.ReasonQuoteRegionLocked, refundAndTry: true},
+			{name: "ineligible_plan", mutate: func(r *kafudacontract.CheckResult) { r.Plans[0].Status = "not_eligible" }, reason: kafudadomain.ReasonQuoteUnavailable},
+			{name: "wrong_plan", mutate: func(r *kafudacontract.CheckResult) { r.Plans[0].Plan = "other-plan" }, reason: kafudadomain.ReasonQuoteUnavailable},
+			{name: "wrong_region", mutate: func(r *kafudacontract.CheckResult) { r.Country = "US" }, reason: kafudadomain.ReasonQuotePolicy},
+			{name: "expired_quote", mutate: func(r *kafudacontract.CheckResult) { r.Plans[0].ExpiresAt = time.Now().Add(-time.Minute) }, reason: kafudadomain.ReasonQuoteExpired},
+			{name: "wrong_card", mutate: func(r *kafudacontract.CheckResult) { r.Plans[0].AutoCard.ProductCode = "other-card" }, reason: kafudadomain.ReasonQuotePolicy},
+			{name: "over_cost_limit", mutate: func(r *kafudacontract.CheckResult) {
+				r.Plans[0].AutoCard.LoadCents = 2000
+				r.Plans[0].AutoCard.TotalCents = 2900
+			}, reason: kafudadomain.ReasonQuotePolicy},
+			{name: "unapproved_kind", mutate: func(r *kafudacontract.CheckResult) { r.Plans[0].Kind = "upgrade" }, reason: kafudadomain.ReasonQuotePolicy},
+			{name: "merchant_balance", createErr: kafudacontract.ErrMerchantBalanceInsufficient, reason: kafudadomain.ReasonMerchantBalanceInsufficient},
+		} {
+			t.Run(scenario.name, func(t *testing.T) {
+				checkCalls, createCalls := 0, 0
+				storefrontDir, adminDir := "", ""
+				if scenario.refundAndTry {
+					storefrontDir, adminDir = directRehearsalHTMLFixtures(t)
+				}
+				f, router, buyer, _ := newConfiguredDirectRehearsalRouter(t, storefrontDir, "", adminDir, directRehearsalOptions{
+					postgresDSN: dsn,
+					wrapBuyerGateway: func(gateway kafudacontract.Gateway) kafudacontract.Gateway {
+						return directRehearsalGateway{Gateway: gateway,
+							check: func(ctx context.Context, req kafudacontract.CheckRequest) (*kafudacontract.CheckResult, error) {
+								checkCalls++
+								result, err := gateway.Check(ctx, req)
+								if result != nil && err == nil && scenario.mutate != nil {
+									scenario.mutate(result)
+								}
+								return result, err
+							},
+							create: func(ctx context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
+								createCalls++
+								if scenario.createErr != nil {
+									return nil, scenario.createErr
+								}
+								return gateway.CreateOrder(ctx, req)
+							},
+						}
+					},
+				})
+				checkout := fmt.Sprintf(`{"items":[{"product_id":%d,"sku_id":%d,"quantity":1}],"use_balance":true}`, f.product.ID, f.sku.ID)
+				var paid struct {
+					OrderNo string `json:"order_no"`
+					Paid    bool   `json:"order_paid"`
+				}
+				readDirectRehearsalJSON(t, router, http.MethodPost, "/api/v1/orders/create-and-pay", checkout, buyer, response.CodeOK, &paid)
+				if !paid.Paid || paid.OrderNo == "" {
+					t.Fatal("expected a wallet-paid order")
+				}
+				orders := f.options.OrderStore
+				before, err := orders.GetByOrderNoAndUserScoped(paid.OrderNo, f.users[0].ID, ordercontract.TenantScope{})
+				if err != nil || before == nil || before.PaidAt == nil || len(before.Children) != 1 {
+					t.Fatalf("expected one paid fulfillment child: %v", err)
+				}
+				beforeRecharge, err := f.store.GetRecharge(t.Context(), before.Children[0].ID)
+				if err != nil || beforeRecharge == nil {
+					t.Fatalf("read original recharge: %v", err)
+				}
+				orderPath := "/api/v1/orders/" + paid.OrderNo
+				authorization := fmt.Sprintf(`{"session":%q}`, directRehearsalSession)
+				code, stage, publicStage, orderStatus := response.CodeOK, kafudadomain.StageManualDelivery, kafudadomain.StageManualReview, constants.OrderStatusFulfilling
+				if scenario.reason == kafudadomain.ReasonQuoteExpired {
+					code, stage, publicStage, orderStatus = response.CodeBadRequest, kafudadomain.StageWaiting, kafudadomain.StageWaiting, constants.OrderStatusPaid
+				}
+				readDirectRehearsalJSON(t, router, http.MethodPost, orderPath+"/direct-authorize", authorization, buyer, code, nil)
+				var progress orderhttp.DirectStatus
+				readDirectRehearsalJSON(t, router, http.MethodGet, orderPath+"/direct-status", "", buyer, response.CodeOK, &progress)
+				if progress.Stage != string(publicStage) {
+					t.Fatalf("buyer sees %s, want %s", progress.Stage, publicStage)
+				}
+				stored, err := f.store.GetRecharge(t.Context(), before.Children[0].ID)
+				if err != nil || stored == nil || stored.Stage != stage || stored.ReasonCode != scenario.reason || stored.CurrentAttemptID == nil || !reflect.DeepEqual(stored.Snapshot, beforeRecharge.Snapshot) {
+					t.Fatalf("upstream rejection did not preserve the snapshot or expected stage: %v", err)
+				}
+				after, err := orders.GetByOrderNoAndUserScoped(paid.OrderNo, f.users[0].ID, ordercontract.TenantScope{})
+				if err != nil || after == nil || after.Status != orderStatus || len(after.Children) != 1 || after.Children[0].Status != orderStatus ||
+					after.PaidAt == nil || !after.PaidAt.Equal(*before.PaidAt) || !after.RefundedAmount.IsZero() ||
+					!before.TotalAmount.Equal(after.TotalAmount.Decimal) || !before.WalletPaidAmount.Equal(after.WalletPaidAmount.Decimal) ||
+					!before.Children[0].TotalAmount.Equal(after.Children[0].TotalAmount.Decimal) {
+					t.Fatalf("upstream rejection altered the payment or order status: %v", err)
+				}
+				var wallet struct{ Balance string }
+				readDirectRehearsalJSON(t, router, http.MethodGet, "/api/v1/wallet", "", buyer, response.CodeOK, &wallet)
+				if wallet.Balance != "100.00" {
+					t.Fatalf("wallet balance changed after supplier rejection: %s", wallet.Balance)
+				}
+				if scenario.refundAndTry {
+					refundPath := fmt.Sprintf("/api/v1/admin/orders/%d/direct-refund-to-wallet", before.ID)
+					refundBody := fmt.Sprintf(`{"attempt_id":%d,"confirmed":true,"amount":"100.00"}`, *stored.CurrentAttemptID)
+					readDirectRehearsalJSON(t, router, http.MethodPost, refundPath, refundBody, f.adminTokens["support"], response.CodeOK, nil)
+					readDirectRehearsalJSON(t, router, http.MethodPost, orderPath+"/direct-authorize", authorization, buyer, response.CodeBadRequest, nil)
+				}
+				wantCreates := 0
+				if scenario.createErr != nil {
+					wantCreates = 1
+				}
+				if checkCalls != 1 || createCalls != wantCreates {
+					t.Fatalf("unexpected supplier calls: check=%d, create=%d", checkCalls, createCalls)
+				}
+			})
 		}
 	})
 }
