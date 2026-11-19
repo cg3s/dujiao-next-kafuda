@@ -28,6 +28,16 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestPostgresAdminCardSecretMutationsPreserveCheckoutReservation(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	testAdminCardSecretMutationsPreserveCheckoutReservation(t, func(t *testing.T) couponLimitRaceFixture {
+		return seedCouponLimitRaceFixture(t, openPostgresDirectRaceDB(t, dsn), "card-admin-reservation", 0, 0)
+	})
+}
+
 func TestPostgresCardSecretStatusRechecksConcurrentSKUDeletion(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 	if dsn == "" {

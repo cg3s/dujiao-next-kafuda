@@ -1,9 +1,14 @@
 package application
 
-import "errors"
+import (
+	"errors"
+
+	cardsecretcontract "github.com/dujiao-next/internal/modules/cardsecret/contract"
+)
 
 var (
-	ErrNotFound           = errors.New("not found")
+	ErrNotFound           = cardsecretcontract.ErrNotFound
+	ErrOrderReservation   = cardsecretcontract.ErrOrderReservation
 	ErrInsufficient       = errors.New("card secret insufficient")
 	ErrInvalid            = errors.New("card secret invalid")
 	ErrCreateFailed       = errors.New("card secret create failed")

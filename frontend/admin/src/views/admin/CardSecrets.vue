@@ -600,7 +600,7 @@ const applyBatchStatus = async () => {
       status: batchStatusTarget.value,
     })
     const fallbackCount = currentScopeCount.value
-    const affected = Number(response?.data?.data?.affected || fallbackCount)
+    const affected = Number(response?.data?.data?.affected ?? fallbackCount)
     batchActionSuccess.value = t('admin.cardSecrets.success.batchStatusUpdated', { count: affected })
     await refreshAfterMutations()
   } catch (error: any) {
@@ -628,7 +628,7 @@ const deleteSecretsInScope = async () => {
   try {
     const response = await adminAPI.batchDeleteCardSecrets(payload)
     const fallbackCount = currentScopeCount.value
-    const affected = Number(response?.data?.data?.affected || fallbackCount)
+    const affected = Number(response?.data?.data?.affected ?? fallbackCount)
     batchActionSuccess.value = t('admin.cardSecrets.success.batchDeleted', { count: affected })
     if (operationScope.value === 'filtered' && currentBatchId.value && affected >= filteredSecretCount.value) {
       clearBatchFilter()

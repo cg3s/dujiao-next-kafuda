@@ -236,7 +236,7 @@ func (s *Service) UpdateCardSecret(id uint, secret, status string) (*cardsecretd
 		if err := secrets.Update(&cardsecretdomain.Secret{
 			ID: id, Secret: trimmedSecret, Status: trimmedStatus, UpdatedAt: time.Now(),
 		}); err != nil {
-			return ErrUpdateFailed
+			return err
 		}
 		item, err = secrets.GetByID(id)
 		if err != nil {
@@ -248,7 +248,7 @@ func (s *Service) UpdateCardSecret(id uint, secret, status string) (*cardsecretd
 		return nil
 	})
 	if err != nil {
-		if errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrFetchFailed) {
+		if errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrOrderReservation) || errors.Is(err, ErrFetchFailed) {
 			return nil, err
 		}
 		return nil, ErrUpdateFailed
