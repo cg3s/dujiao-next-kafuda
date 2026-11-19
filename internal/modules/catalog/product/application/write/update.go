@@ -7,6 +7,7 @@ import (
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	"github.com/dujiao-next/internal/modules/catalog/product/manualform"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/jsonslice"
@@ -125,46 +126,45 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 		return nil, productcontract.ErrManualStockInvalid
 	}
 
-	var normalizedSKUs []normalizedProductSKU
-	if len(input.SKUs) > 0 || fulfillmentType == constants.FulfillmentTypeKafudaGPT {
-		if s.skus == nil {
-			return nil, productcontract.ErrProductSKUInvalid
+	isDirect := fulfillmentType == constants.FulfillmentTypeKafudaGPT
+	var directOptions []kafudacontract.SKUOption
+	if isDirect {
+		directOptions, err = s.directSKUOptions()
+		if err != nil {
+			return nil, err
 		}
-		existingSKUs, listErr := s.skus.ListByProduct(product.ID, false)
-		if listErr != nil {
-			return nil, listErr
+		product.PurchaseType, product.MinPurchaseQuantity, product.MaxPurchaseQuantity = constants.ProductPurchaseMember, 1, 1
+		product.StockDisplayMode = constants.ProductStockDisplayHidden
+	}
+	var normalizedSKUs []normalizedProductSKU
+	normalizeSKUs := func(skuRepo SKURepository) error {
+		if skuRepo == nil {
+			return productcontract.ErrProductSKUInvalid
+		}
+		existingSKUs, err := skuRepo.ListByProduct(product.ID, false)
+		if err != nil {
+			return err
 		}
 		existingSKUMap := make(map[uint]productdomain.ProductSKU, len(existingSKUs))
 		for _, sku := range existingSKUs {
 			existingSKUMap[sku.ID] = sku
 		}
-		if fulfillmentType == constants.FulfillmentTypeKafudaGPT {
-			input.SKUs, err = s.prepareDirectSKUs(input.SKUs, existingSKUMap)
+		skuInputs := input.SKUs
+		if isDirect {
+			skuInputs, err = prepareDirectSKUs(skuInputs, existingSKUMap, directOptions)
 			if err != nil {
-				return nil, err
+				return err
 			}
 		}
-		var normalizeErr error
-		normalizedSKUs, priceAmount, manualStockTotal, normalizeErr = s.normalizeProductSKUInputs(input.SKUs, fulfillmentType, existingSKUMap)
-		if normalizeErr != nil {
-			return nil, normalizeErr
+		normalizedSKUs, priceAmount, manualStockTotal, err = s.normalizeProductSKUInputs(skuInputs, fulfillmentType, existingSKUMap)
+		return err
+	}
+	if !isDirect && len(input.SKUs) > 0 {
+		if err := normalizeSKUs(s.skus); err != nil {
+			return nil, err
 		}
 	}
 
-	product.PriceAmount = money.FromDecimal(priceAmount)
-	if fulfillmentType == constants.FulfillmentTypeKafudaGPT {
-		product.PurchaseType, product.MinPurchaseQuantity, product.MaxPurchaseQuantity = constants.ProductPurchaseMember, 1, 1
-		product.StockDisplayMode = constants.ProductStockDisplayHidden
-		if !priceAmount.IsPositive() {
-			product.IsActive = false
-		}
-	}
-	if len(normalizedSKUs) > 0 {
-		product.CostPriceAmount = money.FromDecimal(minActiveCostPrice(normalizedSKUs))
-	} else {
-		product.CostPriceAmount = money.FromDecimal(input.CostPriceAmount.Round(2))
-	}
-	product.ManualStockTotal = manualStockTotal
 	// 单规格且未提交库存时不改 SKU 库存，避免旧表单值覆盖下单预占后的实时库存
 	var singleSKUStock *int
 	if input.ManualStockTotal != nil || fulfillmentType != constants.FulfillmentTypeManual {
@@ -190,6 +190,26 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 				return err
 			}
 		}
+		if isDirect {
+			// Merge omitted fields from the locked SKU rows, which may have
+			// changed since the edit and the catalog were read.
+			if err := normalizeSKUs(skuRepo); err != nil {
+				return err
+			}
+			if input.IsActive == nil {
+				product.IsActive = current.IsActive
+			}
+			if !priceAmount.IsPositive() {
+				product.IsActive = false
+			}
+		}
+		product.PriceAmount = money.FromDecimal(priceAmount)
+		if len(normalizedSKUs) > 0 {
+			product.CostPriceAmount = money.FromDecimal(minActiveCostPrice(normalizedSKUs))
+		} else {
+			product.CostPriceAmount = money.FromDecimal(input.CostPriceAmount.Round(2))
+		}
+		product.ManualStockTotal = manualStockTotal
 		// Legacy orders without a SKU still update stock on the product row.
 		product.ManualStockLocked = current.ManualStockLocked
 		product.ManualStockSold = current.ManualStockSold

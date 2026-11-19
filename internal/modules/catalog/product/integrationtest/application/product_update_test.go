@@ -36,6 +36,115 @@ func (s productUpdateTransactionHook) WithinTransaction(fn func(ordercontract.Tr
 	return s.Store.WithinTransaction(fn)
 }
 
+func TestDirectProductEditPreservesConcurrentSKUConfiguration(t *testing.T) {
+	for _, scenario := range []struct {
+		name         string
+		explicitSale bool
+		wantSale     int64
+		wantSort     int
+	}{
+		{name: "omitted_sku_list", wantSale: 130, wantSort: 34},
+		{name: "explicit_sale_omitted_cost", explicitSale: true, wantSale: 120, wantSort: 26},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			svc, db := newProductServiceForTest(t)
+			pool, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = pool.Close() })
+
+			targetCode := kafudacontract.SKUCode("plus", "PH")
+			fallbackCode := kafudacontract.SKUCode("plus", "JP")
+			revision := uint64(2)
+			catalog := &directProductTestCatalog{options: []kafudacontract.SKUOption{
+				{SKUCode: targetCode, Plan: "plus", Country: "PH", Available: true, CatalogRevision: revision},
+				{SKUCode: fallbackCode, Plan: "plus", Country: "JP", Available: true, CatalogRevision: revision},
+			}}
+			svc.Write.SetDirectCatalog(catalog)
+			active, inactive := true, false
+			input := productwrite.CreateProductInput{
+				Slug: "direct-concurrent-edit", TitleJSON: jsonmap.JSON{"zh-CN": "原商品"},
+				FulfillmentType: constants.FulfillmentTypeKafudaGPT,
+				SKUs: []productwrite.ProductSKUInput{
+					{SKUCode: targetCode, PriceAmount: decimal.NewFromInt(100), IsActive: &inactive, DirectCatalogRevision: &revision, SortOrder: 23},
+					{SKUCode: fallbackCode, PriceAmount: decimal.NewFromInt(180), CostPriceAmount: decimal.NewFromInt(90), CostPriceProvided: true,
+						IsActive: &active, DirectCatalogRevision: &revision, SortOrder: 24},
+				},
+			}
+			product, err := svc.Write.Create(input)
+			if err != nil || product == nil {
+				t.Fatalf("create direct product: %+v, %v", product, err)
+			}
+			id := fmt.Sprint(product.ID)
+			product, err = svc.Read.GetAdminByID(id)
+			if err != nil || product == nil || len(product.SKUs) != 2 {
+				t.Fatalf("load original direct SKUs: %+v, %v", product, err)
+			}
+			skuIDs := make(map[string]uint, len(product.SKUs))
+			for _, sku := range product.SKUs {
+				skuIDs[sku.SKUCode] = sku.ID
+			}
+
+			newCost := decimal.NewFromInt(55)
+			newer := input
+			newer.IsActive = &inactive
+			newer.SKUs = []productwrite.ProductSKUInput{
+				{ID: skuIDs[targetCode], SKUCode: targetCode, PriceAmount: decimal.NewFromInt(130), CostPriceAmount: newCost, CostPriceProvided: true,
+					IsActive: &active, DirectCatalogRevision: &revision, SortOrder: 34},
+				{ID: skuIDs[fallbackCode], SKUCode: fallbackCode, PriceAmount: decimal.NewFromInt(180), CostPriceAmount: decimal.NewFromInt(90),
+					CostPriceProvided: true, IsActive: &inactive, DirectCatalogRevision: &revision, SortOrder: 24},
+			}
+			orders := productUpdateTransactionHook{Store: ordergormstore.New(db, "test-guest-credential-secret-with-32-bytes"), before: func() {
+				if _, err := svc.Write.Update(id, newer); err != nil {
+					t.Fatalf("save the newer SKU configuration after the first edit's preflight: %v", err)
+				}
+			}}
+			editor := productwrite.NewWriteService(productwrite.Options{
+				Products: productgormstore.NewProductStore(db), SKUs: productgormstore.NewSKUStore(db),
+				CardSecrets: cardsecretgormstore.New(db), Orders: orders,
+			})
+			editor.SetDirectCatalog(catalog)
+			input.TitleJSON = jsonmap.JSON{"zh-CN": "已编辑"}
+			input.SKUs = nil
+			if scenario.explicitSale {
+				input.SKUs = []productwrite.ProductSKUInput{{
+					ID: skuIDs[targetCode], SKUCode: targetCode, PriceAmount: decimal.NewFromInt(scenario.wantSale),
+					DirectCatalogRevision: &revision, SortOrder: scenario.wantSort,
+				}}
+			}
+			if _, err := editor.Update(id, input); err != nil {
+				t.Fatalf("save the first edit: %v", err)
+			}
+			product, err = svc.Read.GetAdminByID(id)
+			if err != nil || product == nil || len(product.SKUs) != 2 {
+				t.Fatalf("load saved direct product: %+v, %v", product, err)
+			}
+			wantSale := decimal.NewFromInt(scenario.wantSale)
+			if !product.PriceAmount.Equal(wantSale) || !product.CostPriceAmount.Equal(newCost) || product.IsActive ||
+				product.TitleJSON["zh-CN"] != "已编辑" {
+				t.Errorf("edit lost the new aggregate SKU prices, disabled state, or requested title: %+v", product)
+			}
+			for _, sku := range product.SKUs {
+				if sku.ID != skuIDs[sku.SKUCode] || sku.DirectCatalogRevision != revision || !sku.DirectCostConfigured {
+					t.Errorf("edit lost SKU identity, catalog review, or confirmed cost: %+v", sku)
+				}
+				switch sku.SKUCode {
+				case targetCode:
+					if !sku.IsActive || !sku.PriceAmount.Equal(wantSale) || !sku.CostPriceAmount.Equal(newCost) || sku.SortOrder != scenario.wantSort {
+						t.Errorf("edit replaced the target SKU configuration: %+v", sku)
+					}
+				case fallbackCode:
+					if sku.IsActive || !sku.PriceAmount.Equal(decimal.NewFromInt(180)) || !sku.CostPriceAmount.Equal(decimal.NewFromInt(90)) || sku.SortOrder != 24 {
+						t.Errorf("edit replaced the fallback SKU configuration: %+v", sku)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestProductEditPreservesLegacyOrderStockChanges(t *testing.T) {
 	for _, setStock := range []bool{false, true} {
 		t.Run(fmt.Sprintf("set_stock_%t", setStock), func(t *testing.T) {

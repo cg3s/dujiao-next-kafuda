@@ -6,6 +6,7 @@ import (
 
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	"github.com/shopspring/decimal"
 )
 
@@ -41,9 +42,9 @@ func validateDirectTypeChange(product *productdomain.Product, repositories Trans
 	return nil
 }
 
-// prepareDirectSKUs runs before the write transaction. Catalog reads must never
+// directSKUOptions runs before the write transaction. Catalog reads must never
 // acquire the global SQLite connection while the product transaction holds it.
-func (s *WriteService) prepareDirectSKUs(inputs []ProductSKUInput, existing map[uint]productdomain.ProductSKU) ([]ProductSKUInput, error) {
+func (s *WriteService) directSKUOptions() ([]kafudacontract.SKUOption, error) {
 	if s.directCatalog == nil {
 		return nil, productcontract.ErrProductSKUInvalid
 	}
@@ -51,6 +52,10 @@ func (s *WriteService) prepareDirectSKUs(inputs []ProductSKUInput, existing map[
 	if err != nil {
 		return nil, productcontract.ErrProductSKUInvalid
 	}
+	return options, nil
+}
+
+func prepareDirectSKUs(inputs []ProductSKUInput, existing map[uint]productdomain.ProductSKU, options []kafudacontract.SKUOption) ([]ProductSKUInput, error) {
 	oldByCode := make(map[string]productdomain.ProductSKU, len(existing))
 	for _, sku := range existing {
 		oldByCode[sku.SKUCode] = sku

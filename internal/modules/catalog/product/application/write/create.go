@@ -45,7 +45,11 @@ func (s *WriteService) Create(input CreateProductInput) (*productdomain.Product,
 		return nil, productcontract.ErrFulfillmentInvalid
 	}
 	if fulfillmentType == constants.FulfillmentTypeKafudaGPT {
-		input.SKUs, err = s.prepareDirectSKUs(input.SKUs, nil)
+		options, err := s.directSKUOptions()
+		if err != nil {
+			return nil, err
+		}
+		input.SKUs, err = prepareDirectSKUs(input.SKUs, nil, options)
 		if err != nil {
 			return nil, err
 		}
