@@ -88,6 +88,34 @@ func TestCheckUsesEphemeralBodyAndMasksAccount(t *testing.T) {
 	}
 }
 
+func TestCheckRequiresExplicitRegionLockResult(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+		locked      bool
+	}{
+		{name: "missing"},
+		{name: "unlocked", field: `"region_lock":null,`},
+		{name: "locked", field: `"region_lock":{"country":"US"},`, locked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprintf(w, `{"data":{"check_id":"check","pay_mode":"auto_card","country":"PH",%s"plans":[{"plan":"plus","status":"available"}]}}`, tc.field)
+			})
+			result, err := c.Check(t.Context(), kafudacontract.CheckRequest{Country: "PH", PayMode: "auto_card"})
+			if tc.field == "" {
+				var apiErr *kafudacontract.APIError
+				if result != nil || !errors.As(err, &apiErr) || apiErr.Code != "invalid_response" {
+					t.Fatalf("missing region eligibility returned %+v, %v", result, err)
+				}
+				return
+			}
+			if err != nil || result == nil || result.RegionLocked != tc.locked {
+				t.Fatalf("explicit region eligibility returned %+v, %v", result, err)
+			}
+		})
+	}
+}
+
 func TestCheckDistinguishesZeroAndMissingQuotedAmounts(t *testing.T) {
 	const quote = `{"plan":"plus","status":"available","quote_id":"quote","price_cents":0,"auto_card":{"product_code":"P5378XB","open_fee_cents":100,"load_cents":0,"total_cents":100}}`
 	for _, tc := range []struct {
@@ -103,7 +131,7 @@ func TestCheckDistinguishesZeroAndMissingQuotedAmounts(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
-				fmt.Fprintf(w, `{"data":{"check_id":"check","pay_mode":"auto_card","country":"PH","plans":[%s]}}`,
+				fmt.Fprintf(w, `{"data":{"check_id":"check","pay_mode":"auto_card","country":"PH","region_lock":null,"plans":[%s]}}`,
 					strings.Replace(quote, tc.remove, tc.replace, 1))
 			})
 			got, err := c.Check(t.Context(), kafudacontract.CheckRequest{Country: "PH", PayMode: "auto_card"})

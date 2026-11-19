@@ -89,7 +89,8 @@ func (c *Client) Check(ctx context.Context, input kafudacontract.CheckRequest) (
 	if err := c.request(ctx, http.MethodPost, "/api/v1/gpt/check", input, "", &wire); err != nil {
 		return nil, err
 	}
-	if wire.CheckID == "" || wire.Country != input.Country || wire.PayMode != input.PayMode || len(wire.Plans) == 0 {
+	// An explicit null means unlocked. An omitted result cannot establish eligibility.
+	if wire.CheckID == "" || wire.Country != input.Country || wire.PayMode != input.PayMode || len(wire.RegionLock) == 0 || len(wire.Plans) == 0 {
 		return nil, apiError(0, "invalid_response")
 	}
 	plans := make([]kafudacontract.Quote, len(wire.Plans))
@@ -109,7 +110,7 @@ func (c *Client) Check(ctx context.Context, input kafudacontract.CheckRequest) (
 	}
 	return &kafudacontract.CheckResult{
 		CheckID: wire.CheckID, PayMode: wire.PayMode, Country: wire.Country,
-		RegionLocked: len(wire.RegionLock) > 0 && !bytes.Equal(bytes.TrimSpace(wire.RegionLock), []byte("null")),
+		RegionLocked: !bytes.Equal(bytes.TrimSpace(wire.RegionLock), []byte("null")),
 		MaskedEmail:  maskEmail(wire.Account.Email), Plans: plans,
 	}, nil
 }
