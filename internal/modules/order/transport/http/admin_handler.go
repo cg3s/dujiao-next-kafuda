@@ -170,13 +170,21 @@ type AdminDirectStatus struct {
 }
 
 type AdminDirectAttempt struct {
-	ID              uint          `json:"id"`
-	Sequence        uint          `json:"sequence"`
-	Active          bool          `json:"active"`
-	Reference       string        `json:"reference,omitempty"`
-	UpstreamOrderID string        `json:"upstream_order_id,omitempty"`
-	MaskedEmail     string        `json:"masked_email,omitempty"`
-	CardChargedUSD  *money.Amount `json:"card_charged_usd,omitempty"`
+	ID              uint                   `json:"id"`
+	Sequence        uint                   `json:"sequence"`
+	Active          bool                   `json:"active"`
+	Reference       string                 `json:"reference,omitempty"`
+	UpstreamOrderID string                 `json:"upstream_order_id,omitempty"`
+	MaskedEmail     string                 `json:"masked_email,omitempty"`
+	CardChargedUSD  *money.Amount          `json:"card_charged_usd,omitempty"`
+	QuoteCosts      *AdminDirectQuoteCosts `json:"quote_costs,omitempty"`
+}
+
+type AdminDirectQuoteCosts struct {
+	ServiceFeeUSD  money.Amount `json:"service_fee_usd"`
+	CardOpenFeeUSD money.Amount `json:"card_open_fee_usd"`
+	CardLoadUSD    money.Amount `json:"card_load_usd"`
+	TotalUSD       money.Amount `json:"total_usd"`
 }
 
 type AdminDirectStatusReader func(context.Context, *orderdomain.Order) (*AdminDirectStatus, error)

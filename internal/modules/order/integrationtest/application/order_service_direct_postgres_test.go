@@ -124,6 +124,9 @@ func TestPostgresDirectCentralMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := db.Migrator().DropColumn(&kafudadomain.Attempt{}, "QuoteCosts"); err != nil {
+		t.Fatalf("prepare attempts from before quote capture: %v", err)
+	}
 	for range 2 {
 		if err := databasemigrations.AutoMigrate(); err != nil {
 			t.Fatalf("central migration: %v", err)
@@ -143,6 +146,13 @@ func TestPostgresDirectCentralMigration(t *testing.T) {
 		}
 		if record.Stage != want.stage || record.Version != want.version || record.ReasonCode != costReason {
 			t.Fatalf("order %d after backfill: stage=%s version=%d reason=%s", want.orderID, record.Stage, record.Version, record.ReasonCode)
+		}
+		var attempt kafudadomain.Attempt
+		if err := db.First(&attempt, "order_id = ?", want.orderID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if attempt.QuoteCosts != nil || attempt.ChargedUSDCents == nil || *attempt.ChargedUSDCents != charge {
+			t.Fatalf("migration changed legacy amounts for order %d: %+v", want.orderID, attempt)
 		}
 	}
 	migrator := db.Migrator()
@@ -164,6 +174,9 @@ func TestPostgresDirectCentralMigration(t *testing.T) {
 	if !migrator.HasIndex(&kafudadomain.Attempt{}, "idx_kafuda_gpt_active_order") ||
 		!migrator.HasConstraint(&kafudadomain.Attempt{}, "chk_kafuda_gpt_active_attempt") {
 		t.Error("missing active attempt index or constraint")
+	}
+	if !migrator.HasColumn(&kafudadomain.Attempt{}, "QuoteCosts") {
+		t.Error("missing attempt quote cost snapshot column")
 	}
 }
 

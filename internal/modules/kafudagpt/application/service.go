@@ -124,15 +124,32 @@ func ReserveInTransaction(tx kafudacontract.Transaction, orderID uint, now, leas
 	return result, nil
 }
 
-// MarkSubmitting is committed before calling POST /gpt/orders. Its QuoteID and
-// Reference preserve the exact non-credential request for safe reconciliation.
+// MarkSubmitting records a submission for which no quote breakdown is available.
 func (s *Service) MarkSubmitting(ctx context.Context, attemptID uint, quoteID string, now, nextPoll time.Time) error {
+	return s.markSubmitting(ctx, attemptID, quoteID, nil, now, nextPoll)
+}
+
+// MarkSubmittingWithQuote commits both the quote and the non-credential
+// submission identifiers before the caller can send POST /gpt/orders.
+func (s *Service) MarkSubmittingWithQuote(ctx context.Context, attemptID uint, quote kafudacontract.Quote, now, nextPoll time.Time) error {
+	return s.markSubmitting(ctx, attemptID, quote.QuoteID, &quote, now, nextPoll)
+}
+
+func (s *Service) markSubmitting(ctx context.Context, attemptID uint, quoteID string, quote *kafudacontract.Quote, now, nextPoll time.Time) error {
 	if strings.TrimSpace(quoteID) == "" || len(quoteID) > 128 || now.IsZero() || !nextPoll.After(now) {
 		return kafudadomain.ErrInvalidTransition
 	}
 	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
-		if !hasLiveCheck(record, attempt, now) {
+		if !hasLiveCheck(record, attempt, now) || attempt.QuoteID != "" {
 			return kafudadomain.ErrInvalidTransition
+		}
+		if quote != nil {
+			costs := autoCardQuoteCosts(*quote, record.Snapshot)
+			if costs == nil || quote.Plan != record.Snapshot.Plan || quote.Status != "available" ||
+				!allowedKind(quote.Kind, record.Snapshot.AllowedKinds) || !quote.ExpiresAt.After(now) {
+				return ErrQuotePolicy
+			}
+			attempt.QuoteCosts = costs
 		}
 		attempt.Status, attempt.QuoteID, attempt.UpdatedAt = kafudadomain.AttemptSubmitting, quoteID, now
 		attempt.NextPollAt = &nextPoll

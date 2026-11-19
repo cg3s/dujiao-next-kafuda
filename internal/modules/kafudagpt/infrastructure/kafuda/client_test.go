@@ -67,14 +67,15 @@ func TestCheckUsesEphemeralBodyAndMasksAccount(t *testing.T) {
 		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Session != session || body.Country != "PH" || body.ProductCode != "P5378XB" || body.PayMode != "auto_card" {
 			t.Error("check body does not match input")
 		}
-		fmt.Fprint(w, `{"data":{"check_id":"chk_1","pay_mode":"auto_card","country":"PH","region_lock":null,"account":{"email":"buyer@example.com"},"plans":[{"plan":"plus","status":"available","kind":"new","quote_id":"quo_1","expires_at":"2026-11-16T10:00:00Z","auto_card":{"product_code":"P5378XB","open_fee_cents":50,"load_cents":1700,"total_cents":1780}}]}}`)
+		fmt.Fprint(w, `{"data":{"check_id":"chk_1","pay_mode":"auto_card","country":"PH","region_lock":null,"account":{"email":"buyer@example.com"},"plans":[{"plan":"plus","status":"available","kind":"new","quote_id":"quo_1","expires_at":"2026-11-16T10:00:00Z","price_cents":30,"auto_card":{"product_code":"P5378XB","open_fee_cents":50,"load_cents":1700,"total_cents":1780}}]}}`)
 	})
 	input := kafudacontract.CheckRequest{Country: "PH", PayMode: "auto_card", ProductCode: "P5378XB", Session: session}
 	got, err := c.Check(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.MaskedEmail != "b***@***" || got.RegionLocked || len(got.Plans) != 1 || got.Plans[0].AutoCard.TotalCents != 1780 {
+	if got.MaskedEmail != "b***@***" || got.RegionLocked || len(got.Plans) != 1 || got.Plans[0].PriceCents != 30 ||
+		got.Plans[0].AutoCard == nil || got.Plans[0].AutoCard.TotalCents != 1780 {
 		t.Fatalf("unexpected normalized check result: %+v", got)
 	}
 	if strings.Contains(fmt.Sprintf("%+v %#v", input, input), "test-only-session") {
@@ -82,6 +83,39 @@ func TestCheckUsesEphemeralBodyAndMasksAccount(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprintf("%+v %#v", c, c), "test-only-token") {
 		t.Fatal("formatting the client exposed its merchant token")
+	}
+}
+
+func TestCheckDistinguishesZeroAndMissingQuotedAmounts(t *testing.T) {
+	const quote = `{"plan":"plus","status":"available","quote_id":"quote","price_cents":0,"auto_card":{"product_code":"P5378XB","open_fee_cents":100,"load_cents":0,"total_cents":100}}`
+	for _, tc := range []struct {
+		name, remove, replace string
+		complete              bool
+	}{
+		{name: "explicit_zero", complete: true},
+		{name: "missing_service_fee", remove: `"price_cents":0,`},
+		{name: "null_service_fee", remove: `"price_cents":0`, replace: `"price_cents":null`},
+		{name: "missing_open_fee", remove: `"open_fee_cents":100,`},
+		{name: "missing_card_load", remove: `"load_cents":0,`},
+		{name: "missing_total", remove: `,"total_cents":100`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprintf(w, `{"data":{"check_id":"check","pay_mode":"auto_card","country":"PH","plans":[%s]}}`,
+					strings.Replace(quote, tc.remove, tc.replace, 1))
+			})
+			got, err := c.Check(t.Context(), kafudacontract.CheckRequest{Country: "PH", PayMode: "auto_card"})
+			if err != nil || got == nil || len(got.Plans) != 1 || got.Plans[0].Plan != "plus" || got.Plans[0].QuoteID != "quote" {
+				t.Fatalf("unexpected check result: %+v, %v", got, err)
+			}
+			plan := got.Plans[0]
+			if (plan.AutoCard != nil) != tc.complete {
+				t.Fatalf("complete quote amounts = %v, want %v", plan.AutoCard != nil, tc.complete)
+			}
+			if tc.complete && (plan.PriceCents != 0 || plan.AutoCard.LoadCents != 0 || plan.AutoCard.OpenFeeCents != 100 || plan.AutoCard.TotalCents != 100) {
+				t.Fatal("explicit fee amounts did not round-trip")
+			}
+		})
 	}
 }
 

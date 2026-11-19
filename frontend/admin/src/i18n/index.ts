@@ -971,6 +971,13 @@ const messages = {
           upstreamId: '上游订单号',
           account: '脱敏账号',
           cardCharged: '上游卡实扣',
+          quoteCosts: {
+            title: '上游报价明细',
+            serviceFee: '服务费',
+            cardOpenFee: '开卡费',
+            cardLoad: '卡充值金额',
+            total: '报价合计',
+          },
           stages: {
             waiting_session: '待提交',
             checking: '检查中',
@@ -5643,6 +5650,13 @@ const messages = {
           upstreamId: '上游訂單編號',
           account: '遮蔽帳號',
           cardCharged: '上游卡實扣',
+          quoteCosts: {
+            title: '上游報價明細',
+            serviceFee: '服務費',
+            cardOpenFee: '開卡費',
+            cardLoad: '卡片儲值金額',
+            total: '報價合計',
+          },
           stages: {
             waiting_session: '待提交',
             checking: '檢查中',
@@ -10315,6 +10329,13 @@ const messages = {
           upstreamId: 'Supplier order ID',
           account: 'Masked account',
           cardCharged: 'Upstream card charge',
+          quoteCosts: {
+            title: 'Upstream quote breakdown',
+            serviceFee: 'Service fee',
+            cardOpenFee: 'Card opening fee',
+            cardLoad: 'Card funding',
+            total: 'Quote total',
+          },
           stages: {
             waiting_session: 'Awaiting submission',
             checking: 'Checking',

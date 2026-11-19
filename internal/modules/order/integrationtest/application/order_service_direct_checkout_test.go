@@ -83,6 +83,7 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 	ctx, now := context.Background(), time.Now().UTC()
 	const upstreamOrderID uint64 = 9007199254740993
 	var parentID, childID, manualDeliveryID, refundedID uint
+	var parentOrderNo string
 	for _, scenario := range []struct {
 		name          string
 		stage         kafudadomain.Stage
@@ -115,6 +116,7 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 			refundedID = order.ID
 		case "manual_review":
 			parentID, childID = order.ID, child
+			parentOrderNo = order.OrderNo
 			reserved, err := records.Reserve(ctx, child, now, now.Add(time.Minute))
 			if err != nil {
 				t.Fatal(err)
@@ -155,13 +157,13 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 	if err := f.db.Create(&ordinary).Error; err != nil {
 		t.Fatal(err)
 	}
-	handler := orderwiring.New(&container.Container{
+	handlers := orderwiring.New(&container.Container{
 		OrderService: service, OrderStore: f.options.OrderStore, UserStore: userstore.New(f.db),
 		PaymentStore: paymentstore.New(f.db, "test-guest-credential-secret-with-32-bytes"),
 		KafudaGPT:    &kafudawiring.Module{Store: f.store},
-	}).Admin
+	})
 	router := gin.New()
-	orderhttp.RegisterAdminRoutes(router.Group("/admin"), handler)
+	orderhttp.RegisterAdminRoutes(router.Group("/admin"), handlers.Admin)
 	get := func(path string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
@@ -171,7 +173,8 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 		raw := get(fmt.Sprintf("/admin/orders/%d", id)).Body.String()
 		if !strings.Contains(raw, `"status":"fulfilling"`) || !strings.Contains(raw, `"upstream_order_id":"9007199254740993"`) || !strings.Contains(raw, `"reason":"result_apply_failed"`) ||
 			!strings.Contains(raw, `"active":true`) || !strings.Contains(raw, `"card_charged_usd":"15.46"`) ||
-			strings.Contains(raw, "private@example.test") || strings.Contains(raw, "private-quote") || strings.Contains(raw, `"charged_usd_cents"`) {
+			strings.Contains(raw, "private@example.test") || strings.Contains(raw, "private-quote") || strings.Contains(raw, `"charged_usd_cents"`) ||
+			strings.Contains(raw, `"quote_costs"`) {
 			t.Fatalf("unexpected projection: %s", raw)
 		}
 	}
@@ -207,6 +210,76 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 			}
 		})
 	}
+	t.Run("quote_costs_without_upstream_id", func(t *testing.T) {
+		if err := f.db.Model(&kafudadomain.Attempt{}).Where("order_id = ?", childID).
+			Select("quote_costs", "upstream_order_id", "charged_usd_cents").Updates(&kafudadomain.Attempt{
+			QuoteCosts: &kafudadomain.QuoteCosts{ServiceFeeCents: 905, CardLoadCents: 46, TotalCents: 951},
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+		wantCosts := map[string]string{
+			"service_fee_usd": "9.05", "card_open_fee_usd": "0.00", "card_load_usd": "0.46", "total_usd": "9.51",
+		}
+		for _, id := range []uint{parentID, childID} {
+			raw := get(fmt.Sprintf("/admin/orders/%d", id)).Body.Bytes()
+			var body struct {
+				Code int `json:"status_code"`
+				Data struct {
+					Direct struct {
+						Attempt struct {
+							QuoteCosts      map[string]string `json:"quote_costs"`
+							UpstreamOrderID *string           `json:"upstream_order_id"`
+							CardChargedUSD  *string           `json:"card_charged_usd"`
+						} `json:"attempt"`
+					} `json:"direct_recharge"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &body); err != nil || body.Code != 0 {
+				t.Fatalf("unexpected admin order response: %s, %v", raw, err)
+			}
+			attempt := body.Data.Direct.Attempt
+			if !reflect.DeepEqual(attempt.QuoteCosts, wantCosts) || attempt.UpstreamOrderID != nil || attempt.CardChargedUSD != nil || strings.Contains(string(raw), "private-quote") {
+				t.Fatalf("quote costs or upstream facts projected incorrectly: %s", raw)
+			}
+		}
+
+		const userJWTSecret = "orders-private-quote-integration-test-key"
+		auth := userauthapp.NewService(&config.Config{UserJWT: config.JWTConfig{SecretKey: userJWTSecret}}, f.options.UserStore, nil, nil, nil, nil, nil)
+		ownerToken, _, err := auth.GenerateUserJWT(&f.users[0], 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buyer := router.Group("", middleware.UserJWTAuthMiddleware(userJWTSecret, f.options.UserStore))
+		orderhttp.RegisterUserReadRoutes(buyer, handlers.User)
+		for suffix, visibleField := range map[string]string{"": "order_no", "/direct-status": "stage"} {
+			req := httptest.NewRequest(http.MethodGet, "/orders/"+parentOrderNo+suffix, nil).
+				WithContext(resellercontract.WithTenantContext(ctx, resellercontract.MainTenantContext("shop.example")))
+			req.Header.Set("Authorization", "Bearer "+ownerToken)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			var body struct {
+				Code int                        `json:"status_code"`
+				Data map[string]json.RawMessage `json:"data"`
+			}
+			raw := rec.Body.String()
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Code != 0 || len(body.Data[visibleField]) == 0 {
+				t.Fatalf("unexpected buyer order response: %s, %v", raw, err)
+			}
+			for _, field := range []string{`"quote_costs"`, `"service_fee_usd"`, `"card_open_fee_usd"`, `"card_load_usd"`, `"total_usd"`, "private-quote"} {
+				if strings.Contains(raw, field) {
+					t.Fatalf("buyer response leaked quote data: %s", raw)
+				}
+			}
+		}
+		if err := f.db.Model(&kafudadomain.Attempt{}).Where("order_id = ?", childID).
+			Updates(map[string]any{"upstream_order_id": upstreamOrderID, "charged_usd_cents": 1546}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if raw := get(fmt.Sprintf("/admin/orders/%d", childID)).Body.String(); !strings.Contains(raw, `"total_usd":"9.51"`) ||
+			!strings.Contains(raw, `"card_charged_usd":"15.46"`) {
+			t.Fatalf("quote total and actual card debit must be shown independently: %s", raw)
+		}
+	})
 	if err := f.db.Model(&kafudadomain.Attempt{}).Where("order_id = ?", childID).Update("masked_email", "b***@***").Error; err != nil {
 		t.Fatal(err)
 	}
@@ -577,12 +650,13 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 			if err != nil {
 				t.Fatal(err)
 			}
+			quoteCosts := kafudadomain.QuoteCosts{ServiceFeeCents: 900, CardLoadCents: 100, TotalCents: 1000}
 			check := kafudacontract.CheckResult{
 				Country: "PH", PayMode: "auto_card", RegionLocked: scenario.name == "region_locked",
 				Plans: []kafudacontract.Quote{{
 					Plan: "plus", Status: "available", Kind: "new", QuoteID: "quote_checkout",
 					PriceCents: 900, ExpiresAt: now.Add(time.Minute),
-					AutoCard: &kafudacontract.AutoCard{ProductCode: "checkout-card", OpenFeeCents: 50, LoadCents: 50, TotalCents: 1000},
+					AutoCard: &kafudacontract.AutoCard{ProductCode: "checkout-card", LoadCents: 100, TotalCents: 1000},
 				}},
 			}
 			switch scenario.name {
@@ -599,7 +673,8 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
 				if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptSubmitting ||
 					attempt.Reference != req.Reference || attempt.QuoteID != req.QuoteID ||
-					req.Reference != reservation.Attempt.Reference || req.QuoteID != "quote_checkout" {
+					req.Reference != reservation.Attempt.Reference || req.QuoteID != "quote_checkout" ||
+					!reflect.DeepEqual(attempt.QuoteCosts, &quoteCosts) {
 					t.Fatalf("create without committed attempt: %+v, %v", attempt, err)
 				}
 				result := &kafudacontract.OrderResult{ID: 100, Reference: req.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing"}
@@ -656,11 +731,26 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 			if scenario.stage == kafudadomain.StageCompleted {
 				wantReplayErr = orderapp.ErrOrderStatusInvalid
 			}
-			if _, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check, 10*time.Second); !errors.Is(err, wantReplayErr) {
+			replayCheck := check
+			if scenario.wantCall {
+				quote := check.Plans[0]
+				quote.QuoteID = "replacement_quote"
+				quote.AutoCard = &kafudacontract.AutoCard{ProductCode: "checkout-card", OpenFeeCents: 25, LoadCents: 25, TotalCents: 950}
+				replayCheck.Plans = []kafudacontract.Quote{quote}
+			}
+			if _, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, replayCheck, 10*time.Second); !errors.Is(err, wantReplayErr) {
 				t.Fatalf("stale submission replay: %v", err)
 			}
 			if (scenario.wantCall && calls != 1) || (!scenario.wantCall && calls != 0) {
 				t.Fatalf("create called %d times", calls)
+			}
+			var wantCosts *kafudadomain.QuoteCosts
+			if scenario.wantCall {
+				wantCosts = &quoteCosts
+			}
+			original, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
+			if err != nil || original == nil || !reflect.DeepEqual(original.QuoteCosts, wantCosts) {
+				t.Fatalf("submission or replay changed quote costs: %+v, %v", original, err)
 			}
 			record, err := f.store.GetRecharge(ctx, childID)
 			if err != nil || record == nil || record.Stage != scenario.stage || record.ReasonCode != scenario.wantReason ||
@@ -694,7 +784,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				}
 				retryAt := time.Now().UTC()
 				retry, err := kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, ordercontract.TenantScope{}, order.OrderNo, order.UserID, retryAt, retryAt.Add(time.Minute))
-				if err != nil || retry == nil || !retry.Created || retry.Attempt == nil || retry.Attempt.Sequence != previous.Sequence+1 || retry.Attempt.Reference == previous.Reference {
+				if err != nil || retry == nil || !retry.Created || retry.Attempt == nil || retry.Attempt.Sequence != previous.Sequence+1 || retry.Attempt.Reference == previous.Reference || retry.Attempt.QuoteCosts != nil {
 					t.Fatalf("expired pre-submission quote prevented a new attempt: %+v, %v", retry, err)
 				}
 			}
@@ -718,6 +808,10 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				completed, err = kafudaworkflow.ApplyResult(f.options.OrderStore, childID, attempt.ID, *result, at, at, time.Minute)
 				if err != nil || !completed {
 					t.Fatalf("polled order completion: completed=%t, err=%v", completed, err)
+				}
+				finished, err := f.store.GetAttempt(ctx, attempt.ID)
+				if err != nil || finished == nil || !reflect.DeepEqual(finished.QuoteCosts, &quoteCosts) {
+					t.Fatalf("polled completion changed quote costs: %+v, %v", finished, err)
 				}
 			}
 			if completed {
@@ -775,6 +869,7 @@ func testDirectQuoteExpiresBeforeDispatch(t *testing.T, f directCheckoutFixture,
 
 	const quoteID = "quote_expires_during_submission"
 	expiresAt := paidAt.Add(time.Second)
+	quoteCosts := kafudadomain.QuoteCosts{ServiceFeeCents: 900, CardOpenFeeCents: 50, CardLoadCents: 50, TotalCents: 1000}
 	check := kafudacontract.CheckResult{Country: "PH", PayMode: "auto_card", Plans: []kafudacontract.Quote{{
 		Plan: "plus", Status: "available", Kind: "new", QuoteID: quoteID, ExpiresAt: expiresAt, PriceCents: 900,
 		AutoCard: &kafudacontract.AutoCard{ProductCode: "checkout-card", OpenFeeCents: 50, LoadCents: 50, TotalCents: 1000},
@@ -782,7 +877,8 @@ func testDirectQuoteExpiresBeforeDispatch(t *testing.T, f directCheckoutFixture,
 	records := kafudaapp.New(f.store)
 	store := &directSubmitStore{Store: f.options.OrderStore, afterCommit: func() {
 		attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
-		if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptSubmitting || attempt.QuoteID != quoteID || attempt.NextPollAt == nil {
+		if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptSubmitting || attempt.QuoteID != quoteID || attempt.NextPollAt == nil ||
+			!reflect.DeepEqual(attempt.QuoteCosts, &quoteCosts) {
 			t.Fatalf("expected committed submit before expiry: %+v, %v", attempt, err)
 		}
 		if recoverBeforeDispatch {
@@ -809,7 +905,8 @@ func testDirectQuoteExpiresBeforeDispatch(t *testing.T, f directCheckoutFixture,
 		t.Fatalf("expired quote dispatch: completed=%v, calls=%d, err=%v", completed, calls, err)
 	}
 	attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
-	if err != nil || attempt == nil || attempt.Reference != reservation.Attempt.Reference || attempt.QuoteID != quoteID || attempt.UpstreamOrderID != nil {
+	if err != nil || attempt == nil || attempt.Reference != reservation.Attempt.Reference || attempt.QuoteID != quoteID || attempt.UpstreamOrderID != nil ||
+		!reflect.DeepEqual(attempt.QuoteCosts, &quoteCosts) {
 		t.Fatalf("expired quote lost attempt history: %+v, %v", attempt, err)
 	}
 	record, err := f.store.GetRecharge(ctx, childID)

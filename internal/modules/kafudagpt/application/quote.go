@@ -3,7 +3,6 @@ package application
 import (
 	"context"
 	"errors"
-	"math"
 	"strings"
 	"time"
 
@@ -55,7 +54,7 @@ func SelectQuote(result kafudacontract.CheckResult, snapshot kafudadomain.Snapsh
 			expired = true
 			continue
 		}
-		if selected != nil || strings.TrimSpace(candidate.QuoteID) == "" || !allowedKind(candidate.Kind, snapshot.AllowedKinds) || !validAutoCard(candidate, snapshot) {
+		if selected != nil || strings.TrimSpace(candidate.QuoteID) == "" || !allowedKind(candidate.Kind, snapshot.AllowedKinds) || autoCardQuoteCosts(candidate, snapshot) == nil {
 			return nil, ErrQuotePolicy
 		}
 		quote := candidate
@@ -79,14 +78,17 @@ func allowedKind(kind string, allowed []string) bool {
 	return false
 }
 
-func validAutoCard(quote kafudacontract.Quote, snapshot kafudadomain.Snapshot) bool {
+func autoCardQuoteCosts(quote kafudacontract.Quote, snapshot kafudadomain.Snapshot) *kafudadomain.QuoteCosts {
 	card := quote.AutoCard
-	if card == nil || card.ProductCode != snapshot.ProductCode || card.OpenFeeCents < 0 || card.LoadCents < 0 || quote.PriceCents < 0 || card.TotalCents <= 0 || card.TotalCents > snapshot.MaxCostCents {
-		return false
+	if card == nil || card.ProductCode != snapshot.ProductCode {
+		return nil
 	}
-	if card.OpenFeeCents > math.MaxInt64-card.LoadCents {
-		return false
+	costs := kafudadomain.QuoteCosts{
+		ServiceFeeCents: quote.PriceCents, CardOpenFeeCents: card.OpenFeeCents,
+		CardLoadCents: card.LoadCents, TotalCents: card.TotalCents,
 	}
-	cardCost := card.OpenFeeCents + card.LoadCents
-	return quote.PriceCents <= math.MaxInt64-cardCost && cardCost+quote.PriceCents == card.TotalCents
+	if !costs.Valid() || costs.TotalCents > snapshot.MaxCostCents {
+		return nil
+	}
+	return &costs
 }

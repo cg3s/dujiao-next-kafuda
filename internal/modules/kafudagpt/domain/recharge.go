@@ -2,6 +2,8 @@ package domain
 
 import (
 	"errors"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/dujiao-next/internal/shared/money"
@@ -96,6 +98,23 @@ const (
 	AttemptCancelled  AttemptStatus = "cancelled"
 )
 
+// QuoteCosts records the supplier's auto-card estimate in USD cents.
+type QuoteCosts struct {
+	ServiceFeeCents  int64 `json:"service_fee_cents"`
+	CardOpenFeeCents int64 `json:"card_open_fee_cents"`
+	CardLoadCents    int64 `json:"card_load_cents"`
+	TotalCents       int64 `json:"total_cents"`
+}
+
+func (q QuoteCosts) Valid() bool {
+	if q.ServiceFeeCents < 0 || q.CardOpenFeeCents < 0 || q.CardLoadCents < 0 || q.TotalCents <= 0 ||
+		q.CardOpenFeeCents > math.MaxInt64-q.CardLoadCents {
+		return false
+	}
+	cardCost := q.CardOpenFeeCents + q.CardLoadCents
+	return q.ServiceFeeCents <= math.MaxInt64-cardCost && cardCost+q.ServiceFeeCents == q.TotalCents
+}
+
 // The nullable unique ActiveOrderID enforces at most one live attempt per order
 // in both SQLite and PostgreSQL. Unknown outcomes retain this slot.
 type Attempt struct {
@@ -105,6 +124,7 @@ type Attempt struct {
 	ActiveOrderID    *uint         `gorm:"uniqueIndex:idx_kafuda_gpt_active_order;check:chk_kafuda_gpt_active_attempt,((status IN ('checking','submitting','processing','needs_review') AND active_order_id IS NOT NULL AND active_order_id = order_id) OR (status IN ('completed','failed','cancelled') AND active_order_id IS NULL))" json:"-"`
 	Reference        string        `gorm:"type:varchar(80);not null;uniqueIndex" json:"-"`
 	QuoteID          string        `gorm:"type:varchar(128);not null;default:''" json:"-"`
+	QuoteCosts       *QuoteCosts   `gorm:"serializer:json;type:json" json:"-"`
 	Status           AttemptStatus `gorm:"type:varchar(32);not null;index" json:"-"`
 	UpstreamOrderID  *uint64       `gorm:"uniqueIndex" json:"-"`
 	MaskedEmail      string        `gorm:"type:varchar(32);not null;default:''" json:"-"`
@@ -136,6 +156,9 @@ func (a Attempt) Validate() error {
 		return ErrInvalidTransition
 	}
 	if (a.UpstreamOrderID != nil && *a.UpstreamOrderID == 0) || (a.ChargedUSDCents != nil && *a.ChargedUSDCents < 0) {
+		return ErrInvalidTransition
+	}
+	if a.QuoteCosts != nil && (a.Status == AttemptChecking || strings.TrimSpace(a.QuoteID) == "" || !a.QuoteCosts.Valid()) {
 		return ErrInvalidTransition
 	}
 	return nil

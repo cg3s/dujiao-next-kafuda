@@ -151,6 +151,43 @@ it.each([undefined, '0.00', '15.46'])('shows a reported card charge in USD (%s)'
   expect(chargeLabel?.nextElementSibling?.textContent).toBe(cardCharge === undefined ? undefined : `${cardCharge} USD`)
 })
 
+it.each([
+  { situation: 'legacy order', quoted: false, cardCharge: '15.46' },
+  { situation: 'submission before upstream acknowledgement', quoted: true, cardCharge: undefined },
+  { situation: 'completed order with an actual card charge', quoted: true, cardCharge: '15.46' },
+])('shows the USD quote breakdown only when present for $situation', async ({ quoted, cardCharge }) => {
+  const order = cardCharge ? orderFixture(42, 'completed', 'completed') : orderFixture(42, 'paid', 'submitting', true)
+  order.currency = 'CNY'
+  const attempt = order.direct_recharge!.attempt!
+  attempt.card_charged_usd = cardCharge
+  if (cardCharge) attempt.upstream_order_id = '1234'
+  if (quoted) {
+    attempt.quote_costs = {
+      service_fee_usd: '0.00',
+      card_open_fee_usd: '1.25',
+      card_load_usd: '15.00',
+      total_usd: '16.25',
+    }
+  }
+  api.getOrder.mockResolvedValue(response(order))
+  const { context } = mountDialog()
+  context.order = order
+  context.open = true
+
+  await vi.waitFor(() => expect(host.textContent).toContain(order.order_no))
+  const quoteTitle = Array.from(host.querySelectorAll('h4')).find((node) => node.textContent === 'admin.orders.directReview.quoteCosts.title')
+  expect(Boolean(quoteTitle)).toBe(quoted)
+  const quoteLabels = Array.from(quoteTitle?.nextElementSibling?.querySelectorAll('dt') ?? [])
+  expect(quoteLabels.map((label) => [label.textContent, label.nextElementSibling?.textContent])).toEqual(quoted ? [
+    ['admin.orders.directReview.quoteCosts.serviceFee', '0.00 USD'],
+    ['admin.orders.directReview.quoteCosts.cardOpenFee', '1.25 USD'],
+    ['admin.orders.directReview.quoteCosts.cardLoad', '15.00 USD'],
+    ['admin.orders.directReview.quoteCosts.total', '16.25 USD'],
+  ] : [])
+  const cardLabel = Array.from(host.querySelectorAll('dt')).find((node) => node.textContent === 'admin.orders.directReview.cardCharged')
+  expect(cardLabel?.nextElementSibling?.textContent).toBe(cardCharge ? `${cardCharge} USD` : undefined)
+})
+
 it('ignores an earlier order detail when switching orders while the dialog is open', async () => {
   const previous = orderFixture(42)
   const current = orderFixture(84, 'refunded')

@@ -168,11 +168,19 @@ func newAdminDirectStatusReader(c *container.Container) ordertransport.AdminDire
 		validAttempt := attempt.Validate() == nil
 		if validAttempt {
 			info.Reference = attempt.Reference
+			if costs := attempt.QuoteCosts; costs != nil {
+				info.QuoteCosts = &ordertransport.AdminDirectQuoteCosts{
+					ServiceFeeUSD:  usdFromCents(costs.ServiceFeeCents),
+					CardOpenFeeUSD: usdFromCents(costs.CardOpenFeeCents),
+					CardLoadUSD:    usdFromCents(costs.CardLoadCents),
+					TotalUSD:       usdFromCents(costs.TotalCents),
+				}
+			}
 		}
 		if attempt.UpstreamOrderID != nil && *attempt.UpstreamOrderID > 0 {
 			info.UpstreamOrderID = strconv.FormatUint(*attempt.UpstreamOrderID, 10)
 			if validAttempt && attempt.ChargedUSDCents != nil {
-				charge := money.FromDecimal(decimal.New(*attempt.ChargedUSDCents, -2))
+				charge := usdFromCents(*attempt.ChargedUSDCents)
 				info.CardChargedUSD = &charge
 			}
 		}
@@ -182,6 +190,10 @@ func newAdminDirectStatusReader(c *container.Container) ordertransport.AdminDire
 		status.Attempt = info
 		return status, nil
 	}
+}
+
+func usdFromCents(cents int64) money.Amount {
+	return money.FromDecimal(decimal.New(cents, -2))
 }
 
 func (a orderAdminQueryAdapter) GetOrderForAdmin(orderID uint) (*orderdomain.Order, error) {

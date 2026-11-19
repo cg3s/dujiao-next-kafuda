@@ -482,6 +482,9 @@ func TestAutoMigrateOwnsKafudaGPTSchema(t *testing.T) {
 	if !db.Migrator().HasColumn("kafuda_gpt_attempts", "next_card_charge_poll_at") {
 		t.Error("late card charge poll schedule column missing")
 	}
+	if !db.Migrator().HasColumn("kafuda_gpt_attempts", "quote_costs") {
+		t.Error("attempt quote cost snapshot column missing")
+	}
 	if !db.Migrator().HasIndex("kafuda_gpt_recharges", "idx_kafuda_gpt_recharges_completed_at") {
 		t.Error("completed recharge scan index missing")
 	}

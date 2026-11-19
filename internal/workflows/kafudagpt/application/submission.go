@@ -33,9 +33,9 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 		return false, err
 	}
 
-	// Persist the quote and reference before an upstream request can escape.
+	// Persist the quote, estimated costs and reference before the request is sent.
 	const submissionLease = time.Minute
-	if err := records.MarkSubmitting(ctx, attempt.ID, quote.QuoteID, now, now.Add(submissionLease)); err != nil {
+	if err := records.MarkSubmittingWithQuote(ctx, attempt.ID, *quote, now, now.Add(submissionLease)); err != nil {
 		return false, err
 	}
 	submitCtx, cancelSubmit := context.WithDeadline(ctx, quote.ExpiresAt)

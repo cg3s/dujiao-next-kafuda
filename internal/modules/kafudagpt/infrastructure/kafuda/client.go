@@ -75,7 +75,16 @@ func (c *Client) Check(ctx context.Context, input kafudacontract.CheckRequest) (
 		Account    struct {
 			Email string `json:"email"`
 		} `json:"account"`
-		Plans []kafudacontract.Quote `json:"plans"`
+		Plans []struct {
+			kafudacontract.Quote
+			PriceCents *int64 `json:"price_cents"`
+			AutoCard   *struct {
+				ProductCode  string `json:"product_code"`
+				OpenFeeCents *int64 `json:"open_fee_cents"`
+				LoadCents    *int64 `json:"load_cents"`
+				TotalCents   *int64 `json:"total_cents"`
+			} `json:"auto_card"`
+		} `json:"plans"`
 	}
 	if err := c.request(ctx, http.MethodPost, "/api/v1/gpt/check", input, "", &wire); err != nil {
 		return nil, err
@@ -83,10 +92,25 @@ func (c *Client) Check(ctx context.Context, input kafudacontract.CheckRequest) (
 	if wire.CheckID == "" || wire.Country != input.Country || wire.PayMode != input.PayMode || len(wire.Plans) == 0 {
 		return nil, apiError(0, "invalid_response")
 	}
+	plans := make([]kafudacontract.Quote, len(wire.Plans))
+	for i, plan := range wire.Plans {
+		plans[i] = plan.Quote
+		if plan.PriceCents == nil {
+			continue
+		}
+		plans[i].PriceCents = *plan.PriceCents
+		// A missing amount cannot become a known zero in the saved quote.
+		if card := plan.AutoCard; card != nil && card.OpenFeeCents != nil && card.LoadCents != nil && card.TotalCents != nil {
+			plans[i].AutoCard = &kafudacontract.AutoCard{
+				ProductCode: card.ProductCode, OpenFeeCents: *card.OpenFeeCents,
+				LoadCents: *card.LoadCents, TotalCents: *card.TotalCents,
+			}
+		}
+	}
 	return &kafudacontract.CheckResult{
 		CheckID: wire.CheckID, PayMode: wire.PayMode, Country: wire.Country,
 		RegionLocked: len(wire.RegionLock) > 0 && !bytes.Equal(bytes.TrimSpace(wire.RegionLock), []byte("null")),
-		MaskedEmail:  maskEmail(wire.Account.Email), Plans: wire.Plans,
+		MaskedEmail:  maskEmail(wire.Account.Email), Plans: plans,
 	}, nil
 }
 

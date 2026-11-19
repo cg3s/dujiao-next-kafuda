@@ -153,6 +153,13 @@ export interface AdminFulfillment {
   delivery_data?: Record<string, unknown>
 }
 
+export interface AdminDirectQuoteCosts {
+  service_fee_usd: string
+  card_open_fee_usd: string
+  card_load_usd: string
+  total_usd: string
+}
+
 export interface AdminOrder {
   direct_recharge?: {
     child_id: number
@@ -167,6 +174,7 @@ export interface AdminOrder {
       upstream_order_id?: string
       masked_email?: string
       card_charged_usd?: string
+      quote_costs?: AdminDirectQuoteCosts
     }
   }
   id: number

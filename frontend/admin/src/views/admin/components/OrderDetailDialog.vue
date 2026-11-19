@@ -28,6 +28,7 @@ import { adminUrl } from '@/utils/adminBase'
 import { confirmAction } from '@/utils/confirm'
 import { useAdminAuthStore } from '@/stores/auth'
 import { buildItemRefundAllocation, calcItemProfit, toNumber } from '@/utils/orderProfit'
+import DirectQuoteCosts from './DirectQuoteCosts.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -883,6 +884,8 @@ onUnmounted(() => { detailSession++ })
                 </div>
               </template>
             </dl>
+            <DirectQuoteCosts v-if="selectedOrder.direct_recharge.attempt?.quote_costs"
+              :costs="selectedOrder.direct_recharge.attempt.quote_costs" />
             <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-complete') && isOpenDirectOrder(selectedOrder) && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
               class="mt-4" size="sm" :disabled="directCompleting" @click="handleDirectManualAction('complete')">
               {{ t('admin.orders.directReview.complete') }}

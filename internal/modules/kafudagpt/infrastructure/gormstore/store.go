@@ -2,6 +2,7 @@ package gormstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -117,12 +118,23 @@ func (s *Store) SaveAttempt(record *kafudadomain.Attempt) error {
 		return err
 	}
 	// Do not allow an update to change the order, sequence or reference.
-	result := s.db.Model(&kafudadomain.Attempt{}).Where("id = ?", record.ID).Updates(map[string]any{
-		"quote_id": record.QuoteID,
-		"status":   record.Status, "active_order_id": record.ActiveOrderID, "upstream_order_id": record.UpstreamOrderID,
+	updates := map[string]any{
+		"status": record.Status, "active_order_id": record.ActiveOrderID, "upstream_order_id": record.UpstreamOrderID,
 		"masked_email": record.MaskedEmail, "charged_usd_cents": record.ChargedUSDCents,
 		"renewal_cancelled": record.RenewalCancelled, "next_poll_at": record.NextPollAt, "updated_at": record.UpdatedAt,
-	})
+	}
+	if record.Status == kafudadomain.AttemptSubmitting {
+		// The first checking-to-submitting transition freezes the quote.
+		updates["quote_id"] = gorm.Expr("CASE WHEN status = ? AND quote_id = '' THEN ? ELSE quote_id END", kafudadomain.AttemptChecking, record.QuoteID)
+		if record.QuoteCosts != nil {
+			costsJSON, err := json.Marshal(record.QuoteCosts)
+			if err != nil {
+				return err
+			}
+			updates["quote_costs"] = gorm.Expr("CASE WHEN status = ? AND quote_id = '' AND quote_costs IS NULL THEN ? ELSE quote_costs END", kafudadomain.AttemptChecking, string(costsJSON))
+		}
+	}
+	result := s.db.Model(&kafudadomain.Attempt{}).Where("id = ?", record.ID).Updates(updates)
 	if result.Error != nil {
 		return result.Error
 	}
