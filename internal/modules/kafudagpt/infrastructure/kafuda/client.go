@@ -226,6 +226,9 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 				e.RetryAfter = delay
 			}
 		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			e.RetryAfter = max(e.RetryAfter, retryAfterDelay(resp.Header.Get("Retry-After"), time.Now()))
+		}
 		return e
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
@@ -243,6 +246,22 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 		return apiError(resp.StatusCode, "invalid_response")
 	}
 	return nil
+}
+
+func retryAfterDelay(header string, now time.Time) time.Duration {
+	value := strings.TrimSpace(header)
+	if seconds, err := strconv.ParseUint(value, 10, 16); err == nil {
+		if seconds <= uint64(time.Hour/time.Second) {
+			return time.Duration(seconds) * time.Second
+		}
+		return 0
+	}
+	if until, err := http.ParseTime(value); err == nil {
+		if delay := until.Sub(now); delay > 0 && delay <= time.Hour {
+			return delay
+		}
+	}
+	return 0
 }
 
 // readOrderRejection recognizes only documented reasons that reject creation.

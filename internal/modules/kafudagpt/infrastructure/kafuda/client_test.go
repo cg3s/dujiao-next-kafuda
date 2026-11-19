@@ -419,7 +419,7 @@ func TestOrderLookupSharesRateLimitAcrossDifferentOrders(t *testing.T) {
 			return
 		}
 		if lookups.Add(1) == 1 {
-			w.Header().Set("x-ratelimit-reset", fmt.Sprint(time.Now().Add(time.Minute).Unix()))
+			w.Header().Set("Retry-After", "60")
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
@@ -445,5 +445,23 @@ func TestOrderLookupSharesRateLimitAcrossDifferentOrders(t *testing.T) {
 	got, err := c.GetOrder(ctx, 2)
 	if err != nil || got.ID != 2 || lookups.Load() != 2 {
 		t.Fatalf("lookup did not resume: %+v, %v, %d requests", got, err, lookups.Load())
+	}
+}
+
+func TestRetryAfterDelay(t *testing.T) {
+	now := time.Date(2026, 11, 19, 4, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		header string
+		want   time.Duration
+	}{
+		{"60", time.Minute},
+		{now.Add(time.Minute).Format(http.TimeFormat), time.Minute},
+		{now.Add(-time.Minute).Format(http.TimeFormat), 0},
+		{"3601", 0},
+		{"unavailable", 0},
+	} {
+		if got := retryAfterDelay(tc.header, now); got != tc.want {
+			t.Errorf("Retry-After %q = %v, want %v", tc.header, got, tc.want)
+		}
 	}
 }
