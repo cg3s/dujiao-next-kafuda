@@ -3,6 +3,7 @@ package application_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -27,7 +28,7 @@ func TestDirectAfterSalesCompetingResolutions(t *testing.T) {
 
 func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testing.T) directCheckoutFixture) {
 	t.Helper()
-	for _, alternative := range []string{"wallet_refund", "manual_delivery", "release_and_reserve", "late_supplier_success", "late_success_vs_manual_delivery"} {
+	for _, alternative := range []string{"wallet_refund", "manual_delivery", "release_and_reserve", "late_supplier_success", "late_success_vs_manual_delivery", "stale_poll_vs_manual_delivery"} {
 		t.Run(alternative, func(t *testing.T) {
 			f := fixture(t)
 			if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &orderdomain.OrderRefundRecord{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
@@ -61,7 +62,13 @@ func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testin
 			}
 			assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusFulfilling, now)
 			result := kafudacontract.OrderResult{ID: 173, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "failed"}
-			if alternative != "late_supplier_success" && alternative != "late_success_vs_manual_delivery" {
+			switch alternative {
+			case "late_success_vs_manual_delivery", "stale_poll_vs_manual_delivery":
+				testDirectCompetingCompletions(t, f, order, reservation, records, result, now, alternative == "stale_poll_vs_manual_delivery")
+				return
+			case "late_supplier_success":
+				// Keep the outcome unknown until the late supplier result arrives.
+			default:
 				if _, err := kafudaworkflow.ApplyResult(orders, childID, attemptID, result, now, now, 0); err != nil {
 					t.Fatal(err)
 				}
@@ -77,9 +84,6 @@ func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testin
 				return kafudaworkflow.CompleteManual(orders, childID, attemptID, adminID, true, time.Now().UTC())
 			}
 			firstAction := refund
-			if alternative == "late_success_vs_manual_delivery" {
-				firstAction = completeManual
-			}
 			var competingAction func() error
 			switch alternative {
 			case "wallet_refund":
@@ -97,7 +101,7 @@ func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testin
 					}
 					return err
 				}
-			case "late_supplier_success", "late_success_vs_manual_delivery":
+			case "late_supplier_success":
 				competingAction = func() error {
 					result.Status = "completed"
 					receivedAt := time.Now().UTC()
@@ -139,7 +143,7 @@ func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testin
 					wantStatus, wantStage, wantDeliveries = constants.OrderStatusCompleted, kafudadomain.StageCompleted, 1
 				case "release_and_reserve":
 					wantStatus, wantStage = constants.OrderStatusFulfilling, kafudadomain.StageChecking
-				case "late_supplier_success", "late_success_vs_manual_delivery":
+				case "late_supplier_success":
 					wantStatus, wantStage, wantDeliveries = constants.OrderStatusCompleted, kafudadomain.StageCompleted, 1
 				}
 			}
@@ -172,4 +176,140 @@ func testDirectAfterSalesCompetingResolutions(t *testing.T, fixture func(*testin
 			}
 		})
 	}
+}
+
+func testDirectCompetingCompletions(t *testing.T, f directCheckoutFixture, order *orderdomain.Order, reservation *kafudaapp.Reservation,
+	records *kafudaapp.Service, failed kafudacontract.OrderResult, paidAt time.Time, supplierFailed bool,
+) {
+	t.Helper()
+	ctx := t.Context()
+	orders, childID, attemptID := f.options.OrderStore, order.Children[0].ID, reservation.Attempt.ID
+	const operatorID = 9
+	queue := &overCapCompletionQueue{store: orders, parentID: order.ID}
+	complete := failed
+	complete.Status = string(kafudadomain.AttemptCompleted)
+	var poll *kafudaapp.KnownOrderPoll
+	startedAt, receivedAt := paidAt, paidAt.Add(time.Second)
+	manualAt := receivedAt
+	if supplierFailed {
+		processing := failed
+		processing.Status = string(kafudadomain.AttemptProcessing)
+		if completed, err := kafudaworkflow.ApplyResult(orders, childID, attemptID, processing, paidAt, paidAt, time.Second); completed || err != nil {
+			t.Fatalf("record supplier processing: completed=%t, err=%v", completed, err)
+		}
+		pollResult := func(result kafudacontract.OrderResult, at time.Time) *kafudaapp.KnownOrderPoll {
+			gateway := directCreateGateway{get: func(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+				if id != result.ID {
+					t.Errorf("poll requested upstream order %d, want %d", id, result.ID)
+				}
+				return &result, nil
+			}}
+			lookup, err := records.PollKnownOrder(ctx, ctx, gateway, attemptID, at, time.Second, kafudaapp.DefaultPollReviewAfter)
+			if err != nil || lookup == nil {
+				t.Fatalf("capture leased supplier response %s: %+v, %v", result.Status, lookup, err)
+			}
+			return lookup
+		}
+		startedAt = paidAt.Add(2 * time.Second)
+		receivedAt = startedAt.Add(time.Second)
+		poll = pollResult(complete, startedAt)
+		// A later worker sees a terminal failure after the first lease expires,
+		// while the older worker still has a captured success waiting to apply.
+		failedAt := poll.Lease.Until.Add(time.Second)
+		failure := pollResult(failed, failedAt)
+		if completed, err := kafudaworkflow.ApplyPolledResult(orders, childID, attemptID, *failure, failedAt, failedAt, time.Second, kafudaapp.DefaultPollReviewAfter); completed || err != nil {
+			t.Fatalf("record terminal supplier failure: completed=%t, err=%v", completed, err)
+		}
+		manualAt = failedAt.Add(time.Second)
+	}
+
+	manual := func() error {
+		return kafudaworkflow.CompleteManualAndNotify(ctx, orders, f.store, queue, nil, nil, childID, attemptID, operatorID, true, manualAt)
+	}
+	supplier := func() (bool, error) {
+		var completed bool
+		var err error
+		if poll == nil {
+			completed, err = kafudaworkflow.ApplyResult(orders, childID, attemptID, complete, startedAt, receivedAt, time.Second)
+		} else {
+			completed, err = kafudaworkflow.ApplyPolledResult(orders, childID, attemptID, *poll, startedAt, receivedAt, time.Second, kafudaapp.DefaultPollReviewAfter)
+		}
+		if completed && err == nil {
+			kafudaworkflow.EnqueueCompletionEmail(ctx, orders, f.store, queue, nil, nil, childID)
+		}
+		return completed, err
+	}
+	start := make(chan struct{})
+	manualResult := make(chan error, 1)
+	go func() {
+		<-start
+		manualResult <- manual()
+	}()
+	close(start)
+	completed, supplierErr := supplier()
+	manualErr := <-manualResult
+	wantType, wantAttemptStatus := constants.FulfillmentTypeKafudaGPT, kafudadomain.AttemptCompleted
+	var wantOperator *uint
+	if supplierFailed {
+		if completed || !errors.Is(supplierErr, kafudadomain.ErrInvalidTransition) || manualErr != nil {
+			t.Fatalf("manual delivery should win after terminal failure: completed=%t, supplier=%v, manual=%v", completed, supplierErr, manualErr)
+		}
+		wantType, wantAttemptStatus = constants.FulfillmentTypeManual, kafudadomain.AttemptFailed
+		operator := uint(operatorID)
+		wantOperator = &operator
+	} else if !completed || supplierErr != nil || !errors.Is(manualErr, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("late supplier should win while the result is unknown: completed=%t, supplier=%v, manual=%v", completed, supplierErr, manualErr)
+	}
+
+	loadCompletion := func() (fulfillmentdomain.Fulfillment, *kafudadomain.Recharge, *kafudadomain.Attempt) {
+		t.Helper()
+		var deliveries []fulfillmentdomain.Fulfillment
+		if err := f.db.Find(&deliveries).Error; err != nil || len(deliveries) != 1 || deliveries[0].OrderID != childID {
+			t.Fatalf("expected one child delivery: got %d, %v", len(deliveries), err)
+		}
+		record, err := f.store.GetRecharge(ctx, childID)
+		if err != nil || record == nil {
+			t.Fatalf("load completed recharge: %+v, %v", record, err)
+		}
+		attempt, err := f.store.GetAttempt(ctx, attemptID)
+		if err != nil || attempt == nil {
+			t.Fatalf("load original attempt: %+v, %v", attempt, err)
+		}
+		return deliveries[0], record, attempt
+	}
+	delivery, record, attempt := loadCompletion()
+	if delivery.Type != wantType || delivery.Status != constants.FulfillmentStatusDelivered ||
+		!reflect.DeepEqual(delivery.DeliveredBy, wantOperator) || delivery.DeliveredAt == nil {
+		t.Fatalf("delivery did not preserve its source and operator: %+v", delivery)
+	}
+	if record.Stage != kafudadomain.StageCompleted || record.CompletedAt == nil || !record.CompletedAt.Equal(*delivery.DeliveredAt) ||
+		record.CurrentAttemptID == nil || *record.CurrentAttemptID != attemptID || record.AttemptCount != 1 ||
+		!reflect.DeepEqual(record.Snapshot, reservation.Recharge.Snapshot) {
+		t.Fatalf("completion lost its original recharge: %+v", record)
+	}
+	if attempt.Status != wantAttemptStatus || attempt.ActiveOrderID != nil || attempt.NextPollAt != nil || attempt.KnownOrderPollLeaseUntil != nil ||
+		attempt.Reference != failed.Reference || attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID != failed.ID || attempt.QuoteID != "quote" {
+		t.Fatalf("completion changed the original attempt outcome or identity: %+v", attempt)
+	}
+	if queue.calls.Load() != 1 || record.CompletionEmailPending || record.CompletionEmailRetryAt != nil {
+		t.Fatalf("expected one acknowledged completion email: calls=%d pending=%t retry=%v", queue.calls.Load(), record.CompletionEmailPending, record.CompletionEmailRetryAt)
+	}
+	assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusCompleted, paidAt)
+
+	if err := manual(); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+		t.Fatalf("replayed manual completion: %v", err)
+	}
+	wantReplayErr := error(nil)
+	if supplierFailed {
+		wantReplayErr = kafudadomain.ErrInvalidTransition
+	}
+	if completed, err := supplier(); completed || !errors.Is(err, wantReplayErr) {
+		t.Fatalf("replayed supplier result: completed=%t, err=%v", completed, err)
+	}
+	kafudaworkflow.EnqueueCompletionEmail(ctx, orders, f.store, queue, nil, nil, childID)
+	afterDelivery, afterRecord, afterAttempt := loadCompletion()
+	if queue.calls.Load() != 1 || !reflect.DeepEqual(afterDelivery, delivery) || !reflect.DeepEqual(afterRecord, record) || !reflect.DeepEqual(afterAttempt, attempt) {
+		t.Fatal("replay changed delivery, recharge, attempt or notification state")
+	}
+	assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusCompleted, paidAt)
 }
