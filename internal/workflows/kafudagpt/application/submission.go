@@ -27,30 +27,24 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 	}
 	records = WithShopOrderTransitions(records, orders)
 	attempt := reservation.Attempt
-	now := time.Now().UTC()
-	quote, err := records.CheckQuote(ctx, attempt.ID, check, reservation.Recharge.Snapshot, now)
+	// Select against the locked checkout snapshot and commit the quote and
+	// reference before sending the supplier request.
+	const submissionLease = time.Minute
+	request, expiresAt, err := records.PrepareCheckedSubmission(ctx, attempt.ID, attempt.OrderID, attempt.Reference, check, submissionLease)
 	if err != nil {
 		return false, err
 	}
-
-	// Persist the quote, estimated costs and reference before the request is sent.
-	const submissionLease = time.Minute
-	if err := records.MarkSubmittingWithQuote(ctx, attempt.ID, *quote, now, now.Add(submissionLease)); err != nil {
-		return false, err
-	}
-	submitCtx, cancelSubmit := context.WithDeadline(ctx, quote.ExpiresAt)
-	if checkedAt := time.Now().UTC(); !checkedAt.Before(quote.ExpiresAt) {
+	submitCtx, cancelSubmit := context.WithDeadline(ctx, expiresAt)
+	if checkedAt := time.Now().UTC(); !checkedAt.Before(expiresAt) {
 		cancelSubmit()
 		recoveryCtx, cancelRecovery := context.WithTimeout(context.WithoutCancel(ctx), submissionRecoveryTimeout)
 		defer cancelRecovery()
-		if err := records.ExpireUndispatchedQuote(recoveryCtx, attempt.ID, quote.QuoteID, attempt.Reference, quote.ExpiresAt, checkedAt); err != nil {
+		if err := records.ExpireUndispatchedQuote(recoveryCtx, attempt.ID, request.QuoteID, request.Reference, expiresAt, checkedAt); err != nil {
 			return false, err
 		}
 		return false, kafudaapp.ErrQuoteExpired
 	}
-	result, err := gateway.CreateOrder(submitCtx, kafudacontract.CreateOrderRequest{
-		QuoteID: quote.QuoteID, Reference: attempt.Reference,
-	})
+	result, err := gateway.CreateOrder(submitCtx, request)
 	cancelSubmit()
 	var rejectionReason string
 	switch {
@@ -74,7 +68,7 @@ func SubmitCheckedQuote(ctx context.Context, orders ordercontract.Store, records
 	defer cancelRecovery()
 	observedAt := time.Now().UTC()
 	if rejectionReason != "" {
-		if rejectErr := records.RejectOrderSubmission(recoveryCtx, attempt.ID, quote.QuoteID, attempt.Reference, rejectionReason, observedAt); rejectErr != nil {
+		if rejectErr := records.RejectOrderSubmission(recoveryCtx, attempt.ID, request.QuoteID, request.Reference, rejectionReason, observedAt); rejectErr != nil {
 			return false, rejectErr
 		}
 		return false, err

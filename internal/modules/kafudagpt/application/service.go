@@ -143,19 +143,23 @@ func (s *Service) markSubmitting(ctx context.Context, attemptID uint, quoteID st
 		if !hasLiveCheck(record, attempt, now) || attempt.QuoteID != "" {
 			return kafudadomain.ErrInvalidTransition
 		}
+		var costs *kafudadomain.QuoteCosts
 		if quote != nil {
-			costs := autoCardQuoteCosts(*quote, record.Snapshot)
+			costs = autoCardQuoteCosts(*quote, record.Snapshot)
 			if costs == nil || quote.Plan != record.Snapshot.Plan || quote.Status != "available" ||
 				!allowedKind(quote.Kind, record.Snapshot.AllowedKinds) || !quote.ExpiresAt.After(now) {
 				return ErrQuotePolicy
 			}
-			attempt.QuoteCosts = costs
 		}
-		attempt.Status, attempt.QuoteID, attempt.UpdatedAt = kafudadomain.AttemptSubmitting, quoteID, now
-		attempt.NextPollAt = &nextPoll
-		record.Stage, record.UpdatedAt = kafudadomain.StageSubmitting, now
+		setSubmitting(record, attempt, quoteID, costs, now, nextPoll)
 		return nil
 	})
+}
+
+func setSubmitting(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt, quoteID string, costs *kafudadomain.QuoteCosts, now, nextPoll time.Time) {
+	attempt.Status, attempt.QuoteID, attempt.QuoteCosts = kafudadomain.AttemptSubmitting, quoteID, costs
+	attempt.UpdatedAt, attempt.NextPollAt = now, &nextPoll
+	record.Stage, record.UpdatedAt = kafudadomain.StageSubmitting, now
 }
 
 // ExpireUndispatchedQuote may only be called before the gateway was invoked.
@@ -209,10 +213,14 @@ func (s *Service) rejectCheck(ctx context.Context, attemptID uint, stage kafudad
 		if !hasLiveCheck(record, attempt, now) {
 			return kafudadomain.ErrInvalidTransition
 		}
-		attempt.Status, attempt.ActiveOrderID, attempt.NextPollAt, attempt.UpdatedAt = kafudadomain.AttemptFailed, nil, nil, now
-		record.Stage, record.ReasonCode, record.UpdatedAt = stage, reason, now
+		setCheckRejected(record, attempt, stage, reason, now)
 		return nil
 	})
+}
+
+func setCheckRejected(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt, stage kafudadomain.Stage, reason string, now time.Time) {
+	attempt.Status, attempt.ActiveOrderID, attempt.NextPollAt, attempt.UpdatedAt = kafudadomain.AttemptFailed, nil, nil, now
+	record.Stage, record.ReasonCode, record.UpdatedAt = stage, reason, now
 }
 
 func hasLiveCheck(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt, now time.Time) bool {

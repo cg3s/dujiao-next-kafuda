@@ -588,6 +588,9 @@ func TestSubmitCheckedDirectQuote(t *testing.T) {
 
 func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) directCheckoutFixture) {
 	t.Helper()
+	t.Run("checking_lease_expires_before_lock", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) { testDirectCheckLeaseExpiresBeforeLock(t, newFixture(t)) })
+	})
 	t.Run("quote_expires_before_dispatch", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) { testDirectQuoteExpiresBeforeDispatch(t, newFixture(t), false) })
 	})
@@ -608,6 +611,8 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 		{"ambiguous_bad_request", kafudadomain.StageManualReview, true, "outcome_unknown"},
 		{"quote_unavailable", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuoteUnavailable},
 		{"policy_rejected", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuotePolicy},
+		{"changed_snapshot_country", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuotePolicy},
+		{"changed_reservation_reference", kafudadomain.StageChecking, false, ""},
 		{"processing", kafudadomain.StageProcessing, true, ""},
 		{"completed", kafudadomain.StageCompleted, true, ""},
 		{"completed_after_sales_disabled", kafudadomain.StageCompleted, true, ""},
@@ -651,6 +656,8 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 			if err != nil {
 				t.Fatal(err)
 			}
+			storedSnapshot, storedReference := reservation.Recharge.Snapshot, reservation.Attempt.Reference
+			var initialAttempt *kafudadomain.Attempt
 			quoteCosts := kafudadomain.QuoteCosts{ServiceFeeCents: 900, CardLoadCents: 100, TotalCents: 1000}
 			check := kafudacontract.CheckResult{
 				Country: "PH", PayMode: "auto_card", RegionLocked: scenario.name == "region_locked",
@@ -667,6 +674,15 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				check.Plans[0].Status = "not_eligible"
 			case "policy_rejected":
 				check.Plans[0].AutoCard.ProductCode = "wrong-card"
+			case "changed_snapshot_country":
+				// Matching a caller's modified snapshot must not override the paid country.
+				reservation.Recharge.Snapshot.Country, check.Country = "CL", "CL"
+			case "changed_reservation_reference":
+				initialAttempt, err = f.store.GetAttempt(ctx, reservation.Attempt.ID)
+				if err != nil || initialAttempt == nil {
+					t.Fatalf("load original checking attempt: %+v, %v", initialAttempt, err)
+				}
+				reservation.Attempt.Reference = "replacement-reference"
 			}
 			calls := 0
 			gateway := directCreateGateway{create: func(ctx context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
@@ -710,7 +726,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				return &kafudacontract.OrderResult{ID: id, Reference: reservation.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed"}, nil
 			}}
 			completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, f.options.OrderStore, records, gateway, reservation, check, 10*time.Second)
-			wantError := scenario.wantReason != ""
+			wantError := scenario.wantReason != "" || scenario.name == "changed_reservation_reference"
 			if completed != (scenario.stage == kafudadomain.StageCompleted) || (err != nil) != wantError {
 				t.Fatalf("unexpected outcome: completed=%v, err=%v", completed, err)
 			}
@@ -727,10 +743,21 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				if !errors.Is(err, kafudacontract.ErrMerchantBalanceInsufficient) {
 					t.Fatalf("expected merchant balance rejection, got %v", err)
 				}
+			case "changed_snapshot_country":
+				if !errors.Is(err, kafudaapp.ErrQuotePolicy) {
+					t.Fatalf("expected rejection of a quote for the wrong paid country, got %v", err)
+				}
+			case "changed_reservation_reference":
+				if !errors.Is(err, kafudadomain.ErrConflict) {
+					t.Fatalf("expected changed reference to conflict, got %v", err)
+				}
 			}
 			wantReplayErr := kafudadomain.ErrInvalidTransition
 			if scenario.stage == kafudadomain.StageCompleted {
 				wantReplayErr = orderapp.ErrOrderStatusInvalid
+			}
+			if scenario.name == "changed_reservation_reference" {
+				wantReplayErr = kafudadomain.ErrConflict
 			}
 			replayCheck := check
 			if scenario.wantCall {
@@ -750,12 +777,15 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				wantCosts = &quoteCosts
 			}
 			original, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
-			if err != nil || original == nil || !reflect.DeepEqual(original.QuoteCosts, wantCosts) {
+			if err != nil || original == nil || original.Reference != storedReference || !reflect.DeepEqual(original.QuoteCosts, wantCosts) {
 				t.Fatalf("submission or replay changed quote costs: %+v, %v", original, err)
+			}
+			if initialAttempt != nil && !reflect.DeepEqual(original, initialAttempt) {
+				t.Fatalf("conflicting reference changed the live check: %+v", original)
 			}
 			record, err := f.store.GetRecharge(ctx, childID)
 			if err != nil || record == nil || record.Stage != scenario.stage || record.ReasonCode != scenario.wantReason ||
-				!reflect.DeepEqual(record.Snapshot, reservation.Recharge.Snapshot) {
+				!reflect.DeepEqual(record.Snapshot, storedSnapshot) {
 				t.Fatalf("unexpected persisted recharge: %+v, %v", record, err)
 			}
 			wantStatus := constants.OrderStatusPaid
@@ -836,10 +866,16 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 
 type directSubmitStore struct {
 	ordercontract.Store
-	afterCommit func()
+	beforeTransaction func()
+	afterCommit       func()
 }
 
 func (s *directSubmitStore) WithinTransaction(run func(ordercontract.Transaction) error) error {
+	if s.beforeTransaction != nil {
+		beforeTransaction := s.beforeTransaction
+		s.beforeTransaction = nil
+		beforeTransaction()
+	}
 	if err := s.Store.WithinTransaction(run); err != nil {
 		return err
 	}
@@ -849,6 +885,80 @@ func (s *directSubmitStore) WithinTransaction(run func(ordercontract.Transaction
 		afterCommit()
 	}
 	return nil
+}
+
+func testDirectCheckLeaseExpiresBeforeLock(t *testing.T, f directCheckoutFixture) {
+	t.Helper()
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+		t.Fatal(err)
+	}
+	order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, paidAt := t.Context(), time.Now().UTC()
+	childID := order.Children[0].ID
+	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
+		Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": paidAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	leaseUntil := paidAt.Add(time.Second)
+	reservation, err := kafudaworkflow.ReserveBuyerAttempt(f.options.OrderStore, ordercontract.TenantScope{}, order.OrderNo, order.UserID, paidAt, leaseUntil)
+	if err != nil || reservation == nil || !reservation.Created {
+		t.Fatalf("reserve paid order for checking: %+v, %v", reservation, err)
+	}
+	check := kafudacontract.CheckResult{Country: "PH", PayMode: "auto_card", Plans: []kafudacontract.Quote{{
+		Plan: "plus", Status: "available", Kind: "new", QuoteID: "stale_check_quote", ExpiresAt: paidAt.Add(time.Minute), PriceCents: 900,
+		AutoCard: &kafudacontract.AutoCard{ProductCode: "checkout-card", LoadCents: 100, TotalCents: 1000},
+	}}}
+	store := &directSubmitStore{Store: f.options.OrderStore, beforeTransaction: func() {
+		// The authorization result arrives while the check lease is live. The
+		// lease reaches its deadline while the workflow is waiting for the lock.
+		time.Sleep(time.Until(leaseUntil))
+	}}
+	records := kafudaapp.New(f.store)
+	calls := 0
+	gateway := directCreateGateway{create: func(_ context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
+		calls++
+		return &kafudacontract.OrderResult{ID: 100, Reference: req.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing"}, nil
+	}}
+	completed, err := kafudaworkflow.SubmitCheckedQuote(ctx, store, records, gateway, reservation, check, time.Second)
+	if completed || !errors.Is(err, kafudadomain.ErrInvalidTransition) || calls != 0 {
+		t.Fatalf("stale check dispatched after waiting for lock: completed=%v, calls=%d, err=%v", completed, calls, err)
+	}
+	attempt, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
+	if err != nil || attempt == nil || attempt.Status != kafudadomain.AttemptChecking || attempt.Reference != reservation.Attempt.Reference ||
+		attempt.ActiveOrderID == nil || *attempt.ActiveOrderID != childID || attempt.NextPollAt == nil || !attempt.NextPollAt.Equal(leaseUntil) ||
+		attempt.QuoteID != "" || attempt.QuoteCosts != nil || attempt.UpstreamOrderID != nil {
+		t.Fatalf("stale response changed the expired check before recovery: %+v, %v", attempt, err)
+	}
+	record, err := f.store.GetRecharge(ctx, childID)
+	if err != nil || record == nil || record.Stage != kafudadomain.StageChecking || record.CurrentAttemptID == nil || *record.CurrentAttemptID != attempt.ID || record.ReasonCode != "" {
+		t.Fatalf("stale response changed recharge state before recovery: %+v, %v", record, err)
+	}
+	assertDirectShopOrderStatus(t, store, order, constants.OrderStatusPaid, paidAt)
+
+	if err := kafudaworkflow.WithShopOrderTransitions(records, store).RecoverExpiredChecks(ctx, time.Now().UTC(), 1); err != nil {
+		t.Fatal(err)
+	}
+	retryAt := time.Now().UTC()
+	retry, err := kafudaworkflow.ReserveBuyerAttempt(store, ordercontract.TenantScope{}, order.OrderNo, order.UserID, retryAt, retryAt.Add(time.Minute))
+	if err != nil || retry == nil || !retry.Created || retry.Attempt == nil || retry.Attempt.Sequence != attempt.Sequence+1 || retry.Attempt.Reference == attempt.Reference {
+		t.Fatalf("recovery did not make room for fresh authorization: %+v, %v", retry, err)
+	}
+	check.Plans[0].QuoteID, check.Plans[0].ExpiresAt = "fresh_check_quote", retryAt.Add(time.Minute)
+	completed, err = kafudaworkflow.SubmitCheckedQuote(ctx, store, records, gateway, retry, check, time.Second)
+	if completed || err != nil || calls != 1 {
+		t.Fatalf("fresh authorization did not dispatch once: completed=%v, calls=%d, err=%v", completed, calls, err)
+	}
+	failed, err := f.store.GetAttempt(ctx, attempt.ID)
+	if err != nil || failed == nil || failed.Status != kafudadomain.AttemptFailed || failed.Reference != attempt.Reference || failed.ActiveOrderID != nil || failed.QuoteID != "" {
+		t.Fatalf("fresh authorization did not preserve the failed check history: %+v, %v", failed, err)
+	}
+	submitted, err := f.store.GetAttempt(ctx, retry.Attempt.ID)
+	if err != nil || submitted == nil || submitted.Status != kafudadomain.AttemptProcessing || submitted.QuoteID != "fresh_check_quote" || submitted.Reference != retry.Attempt.Reference {
+		t.Fatalf("fresh authorization did not persist the new attempt: %+v, %v", submitted, err)
+	}
 }
 
 func testDirectQuoteExpiresBeforeDispatch(t *testing.T, f directCheckoutFixture, recoverBeforeDispatch bool) {

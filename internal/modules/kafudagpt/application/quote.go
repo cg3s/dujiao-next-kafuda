@@ -17,12 +17,46 @@ var (
 	ErrQuoteRegionLocked = errors.New("kafuda account is region locked")
 )
 
-// CheckQuote selects a quote or classifies the rejected attempt using a local reason.
-func (s *Service) CheckQuote(ctx context.Context, attemptID uint, result kafudacontract.CheckResult, snapshot kafudadomain.Snapshot, now time.Time) (*kafudacontract.Quote, error) {
-	quote, err := SelectQuote(result, snapshot, now)
-	if err == nil {
-		return quote, nil
+// PrepareCheckedSubmission selects the quote against the locked order snapshot
+// and commits the billing request before it can be sent to the supplier.
+func (s *Service) PrepareCheckedSubmission(ctx context.Context, attemptID, orderID uint, reference string, result kafudacontract.CheckResult, lease time.Duration) (kafudacontract.CreateOrderRequest, time.Time, error) {
+	if attemptID == 0 || orderID == 0 || reference == "" || lease <= 0 {
+		return kafudacontract.CreateOrderRequest{}, time.Time{}, kafudadomain.ErrInvalidTransition
 	}
+	var request kafudacontract.CreateOrderRequest
+	var expiresAt time.Time
+	var rejection error
+	err := s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
+		if record.OrderID != orderID || attempt.Reference != reference {
+			return kafudadomain.ErrConflict
+		}
+		// Time spent waiting for order or attempt locks counts against the lease.
+		now := time.Now().UTC()
+		if !hasLiveCheck(record, attempt, now) || attempt.QuoteID != "" {
+			return kafudadomain.ErrInvalidTransition
+		}
+		quote, err := SelectQuote(result, record.Snapshot, now)
+		if err != nil {
+			rejection = err
+			stage, reason := quoteRejection(err)
+			setCheckRejected(record, attempt, stage, reason, now)
+			return nil
+		}
+		if len(quote.QuoteID) > 128 {
+			return kafudadomain.ErrInvalidTransition
+		}
+		setSubmitting(record, attempt, quote.QuoteID, autoCardQuoteCosts(*quote, record.Snapshot), now, now.Add(lease))
+		request = kafudacontract.CreateOrderRequest{QuoteID: attempt.QuoteID, Reference: attempt.Reference}
+		expiresAt = quote.ExpiresAt
+		return nil
+	})
+	if err != nil || rejection != nil {
+		return kafudacontract.CreateOrderRequest{}, time.Time{}, errors.Join(rejection, err)
+	}
+	return request, expiresAt, nil
+}
+
+func quoteRejection(err error) (kafudadomain.Stage, string) {
 	stage, reason := kafudadomain.StageManualDelivery, kafudadomain.ReasonQuotePolicy
 	switch {
 	case errors.Is(err, ErrQuoteRegionLocked):
@@ -32,7 +66,7 @@ func (s *Service) CheckQuote(ctx context.Context, attemptID uint, result kafudac
 	case errors.Is(err, ErrQuoteUnavailable):
 		reason = kafudadomain.ReasonQuoteUnavailable
 	}
-	return nil, errors.Join(err, s.rejectCheck(ctx, attemptID, stage, reason, now))
+	return stage, reason
 }
 
 // SelectQuote matches only the paid order's plan and country. Local prices are
