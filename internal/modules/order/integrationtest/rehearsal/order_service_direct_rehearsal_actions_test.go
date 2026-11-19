@@ -31,6 +31,7 @@ type directRehearsalActions struct {
 	fixture             directCheckoutFixture
 	records             *kafudaapp.Service
 	allowManualDelivery bool
+	renewalCancelled    *bool
 	mu                  sync.Mutex // Serializes mock supplier advances for this fixture.
 	results             map[uint]string
 }
@@ -49,11 +50,12 @@ func (g directRehearsalGateway) GetOrder(ctx context.Context, id uint64) (*kafud
 	return g.get(ctx, id)
 }
 
-func newDirectRehearsalActions(f directCheckoutFixture, allowManualDelivery bool) *directRehearsalActions {
+func newDirectRehearsalActions(f directCheckoutFixture, allowManualDelivery bool, renewalCancelled *bool) *directRehearsalActions {
 	return &directRehearsalActions{
 		fixture:             f,
 		records:             kafudaapp.New(f.store),
 		allowManualDelivery: allowManualDelivery,
+		renewalCancelled:    renewalCancelled,
 		results:             make(map[uint]string),
 	}
 }
@@ -238,6 +240,9 @@ func (a *directRehearsalActions) advance(c *gin.Context) {
 		result := directRehearsalSupplierOrder(record, attempt, status)
 		if upstreamID != result.ID {
 			return nil, kafudadomain.ErrInvalidTransition
+		}
+		if status == "completed" {
+			result.RenewalCancelled = a.renewalCancelled
 		}
 		return result, nil
 	}}

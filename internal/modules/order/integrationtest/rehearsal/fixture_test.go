@@ -34,6 +34,7 @@ type directCheckoutFixture struct {
 	db          *gorm.DB
 	product     productdomain.Product
 	sku         productdomain.ProductSKU
+	planLabel   string
 	users       []userdomain.User
 	options     orderapp.OrderServiceOptions
 	store       *kafudastore.Store
@@ -48,7 +49,7 @@ func (rehearsalOrderQueue) Enabled() bool                                  { ret
 func (rehearsalOrderQueue) EnqueueTimeoutCancel(uint, time.Duration) error { return nil }
 func (rehearsalOrderQueue) EnqueueStatusEmail(uint, string) error          { return nil }
 
-func newDirectCheckoutFixture(t *testing.T) directCheckoutFixture {
+func newDirectCheckoutFixture(t *testing.T, productType string) directCheckoutFixture {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -67,11 +68,15 @@ func newDirectCheckoutFixture(t *testing.T) directCheckoutFixture {
 	}
 
 	now := time.Now().UTC()
-	const profile, card, plan, country = "rehearsal-profile", "rehearsal-card", "plus", "PH"
+	const profile, card, country = "rehearsal-profile", "rehearsal-card", "PH"
+	plan, planLabel := "plus", "Plus"
+	if productType == "gpt_credits" {
+		plan, planLabel = "credit250", "Codex 250"
+	}
 	store := kafudastore.New(db)
 	catalog := &kafudadomain.Catalog{
 		Profile: profile, Enabled: true, SyncedAt: now, ExpiresAt: now.Add(2 * time.Hour),
-		Options: []kafudadomain.CatalogOption{{Plan: plan, Country: country, Product: "gpt", Available: true}},
+		Options: []kafudadomain.CatalogOption{{Plan: plan, Country: country, Product: productType, Available: true}},
 		Cards:   []kafudadomain.CardProduct{{ProductCode: card}},
 	}
 	if err := store.SaveCatalog(t.Context(), catalog); err != nil {
@@ -83,7 +88,7 @@ func newDirectCheckoutFixture(t *testing.T) directCheckoutFixture {
 	}
 	price := money.FromDecimal(decimal.NewFromInt(100))
 	product := productdomain.Product{
-		CategoryID: category.ID, Slug: "direct-rehearsal-product", TitleJSON: jsonmap.JSON{"zh-CN": "直充演练 · Plus · 菲律宾"},
+		CategoryID: category.ID, Slug: "direct-rehearsal-product", TitleJSON: jsonmap.JSON{"zh-CN": "直充演练 · " + planLabel + " · 菲律宾"},
 		PriceAmount: price, PurchaseType: constants.ProductPurchaseMember, FulfillmentType: constants.FulfillmentTypeKafudaGPT, IsActive: true,
 	}
 	if err := db.Create(&product).Error; err != nil {
@@ -109,7 +114,7 @@ func newDirectCheckoutFixture(t *testing.T) directCheckoutFixture {
 		ProductCode: card, MaxCostCents: 2500, AllowedKinds: []string{"new"}, WorkerReady: func(context.Context) bool { return true },
 	})
 	return directCheckoutFixture{
-		db: db, product: product, sku: sku, users: users, store: store, commerce: commerce,
+		db: db, product: product, sku: sku, planLabel: planLabel, users: users, store: store, commerce: commerce,
 		tenant: resellercontract.MainTenantContext("rehearsal.example.test"),
 		options: orderapp.OrderServiceOptions{
 			DirectCatalog: commerce,

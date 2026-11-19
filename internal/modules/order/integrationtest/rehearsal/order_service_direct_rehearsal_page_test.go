@@ -8,16 +8,17 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func writeDirectRehearsalPage(c *gin.Context, token string, productID, skuID uint, storefrontSlug string, online bool, adminToken string) {
+func writeDirectRehearsalPage(c *gin.Context, token string, productID, skuID uint, planLabel, storefrontSlug string, online bool, adminToken string) {
 	var page bytes.Buffer
 	data := struct {
 		Token          string
 		ProductID      uint
 		SKUID          uint
+		PlanLabel      string
 		StorefrontSlug string
 		Online         bool
 		AdminToken     string
-	}{Token: token, ProductID: productID, SKUID: skuID, StorefrontSlug: storefrontSlug, Online: online, AdminToken: adminToken}
+	}{Token: token, ProductID: productID, SKUID: skuID, PlanLabel: planLabel, StorefrontSlug: storefrontSlug, Online: online, AdminToken: adminToken}
 	if err := directRehearsalPage.Execute(&page, data); err != nil {
 		c.Status(http.StatusInternalServerError)
 		return
@@ -96,7 +97,7 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
     <section aria-labelledby="checkout-heading">
       <h2 id="checkout-heading">选定套餐并付款</h2>
       <dl>
-        <div><dt>套餐与地区</dt><dd>Plus · 菲律宾</dd></div>
+        <div><dt>套餐与地区</dt><dd>{{.PlanLabel}} · 菲律宾</dd></div>
         <div><dt>数量</dt><dd>1</dd></div>
         <div><dt>结算金额</dt><dd id="price">等待预览</dd></div>
         <div><dt>演练钱包</dt><dd id="balance">正在查询</dd></div>

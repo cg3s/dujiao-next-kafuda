@@ -49,7 +49,14 @@ var (
 	directRehearsalStorefrontDir = flag.String("kafuda-rehearsal-storefront-dir", "", "absolute path to the built user storefront")
 	directRehearsalOnline        = flag.Bool("kafuda-rehearsal-online", false, "enable the synthetic same-origin online payment channel")
 	directRehearsalAdminDir      = flag.String("kafuda-rehearsal-admin-dir", "", "absolute path to the fullstack admin build")
+	directRehearsalProductType   = flag.String("kafuda-rehearsal-product", "gpt", "synthetic supplier product: gpt or gpt_credits")
+	directRehearsalRenewal       = flag.String("kafuda-rehearsal-renewal-cancelled", "", "supplier completion renewal result: true, false, or omitted")
 )
+
+type directRehearsalOptions struct {
+	productType      string
+	renewalCancelled *bool
+}
 
 func newDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigin string, adminDirs ...string) (directCheckoutFixture, *gin.Engine, string, string) {
 	t.Helper()
@@ -61,11 +68,23 @@ func newDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigin string, 
 	default:
 		t.Fatal("expected at most one rehearsal admin directory")
 	}
+	return newConfiguredDirectRehearsalRouter(t, storefrontDir, onlineOrigin, adminDir, directRehearsalOptions{})
+}
+
+func newConfiguredDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigin, adminDir string, options directRehearsalOptions) (directCheckoutFixture, *gin.Engine, string, string) {
+	t.Helper()
 	if adminDir != "" && storefrontDir == "" {
 		t.Fatal("admin rehearsal requires built storefront assets")
 	}
+	productType := options.productType
+	if productType == "" {
+		productType = "gpt"
+	}
+	if productType != "gpt" && productType != "gpt_credits" {
+		t.Fatal("rehearsal product must be gpt or gpt_credits")
+	}
 	gin.SetMode(gin.TestMode)
-	f := newDirectCheckoutFixture(t)
+	f := newDirectCheckoutFixture(t, productType)
 	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &paymentdomain.Payment{}, &paymentdomain.PaymentChannel{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +142,7 @@ func newDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigin string, 
 		registerDirectRehearsalStorefront(t, router, f, storefrontDir, available)
 	}
 	router.GET(consolePath, func(c *gin.Context) {
-		writeDirectRehearsalPage(c, token, f.product.ID, f.sku.ID, storefrontSlug, online != nil, f.adminTokens["support"])
+		writeDirectRehearsalPage(c, token, f.product.ID, f.sku.ID, f.planLabel, storefrontSlug, online != nil, f.adminTokens["support"])
 	})
 	member := router.Group("/api/v1", func(c *gin.Context) {
 		c.Request = c.Request.WithContext(resellercontract.WithTenantContext(c.Request.Context(), f.tenant))
@@ -135,7 +154,7 @@ func newDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigin string, 
 	orderhttp.RegisterUserReadRoutes(member, orders.User)
 	orderhttp.RegisterUserPaymentChannelsRoute(member, orders.User)
 	member.GET("/wallet", walletwiring.New(deps).User.GetWallet)
-	newDirectRehearsalActions(f, adminDir != "").register(member)
+	newDirectRehearsalActions(f, adminDir != "", options.renewalCancelled).register(member)
 	if online != nil {
 		online.register(router, member, deps)
 	}
@@ -146,23 +165,34 @@ func newDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigin string, 
 }
 
 func TestDirectBuyerFlowRehearsal(t *testing.T) {
+	renewalCancelled, renewalNotCancelled := true, false
 	for _, scenario := range []struct {
-		result string
-		stage  kafudadomain.Stage
-		status string
+		name        string
+		result      string
+		stage       kafudadomain.Stage
+		status      string
+		options     directRehearsalOptions
+		wantRenewal string
 	}{
-		{result: "success", stage: kafudadomain.StageCompleted, status: constants.OrderStatusCompleted},
-		{result: "manual_review", stage: kafudadomain.StageManualReview, status: constants.OrderStatusFulfilling},
+		{name: "success", result: "success", stage: kafudadomain.StageCompleted, status: constants.OrderStatusCompleted},
+		{name: "manual_review", result: "manual_review", stage: kafudadomain.StageManualReview, status: constants.OrderStatusFulfilling},
+		{name: "renewal_cancelled", result: "success", stage: kafudadomain.StageCompleted, status: constants.OrderStatusCompleted,
+			options: directRehearsalOptions{productType: "gpt", renewalCancelled: &renewalCancelled}, wantRenewal: "true"},
+		{name: "renewal_not_cancelled", result: "success", stage: kafudadomain.StageCompleted, status: constants.OrderStatusCompleted,
+			options: directRehearsalOptions{productType: "gpt", renewalCancelled: &renewalNotCancelled}, wantRenewal: "false"},
+		{name: "credits_omit_renewal", result: "success", stage: kafudadomain.StageCompleted, status: constants.OrderStatusCompleted,
+			options: directRehearsalOptions{productType: "gpt_credits", renewalCancelled: &renewalCancelled}},
 	} {
-		t.Run(scenario.result, func(t *testing.T) {
-			f, router, buyer, other := newDirectRehearsalRouter(t, "", "")
+		t.Run(scenario.name, func(t *testing.T) {
+			f, router, buyer, other := newConfiguredDirectRehearsalRouter(t, "", "", "", scenario.options)
 			type data struct {
-				OrderNo     string `json:"order_no"`
-				OrderPaid   bool   `json:"order_paid"`
-				Balance     string `json:"balance"`
-				TotalAmount string `json:"total_amount"`
-				Stage       string `json:"stage"`
-				Status      string `json:"status"`
+				OrderNo     string          `json:"order_no"`
+				OrderPaid   bool            `json:"order_paid"`
+				Balance     string          `json:"balance"`
+				TotalAmount string          `json:"total_amount"`
+				Stage       string          `json:"stage"`
+				Status      string          `json:"status"`
+				Renewal     json.RawMessage `json:"renewal_cancelled"`
 				Children    []struct {
 					Status string `json:"status"`
 				} `json:"children"`
@@ -198,8 +228,16 @@ func TestDirectBuyerFlowRehearsal(t *testing.T) {
 			}
 			status := func(orderNo string, want kafudadomain.Stage) {
 				t.Helper()
-				if got := request(http.MethodGet, "/orders/"+orderNo+"/direct-status", "", buyer, true); got.Stage != string(want) {
+				got := request(http.MethodGet, "/orders/"+orderNo+"/direct-status", "", buyer, true)
+				if got.Stage != string(want) {
 					t.Fatalf("buyer sees stage %q, want %q", got.Stage, want)
+				}
+				wantRenewal := ""
+				if want == kafudadomain.StageCompleted {
+					wantRenewal = scenario.wantRenewal
+				}
+				if string(got.Renewal) != wantRenewal {
+					t.Fatalf("buyer sees renewal_cancelled %q at %s, want %q", got.Renewal, want, wantRenewal)
 				}
 			}
 			items := fmt.Sprintf(`"items":[{"product_id":%d,"sku_id":%d,"quantity":1}]`, f.product.ID, f.sku.ID)
@@ -245,9 +283,19 @@ func TestDirectBuyerFlowRehearsal(t *testing.T) {
 			if detail.Status != scenario.status || len(detail.Children) != 1 || detail.Children[0].Status != scenario.status {
 				t.Fatalf("parent and child were not synchronized: %+v", detail)
 			}
-			var attempts int64
-			if err := f.db.Model(&kafudadomain.Attempt{}).Count(&attempts).Error; err != nil || attempts != 1 {
-				t.Fatalf("expected exactly one attempt, got %d, %v", attempts, err)
+			var attempts []kafudadomain.Attempt
+			if err := f.db.Find(&attempts).Error; err != nil || len(attempts) != 1 {
+				t.Fatalf("expected exactly one attempt, got %d, %v", len(attempts), err)
+			}
+			if wantRenewal := scenario.options.renewalCancelled; wantRenewal != nil {
+				got := attempts[0].RenewalCancelled
+				if got == nil || *got != *wantRenewal {
+					t.Fatalf("attempt did not store supplier renewal_cancelled=%t", *wantRenewal)
+				}
+				recharge, err := f.store.GetRecharge(t.Context(), attempts[0].OrderID)
+				if err != nil || recharge == nil || recharge.Snapshot.Product != scenario.options.productType {
+					t.Fatalf("checkout did not capture supplier product %s: %v", scenario.options.productType, err)
+				}
 			}
 			var deliveries []fulfillmentdomain.Fulfillment
 			if err := f.db.Find(&deliveries).Error; err != nil {
@@ -276,7 +324,17 @@ func TestServeDirectBuyerRehearsal(t *testing.T) {
 	if *directRehearsalOnline {
 		onlineOrigin = "http://" + addr
 	}
-	_, router, _, _ := newDirectRehearsalRouter(t, *directRehearsalStorefrontDir, onlineOrigin, *directRehearsalAdminDir)
+	options := directRehearsalOptions{productType: *directRehearsalProductType}
+	switch *directRehearsalRenewal {
+	case "true", "false":
+		cancelled := *directRehearsalRenewal == "true"
+		options.renewalCancelled = &cancelled
+	case "":
+		// No renewal result was supplied.
+	default:
+		t.Fatal("rehearsal renewal result must be true or false")
+	}
+	_, router, _, _ := newConfiguredDirectRehearsalRouter(t, *directRehearsalStorefrontDir, onlineOrigin, *directRehearsalAdminDir, options)
 	listener, err := net.Listen("tcp4", addr)
 	if err != nil {
 		t.Fatal(err)
