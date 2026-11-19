@@ -543,6 +543,7 @@
 - [ ] 在部署环境核对目录刷新、Redis 调度、worker 恢复和 PostgreSQL 行锁；如获灰度授权，再核对单套餐、单地区的实际费用、开通结果、凭据清理与停售后旧单处理。
   - 本地部署装配回归使用生产容器、正式迁移、商城路由、Redis 7.0.15 和模拟 HTTPS 上游，在 SQLite 和 PostgreSQL 16.15 通过。worker 未运行时保留已配置规格并拒绝预览，启动后恢复可售。买家钱包付款并授权后停止 worker，规格转为不可购买，原订单仍可查看充值中状态。新 worker 和调度器启动后，规格恢复可售，按原数字单号继续查单，父子单同步完结且仅交付一次。使用隔离的新 Redis 实例设置 `TEST_KAFUDA_REDIS_PORT`，并将 `TEST_POSTGRES_DSN` 指向允许创建隔离 schema 的测试库，运行 `go test -tags integration ./internal/app/jobs -run '^TestRedisKafudaProductionShopStartsSellingAndFulfills$'`。
   - PostgreSQL 实库另复验下单与履约类型切换竞争同一商品锁、建单等待目录修订，以及查单租约到期后由新 worker 接管。部署测试站的配置与这些运行结果仍需现场核对。
+  - 2026-11-19 只读复验部署测试站。`GET /health` 正常，公开配置上报 `app_version=v0.1.4`。直充商品 `chatgpt-01` 在店面列表和详情显示不可售，详情中的三个规格均已启用但不可购买。仓库的 `v0.1.4` 标签（`f29f21ff`）已接入 worker 就绪检查。后台目录的匿名读取返回业务码 `401`，当前阻断原因仍须由获授权的后台读取确认。
 - [ ] 实测 `x-ratelimit-reset` 的时间语义。现有客户端按 Unix 时间戳解释，接口快照仅注明单位为秒。
 
 ## 7. 开发交付与验收
