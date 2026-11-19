@@ -29,6 +29,7 @@ import (
 	mappinghttp "github.com/dujiao-next/internal/modules/catalog/mapping/transport/http"
 	productgormstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
 	"github.com/dujiao-next/internal/shared/jsonmap"
+	"github.com/dujiao-next/internal/shared/money"
 	"github.com/dujiao-next/internal/upstream"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -970,6 +971,101 @@ func TestMappedProductSyncRollsBackFailedWrites(t *testing.T) {
 						t.Fatal("repeat sync replaced the SKU")
 					}
 					newSKUID = after.SKUs[1].ID
+				}
+			})
+		}
+	}
+}
+
+func TestMappedProductMarkupRollsBackFailedWrites(t *testing.T) {
+	for _, mode := range []struct {
+		name    string
+		reapply func(*mappingapp.Service, uint) (int, error)
+	}{
+		{name: "local", reapply: (*mappingapp.Service).ReapplyMarkupLocal},
+		{name: "admin", reapply: (*mappingapp.Service).ReapplyMarkup},
+	} {
+		for _, failure := range []struct {
+			name    string
+			trigger string
+		}{
+			{name: "second_sku", trigger: "BEFORE UPDATE OF price_amount ON product_skus WHEN (SELECT COUNT(*) FROM product_skus WHERE product_id = NEW.product_id AND price_amount > 0) = 1"},
+			{name: "product_summary", trigger: "BEFORE UPDATE OF price_amount ON products"},
+		} {
+			t.Run(mode.name+"/"+failure.name, func(t *testing.T) {
+				db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				pool, err := db.DB()
+				if err != nil {
+					t.Fatal(err)
+				}
+				pool.SetMaxOpenConns(1)
+				t.Cleanup(func() { _ = pool.Close() })
+				if err := db.AutoMigrate(&productdomain.Product{}, &productdomain.ProductSKU{}, &mappingdomain.Mapping{}, &mappingdomain.SKUMapping{}, &siteconnectiondomain.Connection{}); err != nil {
+					t.Fatal(err)
+				}
+				create := func(row any) {
+					t.Helper()
+					if err := db.Create(row).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				conn := siteconnectiondomain.Connection{Name: "markup-rollback", ExchangeRate: decimal.NewFromInt(1), PriceMarkupPercent: decimal.NewFromInt(50)}
+				product := productdomain.Product{
+					Slug: "markup-rollback", TitleJSON: jsonmap.JSON{"zh-CN": "映射商品"},
+					FulfillmentType: constants.FulfillmentTypeUpstream, IsMapped: true, IsActive: true,
+				}
+				create(&conn)
+				create(&product)
+				mapping := mappingdomain.Mapping{LocalProductID: product.ID, ConnectionID: conn.ID, UpstreamProductID: 20}
+				create(&mapping)
+				for i, price := range []int64{20, 30} {
+					sku := productdomain.ProductSKU{ProductID: product.ID, SKUCode: fmt.Sprintf("SKU-%d", i+1), IsActive: true}
+					create(&sku)
+					create(&mappingdomain.SKUMapping{ProductMappingID: mapping.ID, LocalSKUID: sku.ID, UpstreamSKUID: uint(201 + i),
+						UpstreamPrice: money.FromDecimal(decimal.NewFromInt(price)), UpstreamStock: 10 + i})
+				}
+				unit := &mappingImportUoW{
+					products: productgormstore.NewProductStore(db), skus: productgormstore.NewSKUStore(db),
+					mappings: mappinggormstore.NewMappingStore(db), skuMappings: mappinggormstore.NewSKUMappingStore(db),
+				}
+				svc, err := mappingapp.NewService(mappingapp.Options{
+					Mappings: unit.mappings, SKUMappings: unit.skuMappings, Products: unit.products, SKUs: unit.skus,
+					Media: adminNoopLocalMediaRecorder{}, Connections: &mappingConnectionProvider{db: db}, Transactions: unit,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				const injected = "injected markup write failure"
+				trigger := fmt.Sprintf("CREATE TRIGGER reject_markup_write %s BEGIN SELECT RAISE(ABORT, '%s'); END", failure.trigger, injected)
+				if err := db.Exec(trigger).Error; err != nil {
+					t.Fatal(err)
+				}
+				before := readMappingWriteSnapshot(t, db)
+				if updated, err := mode.reapply(svc, conn.ID); updated != 0 || err == nil || !strings.Contains(err.Error(), injected) {
+					t.Errorf("expected write failure without counting the mapped product: updated=%d, err=%v", updated, err)
+				}
+				if after := readMappingWriteSnapshot(t, db); !reflect.DeepEqual(before, after) {
+					t.Fatal("failed markup left partial product or SKU changes")
+				}
+
+				if err := db.Exec("DROP TRIGGER reject_markup_write").Error; err != nil {
+					t.Fatal(err)
+				}
+				if updated, err := mode.reapply(svc, conn.ID); updated != 1 || err != nil {
+					t.Fatalf("retry did not count one repriced product: updated=%d, err=%v", updated, err)
+				}
+				after := readMappingWriteSnapshot(t, db)
+				if after.Product.PriceAmount.String() != "30.00" || after.Product.CostPriceAmount.String() != "20.00" ||
+					len(after.SKUs) != 2 || after.SKUs[0].PriceAmount.String() != "30.00" || after.SKUs[0].CostPriceAmount.String() != "20.00" ||
+					after.SKUs[1].PriceAmount.String() != "45.00" || after.SKUs[1].CostPriceAmount.String() != "30.00" {
+					t.Fatal("retry did not update both SKU prices and the product summary")
+				}
+				if !reflect.DeepEqual(before.Mapping, after.Mapping) || !reflect.DeepEqual(before.SKUMappings, after.SKUMappings) {
+					t.Fatal("markup changed mapping or upstream stock metadata")
 				}
 			})
 		}

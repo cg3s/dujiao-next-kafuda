@@ -101,18 +101,26 @@ func (s *Service) reapplyMarkupPrices(conn *siteconnectiondomain.Connection, cat
 			for _, sm := range skuMappings {
 				newLocalPrice := CalculateLocalPrice(sm.UpstreamPrice.Decimal, conn.ExchangeRate, markupPercent, conn.PriceRoundingMode)
 				localSKU, err := s.skus.GetByID(sm.LocalSKUID)
-				if err != nil || localSKU == nil {
+				if err != nil {
+					return err
+				}
+				if localSKU == nil {
 					continue
 				}
 				localSKU.PriceAmount = money.FromDecimal(newLocalPrice.Round(2))
 				localSKU.CostPriceAmount = money.FromDecimal(convertCurrency(sm.UpstreamPrice.Decimal, conn.ExchangeRate).Round(2)) // 成本价 = 上游价格 × 汇率（本地币种）
-				_ = s.skus.Update(localSKU)
+				if err := s.skus.Update(localSKU); err != nil {
+					return err
+				}
 			}
 
 			// 更新 Product.PriceAmount
 			localProduct, err := s.products.GetByID(strconv.FormatUint(uint64(mapping.LocalProductID), 10))
-			if err == nil && localProduct != nil {
-				_ = s.recalcProductPrice(localProduct)
+			if err != nil {
+				return err
+			}
+			if localProduct != nil {
+				return s.recalcProductPrice(localProduct)
 			}
 			return nil
 		})
