@@ -232,7 +232,7 @@ func (a *directRehearsalActions) advance(c *gin.Context) {
 		}
 		return result, nil
 	}}
-	result, err := a.records.PollKnownOrder(ctx, ctx, gateway, attempt.ID, startedAt, startedAt.Add(directRehearsalPollInterval), kafudaapp.DefaultPollReviewAfter)
+	result, err := a.records.PollKnownOrder(ctx, ctx, gateway, attempt.ID, startedAt, directRehearsalPollInterval, kafudaapp.DefaultPollReviewAfter)
 	if err != nil {
 		directRehearsalError(c, http.StatusInternalServerError, "error.order_fetch_failed")
 		return

@@ -223,15 +223,36 @@ func (g *knownOrderLookupGateway) GetOrder(ctx context.Context, id uint64) (*kaf
 }
 
 func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
-	for _, scenario := range []string{"completed", "timeout", "wrong_reference", "deadline", "lookup_canceled", "rate_limited", "rate_limit_below_backoff"} {
-		t.Run(scenario, func(t *testing.T) {
-			_, store, service := database(t)
+	for _, scenario := range []struct {
+		name          string
+		previousDelay time.Duration
+		baseInterval  time.Duration
+		retryAfter    time.Duration
+		wantDelay     time.Duration
+	}{
+		{name: "completed", previousDelay: time.Minute, wantDelay: 2 * time.Minute},
+		{name: "timeout", previousDelay: time.Minute, wantDelay: 2 * time.Minute},
+		{name: "wrong_reference", previousDelay: time.Minute, wantDelay: 2 * time.Minute},
+		{name: "deadline", previousDelay: time.Minute, wantDelay: 2 * time.Minute},
+		{name: "lookup_canceled", previousDelay: time.Minute, wantDelay: 2 * time.Minute},
+		{name: "rate_limited", previousDelay: time.Minute, retryAfter: 3 * time.Minute, wantDelay: 3 * time.Minute},
+		{name: "rate_limit_below_backoff", previousDelay: time.Minute, retryAfter: time.Second, wantDelay: 2 * time.Minute},
+		{name: "rate_limit_above_cap", previousDelay: 8 * time.Minute, retryAfter: 20 * time.Minute, wantDelay: 20 * time.Minute},
+		{name: "doubled_persisted_interval", previousDelay: 4 * time.Minute, wantDelay: 8 * time.Minute},
+		{name: "capped_persisted_interval", previousDelay: 8 * time.Minute, wantDelay: 15 * time.Minute},
+		{name: "capped_long_persisted_interval", previousDelay: time.Hour, wantDelay: 15 * time.Minute},
+		{name: "capped_base_interval", previousDelay: time.Second, baseInterval: 20 * time.Minute, wantDelay: 15 * time.Minute},
+		{name: "base_interval_for_short_delay", previousDelay: 10 * time.Second, wantDelay: time.Minute},
+		{name: "base_interval_for_legacy_due_time", previousDelay: -time.Minute, wantDelay: time.Minute},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			db, store, service := database(t)
 			ctx, now := context.Background(), time.Now().UTC()
 			lookupCtx, cancelLookup := context.WithCancel(ctx)
 			defer cancelLookup()
 			prepare(t, service, 10, now)
 			attempt := reserve(t, service, 10, now).Attempt
-			due, retry := now.Add(time.Minute), now.Add(2*time.Minute)
+			due := now.Add(max(scenario.previousDelay, time.Second))
 			if err := service.MarkSubmitting(ctx, attempt.ID, "quo_1", now, due); err != nil {
 				t.Fatal(err)
 			}
@@ -239,35 +260,50 @@ func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
 			if err := service.RecordResult(ctx, attempt.ID, result, now, due); err != nil {
 				t.Fatal(err)
 			}
+			if scenario.previousDelay <= 0 {
+				// Exercise persisted schedules whose update followed the due time.
+				if err := db.Model(&kafudadomain.Attempt{}).Where("id = ?", attempt.ID).
+					UpdateColumn("next_poll_at", now.Add(scenario.previousDelay)).Error; err != nil {
+					t.Fatal(err)
+				}
+				due = now
+			}
 			result.Status = "completed"
 			gateway := &knownOrderLookupGateway{result: &result}
-			switch scenario {
-			case "timeout", "deadline":
-				gateway.err = context.DeadlineExceeded
+			switch scenario.name {
+			case "completed":
 			case "lookup_canceled":
 				gateway.cancelLookup = cancelLookup
 			case "wrong_reference":
 				result.Reference = "wrong"
-			case "rate_limited":
-				gateway.err = &kafudacontract.APIError{HTTPStatus: 429, RetryAfter: 3 * time.Minute}
-			case "rate_limit_below_backoff":
-				gateway.err = &kafudacontract.APIError{HTTPStatus: 429, RetryAfter: time.Second}
+			default:
+				gateway.err = context.DeadlineExceeded
 			}
-			reviewAfter := time.Hour
-			wantReview := scenario == "deadline" || scenario == "lookup_canceled"
+			if scenario.retryAfter > 0 {
+				gateway.err = &kafudacontract.APIError{HTTPStatus: 429, RetryAfter: scenario.retryAfter}
+			}
+			reviewAfter := 2 * time.Hour
+			wantReview := scenario.name == "deadline" || scenario.name == "lookup_canceled"
 			if wantReview {
 				reviewAfter = time.Minute
 			}
-			got, pollErr := service.PollKnownOrder(ctx, lookupCtx, gateway, attempt.ID, due, retry, reviewAfter)
+			baseInterval := scenario.baseInterval
+			if baseInterval == 0 {
+				baseInterval = time.Minute
+			}
+			got, pollErr := service.PollKnownOrder(ctx, lookupCtx, gateway, attempt.ID, due, baseInterval, reviewAfter)
 			if gateway.id != 101 {
 				t.Fatalf("queried wrong upstream ID: %d", gateway.id)
 			}
-			if scenario == "lookup_canceled" && !errors.Is(gateway.lookupErr, context.Canceled) {
+			if scenario.name == "lookup_canceled" && !errors.Is(gateway.lookupErr, context.Canceled) {
 				t.Fatalf("gateway did not observe the canceled lookup context: %v", gateway.lookupErr)
 			}
-			if scenario == "completed" {
+			if scenario.name == "completed" {
 				if pollErr != nil || got == nil || got.Status != "completed" {
 					t.Fatalf("valid result was lost: %+v, %v", got, pollErr)
+				}
+				if got.RetryDelay != scenario.wantDelay {
+					t.Fatalf("lookup retry delay = %v, want %v", got.RetryDelay, scenario.wantDelay)
 				}
 			} else {
 				if got != nil || !errors.Is(pollErr, kafudaapp.ErrKnownOrderLookupFailed) || errors.Is(pollErr, context.DeadlineExceeded) || errors.Is(pollErr, context.Canceled) {
@@ -283,24 +319,22 @@ func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
 				stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != 101 || stored.Reference != attempt.Reference || stored.NextPollAt == nil {
 				t.Fatalf("lookup changed the attempt unexpectedly: %+v, %v", stored, err)
 			}
-			if scenario == "completed" {
+			if scenario.name == "completed" {
 				if !stored.NextPollAt.Equal(due) || !stored.UpdatedAt.Equal(now) ||
 					stored.KnownOrderPollLeaseUntil == nil || !stored.KnownOrderPollLeaseUntil.Equal(got.Lease.Until) {
 					t.Fatalf("successful lookup must hold its lease and leave the schedule unchanged: %+v", stored)
 				}
 			} else {
-				delay := retry.Sub(due)
-				if scenario == "rate_limited" {
-					delay = 3 * time.Minute
+				if scenario.retryAfter > 0 {
 					var apiErr *kafudacontract.APIError
-					if errors.As(pollErr, &apiErr) {
-						t.Fatalf("rate-limit failure exposed gateway error: %v", pollErr)
+					if !errors.Is(pollErr, kafudaapp.ErrKnownOrderRateLimited) || errors.As(pollErr, &apiErr) {
+						t.Fatalf("rate-limit failure was not classified: %v", pollErr)
 					}
 				}
-				minimumDue := due.Add(delay)
-				if actualDelay := stored.NextPollAt.Sub(stored.UpdatedAt); actualDelay != delay || stored.KnownOrderPollLeaseUntil != nil ||
+				minimumDue := due.Add(scenario.wantDelay)
+				if actualDelay := stored.NextPollAt.Sub(stored.UpdatedAt); actualDelay != scenario.wantDelay || stored.KnownOrderPollLeaseUntil != nil ||
 					stored.NextPollAt.Before(minimumDue) || stored.NextPollAt.After(minimumDue.Add(30*time.Second)) {
-					t.Fatalf("next poll = %v, delay = %v, want due no earlier than %v with delay %v", stored.NextPollAt, actualDelay, minimumDue, delay)
+					t.Fatalf("next poll = %v, delay = %v, want due no earlier than %v with delay %v", stored.NextPollAt, actualDelay, minimumDue, scenario.wantDelay)
 				}
 			}
 			if wantReview {
@@ -308,7 +342,7 @@ func TestPollKnownOrderValidatesResponseAndReschedulesFailure(t *testing.T) {
 				if err != nil || record == nil || record.Stage != kafudadomain.StageManualReview || record.ReasonCode != "lookup_deadline_exceeded" {
 					t.Fatalf("deadline did not enter review: %+v, %v", record, err)
 				}
-				if err := service.RecordResult(ctx, attempt.ID, result, retry, time.Time{}); err != nil {
+				if err := service.RecordResult(ctx, attempt.ID, result, *stored.NextPollAt, time.Time{}); err != nil {
 					t.Fatal(err)
 				}
 				record, err = store.GetRecharge(ctx, 10)
@@ -341,7 +375,7 @@ func TestExpiredKnownOrderPollFencesOlderWorker(t *testing.T) {
 			previousResponse := processing
 			previousResponse.Status = oldStatus
 			first, err := service.PollKnownOrder(ctx, ctx, &knownOrderLookupGateway{result: &previousResponse},
-				attempt.ID, due, due.Add(time.Minute), time.Hour)
+				attempt.ID, due, time.Minute, time.Hour)
 			if err != nil || first == nil {
 				t.Fatalf("initial poll = %+v, %v", first, err)
 			}
@@ -351,11 +385,11 @@ func TestExpiredKnownOrderPollFencesOlderWorker(t *testing.T) {
 			expires := first.Lease.Until
 			gateway := &knownOrderLookupGateway{result: &processing}
 			beforeExpiry := expires.Add(-time.Microsecond)
-			if polled, err := replacement.PollKnownOrder(ctx, ctx, gateway, attempt.ID, beforeExpiry, expires.Add(time.Minute), time.Hour); polled != nil ||
+			if polled, err := replacement.PollKnownOrder(ctx, ctx, gateway, attempt.ID, beforeExpiry, time.Minute, time.Hour); polled != nil ||
 				!errors.Is(err, kafudadomain.ErrConflict) || gateway.id != 0 {
 				t.Fatalf("live lease allowed a second lookup: %+v, %v, upstream ID %d", polled, err, gateway.id)
 			}
-			second, err := replacement.PollKnownOrder(ctx, ctx, gateway, attempt.ID, expires, expires.Add(time.Minute), time.Hour)
+			second, err := replacement.PollKnownOrder(ctx, ctx, gateway, attempt.ID, expires, time.Minute, time.Hour)
 			if err != nil || second == nil || gateway.id != processing.ID || !second.Lease.Until.After(expires) || !second.Lease.ScheduledAt.Equal(due) {
 				t.Fatalf("expired lease was not replaced on the original schedule: %+v, %v", second, err)
 			}

@@ -37,6 +37,7 @@ type kafudaPollTestGateway struct {
 	ids    []uint64
 	err    error
 	delay  time.Duration
+	get    func(context.Context, uint64) (*kafudacontract.OrderResult, error)
 }
 
 type kafudaDeadlineTestGateway struct {
@@ -94,20 +95,13 @@ func (q *kafudaStatusEmailQueue) EnqueueStatusEmail(orderID uint, status string)
 	return q.err
 }
 
-func (g *kafudaPollTestGateway) GetOrder(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+func (g *kafudaPollTestGateway) GetOrder(ctx context.Context, id uint64) (*kafudacontract.OrderResult, error) {
 	g.ids = append(g.ids, id)
+	if g.get != nil {
+		return g.get(ctx, id)
+	}
 	time.Sleep(g.delay)
 	return &g.result, g.err
-}
-
-func TestKafudaRetryDelayIsBounded(t *testing.T) {
-	now := time.Now()
-	for _, pair := range [][2]time.Duration{{-time.Minute, time.Minute}, {time.Minute, 2 * time.Minute}, {4 * time.Minute, 8 * time.Minute}, {8 * time.Minute, 15 * time.Minute}, {time.Hour, 15 * time.Minute}} {
-		next := now.Add(pair[0])
-		if got := kafudaRetryDelay(kafudadomain.Attempt{UpdatedAt: now, NextPollAt: &next}, time.Minute); got != pair[1] {
-			t.Errorf("delay after %s = %s, want %s", pair[0], got, pair[1])
-		}
-	}
 }
 
 func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
@@ -341,6 +335,88 @@ func TestKafudaConcurrentPollsClaimKnownOrder(t *testing.T) {
 	}
 }
 
+func TestKafudaPollBackoffUsesClaimedSchedule(t *testing.T) {
+	for _, scenario := range []struct {
+		name       string
+		lookupFail bool
+	}{
+		{name: "lookup_failure", lookupFail: true},
+		{name: "result_application_failure"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const baseInterval = 5 * time.Second
+				const secondOrderID = 2
+				ctx := t.Context()
+				gateway := &kafudaPollTestGateway{}
+				c, store, dueAt, db := newKafudaPollBatch(t, gateway, 1, secondOrderID)
+				c.Config = &config.Config{KafudaGPT: config.KafudaGPTConfig{PollIntervalSeconds: int(baseInterval / time.Second)}}
+				if err := db.Model(&kafudadomain.Attempt{}).Where("order_id = ?", secondOrderID).
+					UpdateColumn("updated_at", dueAt.Add(-baseInterval)).Error; err != nil {
+					t.Fatal(err)
+				}
+				due, err := store.DueKnownOrderPolls(ctx, time.Now().UTC(), 2)
+				if err != nil || len(due) != 2 || due[0].OrderID != 1 || due[1].OrderID != secondOrderID {
+					t.Fatalf("expected two due attempts in order: %+v, %v", due, err)
+				}
+				first, second := due[0], due[1]
+				firstResult := kafudacontract.OrderResult{
+					ID: 1, Reference: first.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing",
+				}
+				secondResult := kafudacontract.OrderResult{
+					ID: secondOrderID, Reference: second.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed",
+				}
+				if !scenario.lookupFail {
+					trigger := "CREATE TRIGGER reject_stale_scan_completion BEFORE UPDATE ON orders WHEN OLD.id = 102 AND NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'local completion failed'); END"
+					if err := db.Exec(trigger).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				lookupErr := errors.New("supplier lookup failed")
+				secondLookups := 0
+				var newerDue time.Time
+				gateway.get = func(_ context.Context, id uint64) (*kafudacontract.OrderResult, error) {
+					switch id {
+					case firstResult.ID:
+						// The original batch has scanned both attempts and holds the first
+						// lease. Another worker can now claim and reschedule the second.
+						if err := c.pollKnownKafudaOrders(ctx); !errors.Is(err, kafudaapp.ErrKnownOrderLookupFailed) {
+							t.Fatalf("overlapping worker did not reschedule second attempt: %v", err)
+						}
+						rescheduled, err := store.GetAttempt(ctx, second.ID)
+						if err != nil || rescheduled == nil || rescheduled.NextPollAt == nil ||
+							rescheduled.NextPollAt.Sub(rescheduled.UpdatedAt) != 2*baseInterval {
+							t.Fatalf("overlapping worker did not double the first interval: %+v, %v", rescheduled, err)
+						}
+						newerDue = *rescheduled.NextPollAt
+						time.Sleep(time.Until(newerDue))
+						return &firstResult, nil
+					case secondResult.ID:
+						secondLookups++
+						if secondLookups == 1 || scenario.lookupFail {
+							return nil, lookupErr
+						}
+						return &secondResult, nil
+					default:
+						t.Fatalf("unexpected supplier lookup: %d", id)
+						return nil, nil
+					}
+				}
+				err = c.pollKnownKafudaOrders(ctx)
+				if err == nil || errors.Is(err, kafudaapp.ErrKnownOrderLookupFailed) != scenario.lookupFail || secondLookups != 2 {
+					t.Fatalf("expected second failure after claiming newer schedule: lookups=%v, %v", gateway.ids, err)
+				}
+				stored, err := store.GetAttempt(ctx, second.ID)
+				if err != nil || stored == nil || stored.Status != kafudadomain.AttemptProcessing ||
+					!stored.UpdatedAt.Equal(newerDue) || stored.NextPollAt == nil ||
+					!stored.NextPollAt.Equal(newerDue.Add(4*baseInterval)) || stored.KnownOrderPollLeaseUntil != nil {
+					t.Fatalf("expected backoff from the newer claimed interval of %s: %+v, %v", 2*baseInterval, stored, err)
+				}
+			})
+		})
+	}
+}
+
 func TestKafudaRecoveryTaskPersistsBackoffAfterLookupDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		gateway := &kafudaDeadlineTestGateway{}
@@ -409,9 +485,6 @@ func TestKafudaRecoveryTaskSchedulesFromSuccessfulLookupResponse(t *testing.T) {
 		if err != nil || stored == nil || stored.Status != kafudadomain.AttemptProcessing || !stored.UpdatedAt.Equal(receivedAt) ||
 			stored.NextPollAt == nil || !stored.NextPollAt.Equal(receivedAt.Add(interval)) {
 			t.Fatalf("expected a processing attempt with the next poll one interval after the response, got %+v, %v", stored, err)
-		}
-		if delay := kafudaRetryDelay(*stored, interval); delay != 2*interval {
-			t.Fatalf("slow successful lookup inflated future backoff to %v", delay)
 		}
 		time.Sleep(interval - time.Second)
 		if err := mux.ProcessTask(ctx, task); err != nil {

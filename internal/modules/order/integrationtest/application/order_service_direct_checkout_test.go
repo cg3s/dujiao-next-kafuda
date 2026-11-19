@@ -834,7 +834,7 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 					t.Fatalf("poll was not scheduled: %+v, %v", attempt, err)
 				}
 				at := *attempt.NextPollAt
-				result, err := records.PollKnownOrder(ctx, ctx, gateway, attempt.ID, at, at.Add(time.Minute), 0)
+				result, err := records.PollKnownOrder(ctx, ctx, gateway, attempt.ID, at, time.Minute, 0)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1329,7 +1329,7 @@ func testLateDirectCreateResponse(t *testing.T, newFixture func(*testing.T) dire
 						}
 						return &terminal, nil
 					}}
-					result, err := records.PollKnownOrder(ctx, ctx, pollGateway, attemptID, lookupAt, lookupAt.Add(time.Minute), 0)
+					result, err := records.PollKnownOrder(ctx, ctx, pollGateway, attemptID, lookupAt, time.Minute, 0)
 					if err != nil || result == nil {
 						t.Fatalf("poll after late create: %+v, %v", result, err)
 					}
@@ -1436,7 +1436,7 @@ func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, orde
 	stored := assertPendingLookup(2)
 	records := kafudaapp.New(f.store)
 	lookupAt := *stored.NextPollAt
-	result, err := records.PollKnownOrder(ctx, ctx, gateway, attempt.ID, lookupAt, lookupAt.Add(time.Minute), 0)
+	result, err := records.PollKnownOrder(ctx, ctx, gateway, attempt.ID, lookupAt, pollInterval, 0)
 	if err != nil || result == nil || result.Status != string(supplierStatus) {
 		t.Fatalf("subsequent intermediate result not accepted: %+v, %v", result, err)
 	}
@@ -1445,7 +1445,7 @@ func testReconcileUnknownDirectOrder(t *testing.T, f directCheckoutFixture, orde
 	}
 	stored = assertPendingLookup(3)
 	lookupAt = *stored.NextPollAt
-	result, err = records.PollKnownOrder(ctx, ctx, gateway, attempt.ID, lookupAt, lookupAt.Add(time.Minute), 0)
+	result, err = records.PollKnownOrder(ctx, ctx, gateway, attempt.ID, lookupAt, pollInterval, 0)
 	if err != nil || result == nil || result.Status != string(kafudadomain.AttemptCompleted) || calls != 4 {
 		t.Fatalf("terminal result not found: %+v, %v, calls=%d", result, err, calls)
 	}

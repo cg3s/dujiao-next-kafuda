@@ -16,8 +16,9 @@ var (
 )
 
 const (
-	DefaultPollReviewAfter = 24 * time.Hour
-	knownOrderPollLease    = time.Minute
+	DefaultPollReviewAfter  = 24 * time.Hour
+	knownOrderPollLease     = time.Minute
+	maxKnownOrderRetryDelay = 15 * time.Minute
 )
 
 type KnownOrderPollLease struct {
@@ -28,14 +29,15 @@ type KnownOrderPollLease struct {
 
 type KnownOrderPoll struct {
 	kafudacontract.OrderResult
-	Lease KnownOrderPollLease
+	Lease      KnownOrderPollLease
+	RetryDelay time.Duration
 }
 
 // PollKnownOrder claims a due attempt before looking it up outside the database transaction.
 // A failed lookup is rescheduled with the task context even if its lookup budget expires.
 // The caller applies a successful result with the corresponding shop order update.
-func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudacontract.Gateway, attemptID uint, now, retryAt time.Time, reviewAfter time.Duration) (*KnownOrderPoll, error) {
-	if gateway == nil || now.IsZero() || !retryAt.After(now) {
+func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudacontract.Gateway, attemptID uint, now time.Time, baseInterval, reviewAfter time.Duration) (*KnownOrderPoll, error) {
+	if gateway == nil || now.IsZero() || baseInterval <= 0 {
 		return nil, kafudadomain.ErrInvalidTransition
 	}
 	started := time.Now()
@@ -72,18 +74,23 @@ func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudac
 	if !claimed {
 		return nil, kafudadomain.ErrConflict
 	}
+	// The scan candidate can be older than the schedule that this worker claimed.
+	retryDelay := min(baseInterval, maxKnownOrderRetryDelay)
+	if previousDelay := attempt.NextPollAt.Sub(attempt.UpdatedAt); previousDelay > 0 {
+		retryDelay = max(retryDelay, 2*min(previousDelay, maxKnownOrderRetryDelay/2))
+	}
 	result, err := gateway.GetOrder(lookupCtx, *attempt.UpstreamOrderID)
 	if err == nil && result != nil && result.ID == *attempt.UpstreamOrderID &&
 		result.Reference == attempt.Reference && result.Product == record.Snapshot.Product &&
 		result.Plan == record.Snapshot.Plan && result.Country == record.Snapshot.Country {
 		_, allowed := supplierResultStatus(attempt.Status, kafudadomain.AttemptStatus(result.Status))
 		if allowed && (result.ChargedUSDCents == nil || *result.ChargedUSDCents >= 0) {
-			return &KnownOrderPoll{OrderResult: *result, Lease: lease}, nil
+			return &KnownOrderPoll{OrderResult: *result, Lease: lease, RetryDelay: retryDelay}, nil
 		}
 	}
 	// Start backoff when the lookup ends, so a slow request cannot consume it.
 	failedAt := now.Add(time.Since(started))
-	retryAt = failedAt.Add(retryAt.Sub(now))
+	retryAt := failedAt.Add(retryDelay)
 	var apiErr *kafudacontract.APIError
 	rateLimited := errors.As(err, &apiErr) && apiErr != nil && apiErr.HTTPStatus == http.StatusTooManyRequests
 	if rateLimited && apiErr.RetryAfter > 0 {

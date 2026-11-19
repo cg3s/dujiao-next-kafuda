@@ -48,7 +48,7 @@ func TestReviewedAttemptAcceptsSubmittingWithoutClearingReview(t *testing.T) {
 				t.Fatalf("review fixture = %+v, %v", before, err)
 			}
 			gateway := &knownOrderLookupGateway{result: &result}
-			got, err := service.PollKnownOrder(ctx, ctx, gateway, attempt.ID, due, due.Add(time.Minute), time.Hour)
+			got, err := service.PollKnownOrder(ctx, ctx, gateway, attempt.ID, due, time.Minute, time.Hour)
 			if err != nil || got == nil || got.Status != "submitting" || gateway.id != result.ID {
 				t.Fatalf("submitting lookup = %+v, %v (upstream id %d)", got, err, gateway.id)
 			}
@@ -104,7 +104,7 @@ func TestRecoveredUnknownSubmissionBindsMatchingSubmitting(t *testing.T) {
 	matched := kafudacontract.OrderResult{ID: 101, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "submitting"}
 	gateway := &knownOrderLookupGateway{result: &matched}
 	retry := due.Add(time.Minute)
-	if got, err := service.PollKnownOrder(ctx, ctx, gateway, attempt.ID, due, retry, time.Hour); !errors.Is(err, kafudadomain.ErrConflict) || got != nil || gateway.id != 0 {
+	if got, err := service.PollKnownOrder(ctx, ctx, gateway, attempt.ID, due, time.Minute, time.Hour); !errors.Is(err, kafudadomain.ErrConflict) || got != nil || gateway.id != 0 {
 		t.Fatalf("unidentified attempt performed numeric lookup: %+v, %v (id %d)", got, err, gateway.id)
 	}
 	if err := service.RecordResult(ctx, attempt.ID, matched, due, retry); err != nil {
@@ -115,7 +115,7 @@ func TestRecoveredUnknownSubmissionBindsMatchingSubmitting(t *testing.T) {
 		t.Fatalf("bound attempt is not eligible for numeric polling: %+v, %v", known, err)
 	}
 	matched.Status = "processing"
-	got, err := service.PollKnownOrder(ctx, ctx, gateway, attempt.ID, retry, retry.Add(time.Minute), time.Hour)
+	got, err := service.PollKnownOrder(ctx, ctx, gateway, attempt.ID, retry, time.Minute, time.Hour)
 	if err != nil || got == nil || got.Status != "processing" || gateway.id != matched.ID {
 		t.Fatalf("known order did not resume progress: %+v, %v (id %d)", got, err, gateway.id)
 	}

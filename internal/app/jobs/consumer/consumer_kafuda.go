@@ -12,24 +12,9 @@ import (
 )
 
 const (
-	kafudaMaxRetryDelay       = 15 * time.Minute
 	kafudaPollBatchSize       = 10
 	kafudaCardChargeBatchSize = 2
 )
-
-func kafudaRetryDelay(attempt kafudadomain.Attempt, baseInterval time.Duration) time.Duration {
-	if attempt.NextPollAt == nil {
-		return baseInterval
-	}
-	lastDelay := attempt.NextPollAt.Sub(attempt.UpdatedAt)
-	if lastDelay <= 0 {
-		return baseInterval
-	}
-	if lastDelay >= kafudaMaxRetryDelay/2 {
-		return kafudaMaxRetryDelay
-	}
-	return max(baseInterval, 2*lastDelay)
-}
 
 func (c *Consumer) handleKafudaRecoverChecks(ctx context.Context, _ *asynq.Task) error {
 	if c == nil || c.Container == nil || c.KafudaGPT == nil || c.KafudaGPT.Records == nil {
@@ -80,8 +65,7 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 		}
 		lookupStarted := time.Now()
 		startedAt := lookupStarted.UTC()
-		retryDelay := kafudaRetryDelay(attempt, interval)
-		result, err := module.Records.PollKnownOrder(ctx, lookupCtx, module.Gateway, attempt.ID, startedAt, startedAt.Add(retryDelay), reviewAfter)
+		result, err := module.Records.PollKnownOrder(ctx, lookupCtx, module.Gateway, attempt.ID, startedAt, interval, reviewAfter)
 		if err != nil {
 			if !errors.Is(err, kafudadomain.ErrConflict) && !errors.Is(err, kafudadomain.ErrNotFound) {
 				failures = append(failures, err)
@@ -100,7 +84,7 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 			continue
 		}
 		retryFrom := startedAt.Add(time.Since(lookupStarted))
-		err = errors.Join(err, module.Records.RescheduleKnownOrderResult(ctx, result.Lease, startedAt, retryFrom, retryFrom.Add(retryDelay), reviewAfter))
+		err = errors.Join(err, module.Records.RescheduleKnownOrderResult(ctx, result.Lease, startedAt, retryFrom, retryFrom.Add(result.RetryDelay), reviewAfter))
 		failures = append(failures, err)
 	}
 	if limit := min(kafudaCardChargeBatchSize, kafudaPollBatchSize-len(attempts)); limit > 0 {
