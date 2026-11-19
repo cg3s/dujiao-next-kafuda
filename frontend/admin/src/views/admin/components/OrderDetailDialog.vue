@@ -118,12 +118,28 @@ const reconcileDirect = async () => {
     if (isCurrent()) await fetchOrderDetail(target.order.id)
     emit('refresh')
   } catch {
-    // The shared API client displays the error.
+    if (!isCurrent()) return
+    // Re-read the order in case the result was committed or a worker recovered it.
+    const request = detailRequest
+    try {
+      const response = await adminAPI.getOrder(target.order.id)
+      const order: AdminOrder | null = response.data.data
+      if (!isCurrent() || request !== detailRequest || order?.id !== target.order.id) return
+      selectedOrder.value = order
+      ensureRefundTabAvailable(order)
+      const current = directReconciliation.value
+      if (current?.recharge.child_id !== target.recharge.child_id || current?.attempt.id !== target.attempt.id) emit('refresh')
+    } catch {
+      // Keep the current detail and input if the read also fails.
+    }
   } finally {
     if (isCurrent()) directCompleting.value = false
   }
 }
-watch(selectedOrder, () => { reconcileOrderID.value = '' })
+watch([
+  () => directReconciliation.value?.recharge.child_id,
+  () => directReconciliation.value?.attempt.id,
+], () => { reconcileOrderID.value = '' })
 const procurementOrder = ref<AdminProcurementOrder | null | undefined>(null)
 
 const refundSubmitting = ref(false)

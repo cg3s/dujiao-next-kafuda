@@ -6,6 +6,7 @@ import OrderDetailDialog from './OrderDetailDialog.vue'
 const api = vi.hoisted(() => ({
   getOrder: vi.fn(),
   getProcurementOrders: vi.fn(),
+  reconcileDirectOrder: vi.fn(),
   confirmDirectUpstreamCompletion: vi.fn(),
   refundDirectOrderToWallet: vi.fn(),
   manualRefundDirectOrder: vi.fn(),
@@ -131,6 +132,17 @@ const settle = async () => {
   await nextTick()
 }
 
+const reconcileInput = () => host.querySelector<HTMLInputElement>('#direct-reconcile-id')
+
+const enterReconciliationID = async (id: string) => {
+  const input = reconcileInput()
+  expect(input).not.toBeNull()
+  input!.value = id
+  input!.dispatchEvent(new Event('input', { bubbles: true }))
+  await nextTick()
+  return input!
+}
+
 it.each([
   { status: 'paid', stage: 'manual_delivery', active: false, canResolve: true, canReconcile: false },
   { status: 'fulfilling', stage: 'manual_delivery', active: false, canResolve: true, canReconcile: false },
@@ -149,6 +161,84 @@ it.each([
   expect(Boolean(findButton('admin.orders.directReview.release'))).toBe(canResolve)
   expect(Boolean(findButton('admin.orders.refundSubmit'))).toBe(canResolve)
   expect(Boolean(findButton('admin.orders.directReview.reconcile'))).toBe(canReconcile)
+})
+
+it.each(['completed', 'known upstream ID'])('loads authoritative %s after a rejected Direct reconciliation', async (result) => {
+  const order = orderFixture(42, 'fulfilling', 'manual_review', true)
+  const completed = result === 'completed'
+  const latest = orderFixture(42, completed ? 'completed' : 'fulfilling', completed ? 'completed' : 'manual_review', !completed)
+  const upstreamID = '9007199254740993'
+  latest.direct_recharge!.attempt!.upstream_order_id = upstreamID
+  api.getOrder.mockResolvedValueOnce(response(order)).mockResolvedValueOnce(response(latest))
+  api.reconcileDirectOrder.mockRejectedValueOnce(new Error(completed ? 'Response lost' : 'Order status invalid'))
+  const { context, onRefresh } = mountDialog()
+  context.order = order
+  context.open = true
+
+  await vi.waitFor(() => expect(reconcileInput()).not.toBeNull())
+  const input = await enterReconciliationID(upstreamID)
+  input.form!.dispatchEvent(new Event('submit', { cancelable: true }))
+  await vi.waitFor(() => expect(host.textContent).toContain(upstreamID))
+
+  expect(host.textContent).toContain(`admin.orders.directReview.stages.${latest.direct_recharge!.stage}`)
+  expect(reconcileInput()).toBeNull()
+  expect(api.getOrder.mock.calls).toEqual([[order.id], [order.id]])
+  expect(api.reconcileDirectOrder.mock.calls).toEqual([[order.direct_recharge!.child_id, order.direct_recharge!.attempt!.id, upstreamID]])
+  expect(onRefresh).toHaveBeenCalledOnce()
+})
+
+it.each([true, false])('preserves the typed ID when the attempt remains eligible (refresh succeeds=%s)', async (readSucceeded) => {
+  const order = orderFixture(42, 'fulfilling', 'manual_review', true)
+  const pending = deferred<ReturnType<typeof response<AdminOrder>>>()
+  api.getOrder.mockResolvedValueOnce(response(order))
+  if (readSucceeded) api.getOrder.mockReturnValueOnce(pending.promise)
+  else api.getOrder.mockRejectedValueOnce(new Error('Refresh failed'))
+  api.reconcileDirectOrder.mockRejectedValueOnce(new Error('Lookup failed'))
+  const { context, onRefresh } = mountDialog()
+  context.order = order
+  context.open = true
+
+  await vi.waitFor(() => expect(reconcileInput()).not.toBeNull())
+  const input = await enterReconciliationID('123456789')
+  input.form!.dispatchEvent(new Event('submit', { cancelable: true }))
+  if (readSucceeded) {
+    await vi.waitFor(() => expect(reconcileInput()?.disabled).toBe(true))
+    pending.resolve(response(orderFixture(42, 'fulfilling', 'manual_review', true)))
+  }
+  await vi.waitFor(() => expect(reconcileInput()?.disabled).toBe(false))
+
+  expect(reconcileInput()?.value).toBe('123456789')
+  expect(api.getOrder.mock.calls).toEqual([[order.id], [order.id]])
+  expect(api.reconcileDirectOrder).toHaveBeenCalledOnce()
+  expect(onRefresh).not.toHaveBeenCalled()
+})
+
+it('discards the reconciliation refresh if the operator switches orders', async () => {
+  const previous = orderFixture(42, 'fulfilling', 'manual_review', true)
+  const current = orderFixture(84, 'fulfilling', 'manual_review', true)
+  const pending = deferred<ReturnType<typeof response<AdminOrder>>>()
+  api.getOrder.mockResolvedValueOnce(response(previous)).mockReturnValueOnce(pending.promise).mockResolvedValueOnce(response(current))
+  api.reconcileDirectOrder.mockRejectedValueOnce(new Error('Response lost'))
+  const { context, onRefresh } = mountDialog()
+  context.order = previous
+  context.open = true
+
+  await vi.waitFor(() => expect(reconcileInput()).not.toBeNull())
+  const original = await enterReconciliationID('9007199254740993')
+  original.form!.dispatchEvent(new Event('submit', { cancelable: true }))
+  await vi.waitFor(() => expect(api.getOrder.mock.calls).toEqual([[previous.id], [previous.id]]))
+  context.order = current
+  await vi.waitFor(() => expect(host.textContent).toContain(current.order_no))
+  await enterReconciliationID('4321')
+  pending.resolve(response(orderFixture(previous.id, 'completed', 'completed')))
+  await settle()
+
+  expect(host.textContent).toContain(current.order_no)
+  expect(host.textContent).not.toContain(previous.order_no)
+  expect(reconcileInput()?.value).toBe('4321')
+  expect(api.getOrder.mock.calls).toEqual([[previous.id], [previous.id], [current.id]])
+  expect(api.reconcileDirectOrder).toHaveBeenCalledOnce()
+  expect(onRefresh).not.toHaveBeenCalled()
 })
 
 it.each([
