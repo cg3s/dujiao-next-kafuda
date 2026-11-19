@@ -100,10 +100,8 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 		return nil, productcontract.ErrFulfillmentInvalid
 	}
 	directTypeChange := fulfillmentType != originalFulfillmentType && (fulfillmentType == constants.FulfillmentTypeKafudaGPT || originalFulfillmentType == constants.FulfillmentTypeKafudaGPT)
-	if directTypeChange {
-		if err := validateDirectTypeChange(product, TransactionRepositories{Orders: s.orders, SKUs: s.skus, CardSecrets: s.cardSecrets}); err != nil {
-			return nil, err
-		}
+	if directTypeChange && (product.IsMapped || s.orders == nil || s.skus == nil || s.cardSecrets == nil) {
+		return nil, productcontract.ErrFulfillmentInvalid
 	}
 	// 对接商品的真实交付类型必须保持 upstream，后台返回的 auto/manual 仅用于展示。
 	if product.IsMapped {
@@ -129,12 +127,13 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 	isDirect := fulfillmentType == constants.FulfillmentTypeKafudaGPT
 	var directOptions []kafudacontract.SKUOption
 	var catalogForUpdate directCatalogForUpdate
+	var catalogReadErr error
 	if isDirect {
 		catalogForUpdate, _ = s.directCatalog.(directCatalogForUpdate)
 		if catalogForUpdate == nil {
-			directOptions, err = s.directSKUOptions()
-			if err != nil {
-				return nil, err
+			directOptions, catalogReadErr = s.directSKUOptions()
+			if catalogReadErr != nil && !directTypeChange {
+				return nil, catalogReadErr
 			}
 		}
 		product.PurchaseType, product.MinPurchaseQuantity, product.MaxPurchaseQuantity = constants.ProductPurchaseMember, 1, 1
@@ -190,11 +189,16 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 			return productcontract.ErrFulfillmentInvalid
 		}
 		if directTypeChange {
+			// An export can remove the last card while the edit waits for this lock.
+			// Decide from the committed inventory and order history under the lock.
 			if err := validateDirectTypeChange(current, repositories); err != nil {
 				return err
 			}
 		}
 		if isDirect {
+			if catalogReadErr != nil {
+				return catalogReadErr
+			}
 			// Match checkout's product-to-catalog lock order and merge
 			// against the rows visible after taking the product lock.
 			if catalogForUpdate != nil {

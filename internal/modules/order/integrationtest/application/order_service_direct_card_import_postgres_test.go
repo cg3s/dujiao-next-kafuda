@@ -107,7 +107,7 @@ func testPostgresDirectTypeSwitchAndCardImport(t *testing.T, dsn, source string,
 	if directFirst {
 		orders = directProductLockStore{Store: orders, beforeCommit: beforeCommit, release: release}
 	} else {
-		imports = heldCardImportTransaction{UnitOfWork: imports, beforeCommit: beforeCommit, release: release}
+		imports = heldCardStockTransaction{UnitOfWork: imports, beforeCommit: beforeCommit, release: release}
 	}
 	writer := productwrite.NewWriteService(productwrite.Options{Products: products, SKUs: skus, CardSecrets: secrets, Orders: orders})
 	writer.SetDirectCatalog(orderProductChangeCatalog{})
@@ -246,13 +246,143 @@ func testPostgresDirectTypeSwitchAndCardImport(t *testing.T, dsn, source string,
 	}
 }
 
-type heldCardImportTransaction struct {
+func TestPostgresDirectTypeSwitchAndCardExportShareProductLock(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	for _, scenario := range []struct {
+		name        string
+		deleteStock bool
+		directFirst bool
+	}{
+		{name: "export_marks_used"},
+		{name: "export_deletes_last_card", deleteStock: true},
+		{name: "conversion_before_export", directFirst: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			db := openPostgresDirectRaceDB(t, dsn)
+			f := seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-card-export", 0, 0))
+			if err := db.AutoMigrate(&cardsecretdomain.Secret{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Model(&f.product).UpdateColumn("fulfillment_type", constants.FulfillmentTypeAuto).Error; err != nil {
+				t.Fatal(err)
+			}
+			const secret = "test-card-export-lock"
+			if !scenario.directFirst {
+				if err := db.Create(&cardsecretdomain.Secret{ProductID: f.product.ID, SKUID: f.sku.ID, Secret: secret, Status: cardsecretdomain.StatusAvailable}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			lockPIDs := observeProductLockPIDs(t, db)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			beforeCommit, release := make(chan struct{}), make(chan struct{})
+			commit := sync.OnceFunc(func() { close(release) })
+			var workers sync.WaitGroup
+			defer func() {
+				commit()
+				cancel()
+				workers.Wait()
+			}()
+			scoped := db.WithContext(ctx)
+			products, skus, secrets := productstore.NewProductStore(scoped), productstore.NewSKUStore(scoped), cardsecretstore.New(scoped)
+			var orders ordercontract.Store = orderstore.New(scoped, "test-guest-credential-secret-with-32-bytes")
+			var exports cardsecretcontract.UnitOfWork = secrets.WithProducts(products, skus)
+			if scenario.directFirst {
+				orders = directProductLockStore{Store: orders, beforeCommit: beforeCommit, release: release}
+			} else {
+				exports = heldCardStockTransaction{UnitOfWork: exports, beforeCommit: beforeCommit, release: release}
+			}
+			writer := productwrite.NewWriteService(productwrite.Options{Products: products, SKUs: skus, CardSecrets: secrets, Orders: orders})
+			writer.SetDirectCatalog(orderProductChangeCatalog{})
+			cards := cardsecretapp.NewService(cardsecretapp.ServiceOptions{Secrets: secrets, Products: products, ProductSKUs: skus, Transactions: exports})
+			productID := strconv.FormatUint(uint64(f.product.ID), 10)
+			switchToDirect := func() error {
+				active := true
+				_, err := writer.Update(productID, productwrite.CreateProductInput{
+					CategoryID: f.product.CategoryID, Slug: f.product.Slug, TitleJSON: f.product.TitleJSON,
+					FulfillmentType: constants.FulfillmentTypeKafudaGPT, PriceAmount: f.product.PriceAmount.Decimal,
+					SKUs: []productwrite.ProductSKUInput{{
+						ID: f.sku.ID, SKUCode: f.sku.SKUCode, PriceAmount: f.sku.PriceAmount.Decimal,
+						CostPriceAmount: f.sku.CostPriceAmount.Decimal, CostPriceProvided: true, IsActive: &active,
+					}},
+				})
+				return err
+			}
+			export := func() error {
+				result, err := cards.ExportAvailableCardSecrets(cardsecretapp.ExportAvailableCardSecretInput{
+					ProductID: f.product.ID, SKUID: f.sku.ID, Limit: 1, Format: constants.ExportFormatTXT, DeleteAfterExport: scenario.deleteStock,
+				})
+				if err != nil && result != nil || err == nil && (result == nil || result.Count != 1 || strings.TrimSpace(string(result.Content)) != secret) {
+					return errors.New("export returned inconsistent inventory or content")
+				}
+				return err
+			}
+			first, second, wantErr := export, switchToDirect, productcontract.ErrProductSKUHasCardSecretStock
+			if scenario.directFirst {
+				first, second, wantErr = switchToDirect, export, cardsecretapp.ErrInvalid
+			} else if scenario.deleteStock {
+				wantErr = nil
+			}
+			firstResult, secondResult := make(chan error, 1), make(chan error, 1)
+			workers.Go(func() { firstResult <- first() })
+			select {
+			case <-beforeCommit:
+			case err := <-firstResult:
+				t.Fatalf("first operation stopped before commit: %v", err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			var holder int
+			select {
+			case holder = <-lockPIDs:
+			case <-ctx.Done():
+				t.Fatal("first operation did not lock the product")
+			}
+			workers.Go(func() { secondResult <- second() })
+			select {
+			case waiter := <-lockPIDs:
+				if holder == waiter {
+					t.Fatal("competing transactions shared a PostgreSQL connection")
+				}
+				assertProductLockBlocked(t, ctx, db, waiter, holder)
+			case err := <-secondResult:
+				t.Fatalf("second operation returned before locking the product: %v", err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			commit()
+			if err := <-firstResult; err != nil {
+				t.Fatalf("commit the first operation: %v", err)
+			}
+			if err := <-secondResult; !errors.Is(err, wantErr) {
+				t.Fatalf("second operation = %v, want %v", err, wantErr)
+			}
+			wantType, wantTotal, wantUsed := constants.FulfillmentTypeAuto, int64(1), int64(1)
+			if scenario.directFirst || scenario.deleteStock {
+				wantType, wantTotal, wantUsed = constants.FulfillmentTypeKafudaGPT, 0, 0
+			}
+			product, err := products.GetByID(productID)
+			if err != nil || product == nil || product.FulfillmentType != wantType {
+				t.Fatalf("unexpected resulting fulfillment type: %+v, %v", product, err)
+			}
+			total, available, used, err := secrets.CountByProduct(f.product.ID, 0)
+			if err != nil || total != wantTotal || available != 0 || used != wantUsed {
+				t.Fatalf("unexpected final inventory: %d total, %d available, %d used: %v", total, available, used, err)
+			}
+		})
+	}
+}
+
+type heldCardStockTransaction struct {
 	cardsecretcontract.UnitOfWork
 	beforeCommit chan<- struct{}
 	release      <-chan struct{}
 }
 
-func (s heldCardImportTransaction) Transaction(run func(cardsecretcontract.Repository, cardsecretcontract.BatchRepository, cardsecretcontract.ProductRepository, cardsecretcontract.ProductSKURepository) error) error {
+func (s heldCardStockTransaction) Transaction(run func(cardsecretcontract.Repository, cardsecretcontract.BatchRepository, cardsecretcontract.ProductRepository, cardsecretcontract.ProductSKURepository) error) error {
 	return s.UnitOfWork.Transaction(func(secrets cardsecretcontract.Repository, batches cardsecretcontract.BatchRepository, products cardsecretcontract.ProductRepository, skus cardsecretcontract.ProductSKURepository) error {
 		if err := run(secrets, batches, products, skus); err != nil {
 			return err
