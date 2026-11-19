@@ -424,6 +424,29 @@ func TestRateLimitDelayIsBounded(t *testing.T) {
 	}
 }
 
+func TestRateLimitUsesLongerDelayFromBothHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name, reset, retryAfter string
+		want                    time.Duration
+	}{
+		{"reset", "60", "20", time.Minute},
+		{"retry_after", "20", "60", time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("x-ratelimit-reset", tc.reset)
+				w.Header().Set("Retry-After", tc.retryAfter)
+				w.WriteHeader(http.StatusTooManyRequests)
+			})
+			_, err := c.Catalog(t.Context())
+			var limit *kafudacontract.APIError
+			if !errors.As(err, &limit) || limit.RetryAfter != tc.want {
+				t.Fatalf("expected delay %s, got %+v", tc.want, limit)
+			}
+		})
+	}
+}
+
 func TestOrderLookupSharesRateLimitAcrossDifferentOrders(t *testing.T) {
 	var lookups atomic.Int32
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -432,7 +455,7 @@ func TestOrderLookupSharesRateLimitAcrossDifferentOrders(t *testing.T) {
 			return
 		}
 		if lookups.Add(1) == 1 {
-			w.Header().Set("Retry-After", "60")
+			w.Header().Set("x-ratelimit-reset", "60")
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
@@ -458,6 +481,28 @@ func TestOrderLookupSharesRateLimitAcrossDifferentOrders(t *testing.T) {
 	got, err := c.GetOrder(ctx, 2)
 	if err != nil || got.ID != 2 || lookups.Load() != 2 {
 		t.Fatalf("lookup did not resume: %+v, %v, %d requests", got, err, lookups.Load())
+	}
+}
+
+func TestRateLimitResetDelay(t *testing.T) {
+	now := time.Date(2026, 11, 19, 4, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		header string
+		want   time.Duration
+	}{
+		{" 34 ", 34 * time.Second},
+		{"3600", time.Hour},
+		{"3601", 0},
+		{"0", 0},
+		{"-5", 0},
+		{"unavailable", 0},
+		{fmt.Sprint(now.Add(time.Minute).Unix()), time.Minute},
+		{fmt.Sprint(now.Add(2 * time.Hour).Unix()), 0},
+		{fmt.Sprint(now.Add(-time.Minute).Unix()), 0},
+	} {
+		if got := rateLimitResetDelay(tc.header, now); got != tc.want {
+			t.Errorf("x-ratelimit-reset %q = %v, want %v", tc.header, got, tc.want)
+		}
 	}
 }
 

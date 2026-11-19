@@ -221,14 +221,10 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 			code = "service_unavailable"
 		}
 		e := apiError(resp.StatusCode, code)
-		// Interpret the reset in Unix seconds and bound the accepted delay.
-		if reset, parseErr := strconv.ParseInt(resp.Header.Get("x-ratelimit-reset"), 10, 64); parseErr == nil {
-			if delay := time.Until(time.Unix(reset, 0)); delay > 0 && delay <= time.Hour {
-				e.RetryAfter = delay
-			}
-		}
+		now := time.Now()
+		e.RetryAfter = rateLimitResetDelay(resp.Header.Get("x-ratelimit-reset"), now)
 		if resp.StatusCode == http.StatusTooManyRequests {
-			e.RetryAfter = max(e.RetryAfter, retryAfterDelay(resp.Header.Get("Retry-After"), time.Now()))
+			e.RetryAfter = max(e.RetryAfter, retryAfterDelay(resp.Header.Get("Retry-After"), now))
 		}
 		return e
 	}
@@ -247,6 +243,21 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 		return apiError(resp.StatusCode, "invalid_response")
 	}
 	return nil
+}
+
+func rateLimitResetDelay(header string, now time.Time) time.Duration {
+	reset, err := strconv.ParseInt(strings.TrimSpace(header), 10, 64)
+	if err != nil || reset <= 0 {
+		return 0
+	}
+	// The live supplier sends seconds remaining in the current window.
+	if reset <= int64(time.Hour/time.Second) {
+		return time.Duration(reset) * time.Second
+	}
+	if delay := time.Unix(reset, 0).Sub(now); delay > 0 && delay <= time.Hour {
+		return delay
+	}
+	return 0
 }
 
 func retryAfterDelay(header string, now time.Time) time.Duration {
