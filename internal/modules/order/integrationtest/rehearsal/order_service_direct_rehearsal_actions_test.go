@@ -28,10 +28,11 @@ import (
 const directRehearsalPollInterval = 10 * time.Millisecond
 
 type directRehearsalActions struct {
-	fixture directCheckoutFixture
-	records *kafudaapp.Service
-	mu      sync.Mutex // Serializes mock supplier advances for this fixture.
-	results map[uint]string
+	fixture             directCheckoutFixture
+	records             *kafudaapp.Service
+	allowManualDelivery bool
+	mu                  sync.Mutex // Serializes mock supplier advances for this fixture.
+	results             map[uint]string
 }
 
 type directRehearsalGateway struct {
@@ -48,11 +49,12 @@ func (g directRehearsalGateway) GetOrder(ctx context.Context, id uint64) (*kafud
 	return g.get(ctx, id)
 }
 
-func newDirectRehearsalActions(f directCheckoutFixture) *directRehearsalActions {
+func newDirectRehearsalActions(f directCheckoutFixture, allowManualDelivery bool) *directRehearsalActions {
 	return &directRehearsalActions{
-		fixture: f,
-		records: kafudaapp.New(f.store),
-		results: make(map[uint]string),
+		fixture:             f,
+		records:             kafudaapp.New(f.store),
+		allowManualDelivery: allowManualDelivery,
+		results:             make(map[uint]string),
 	}
 }
 
@@ -65,7 +67,7 @@ func directRehearsalError(c *gin.Context, status int, key string) {
 	response.ErrorWithHTTPStatus(c, status, status, i18n.T(i18n.ResolveLocale(c), key))
 }
 
-func readDirectRehearsalOutcome(c *gin.Context) (string, bool) {
+func readDirectRehearsalOutcome(c *gin.Context, allowManualDelivery bool) (string, bool) {
 	if c.Request.Body == nil {
 		return "", false
 	}
@@ -81,7 +83,10 @@ func readDirectRehearsalOutcome(c *gin.Context) (string, bool) {
 		return "", false
 	}
 	var result string
-	if err := decoder.Decode(&result); err != nil || (result != "success" && result != "manual_review") {
+	if err := decoder.Decode(&result); err != nil {
+		return "", false
+	}
+	if result != "success" && result != "manual_review" && !(allowManualDelivery && result == "manual_delivery") {
 		return "", false
 	}
 	end, err := decoder.Token()
@@ -131,7 +136,7 @@ func (a *directRehearsalActions) paidOrder(c *gin.Context) (*orderdomain.Order, 
 }
 
 func (a *directRehearsalActions) authorize(c *gin.Context) {
-	outcome, ok := readDirectRehearsalOutcome(c)
+	outcome, ok := readDirectRehearsalOutcome(c, a.allowManualDelivery)
 	if !ok {
 		directRehearsalError(c, http.StatusBadRequest, "error.bad_request")
 		return
@@ -204,7 +209,8 @@ func (a *directRehearsalActions) advance(c *gin.Context) {
 		directRehearsalError(c, http.StatusConflict, "error.order_status_invalid")
 		return
 	}
-	if record.Stage == kafudadomain.StageCompleted || record.Stage == kafudadomain.StageManualReview {
+	if record.Stage == kafudadomain.StageCompleted || record.Stage == kafudadomain.StageManualReview ||
+		record.Stage == kafudadomain.StageManualDelivery {
 		response.Success(c, gin.H{"stage": record.Stage})
 		return
 	}
@@ -215,8 +221,11 @@ func (a *directRehearsalActions) advance(c *gin.Context) {
 		return
 	}
 	status := "completed"
-	if a.results[attempt.ID] == "manual_review" {
+	switch a.results[attempt.ID] {
+	case "manual_review":
 		status = "needs_review"
+	case "manual_delivery":
+		status = "failed"
 	}
 	// Advance to the time of the scheduled lookup, at most a few milliseconds
 	// forward for these local-only attempts.

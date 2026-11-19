@@ -420,6 +420,7 @@ Windows 全量 Go 测试与 go vet 已通过，仓库 LF 内容通过全量 gofm
   - [x] 后台订单详情接入解除人工接管，向 `support` 授权。仅在客服确认且当前尝试已终结、订单已支付未退款且尚未交付时恢复待提交。保留历史尝试和订单状态，记录操作者，SQLite 回归验证重放拒绝和下次尝试使用新编号。
   - [x] 后台订单详情接入钱包退款和人工退款登记，向 `support` 授权。仅允许客服确认后对原已付父单退还全部站内剩余实付，沿用退款窗口、账务和通知流程；人工退款登记要求确认已在站外退款。SQLite 回归覆盖未知、错误尝试、通用入口绕过、部分金额和重放的拒绝，以及两种退款方式的账务差异。
   - [x] 后台详情按订单 ID 和每次打开的会话隔离异步响应。切单或关窗重开时，迟到的详情、采购或售后结果不覆盖当前订单和表单，已成功的售后仍刷新列表。Chrome 使用生产构建、自定义后台路径和模拟 API 验证 `support` 角色的待核对筛选、数字单号核对、人工完结、解除接管、钱包退款、站外退款登记和切单竞态。后台 55 项测试及生产构建通过，真实部署与供应商联验待完成。
+    本地 Chrome 使用 Classic 店面和自定义路径的后台生产构建，连接同一内存 SQLite 演练服务。买家以钱包付款并进入人工核对，非超级管理员客服使用真实 JWT 和 Casbin 权限完成人工交付，订单移出待核对列表，买家原页面自动显示充值完成。HTTP 回归同时验证匿名、买家和运营账号均无法人工完结，重复完结被拒绝，仅记录一次交付及真实鉴权的客服 ID，支付事实和钱包扣款保持一致。运行方式见第 7.3 节。
   - [x] 授权后台订单详情可读取有效上游尝试已记录的美元卡实扣，以两位小数展示，零金额有效，缺失金额省略。符合 K06 条件的晚到卡实扣补查入库后可在后台详情查看。SQLite、PostgreSQL 16.15 和 Chrome 模拟验收通过，买家接口维持原有字段。卡实扣独立于商城实付和商户完整费用，实际扣款与商户完整费用仍待真实对账验收。[Kafuda API 文档](https://kafuda.com/docs/api)
   - [x] 授权后台订单详情以三语显示当前尝试的上游报价明细，金额以美元两位小数展示，已保存报价在等待上游单号期间也可查看。SQLite 和 PostgreSQL 16.15 回归验证零金额、旧记录省略以及买家详情和进度接口不披露报价。后台 61 项测试和生产构建通过，Chrome 以模拟客服角色核对报价、上游卡实扣和商城实付。完整商户费用仍需与真实订单及流水核对。
   - [x] SQLite 单连接并发回归覆盖重复钱包退款、钱包退款与人工完结竞争、退款与解除接管后买家占位竞争，以及未知结果下迟到的上游成功与退款或人工完结竞争。每组只有一个操作成功，核对父子单状态、充值阶段、退款记录、钱包流水和人工交付记录。同组用例已在 Ubuntu WSL 的一次性 PostgreSQL 16.15 实库通过，使用隔离 schema 和独立连接。运行 `go test -tags integration ./internal/modules/order/integrationtest/application -run TestPostgresDirectAfterSalesCompetingResolutions` 时，由 `TEST_POSTGRES_DSN` 指向测试库。
@@ -564,3 +565,15 @@ go test -v -timeout 0 -run '^TestServeDirectBuyerRehearsal$' ./internal/modules/
 在上述命令末尾追加 `-kafuda-rehearsal-online`。进入店面后选择「模拟线上支付」并提交订单，保持「优先使用余额支付」未选中。模拟收银台会回到商城支付页，订单此时仍待支付。
 
 保留支付页并复制订单号，另开演练页，填写订单号后点击「读取店面订单」和「确认模拟入账」。商城验证本地签名回调并入账后，支付页会自动进入订单详情。可继续通过演练页的「授权模拟履约」和「推进模拟查单」查看最终状态。渠道密钥由演练进程生成，订单、钱包和支付记录存于本次运行的内存 SQLite。
+
+#### 演练客服人工交付
+
+在 `frontend/admin/` 运行 `pnpm run build:fullstack`。保留已构建的店面产物，回到仓库根目录启动同一个演练服务。
+
+```powershell
+$storefrontDir = (Resolve-Path frontend/user/dist).Path
+$adminDir = (Resolve-Path frontend/admin/dist).Path
+go test -v -timeout 0 -run '^TestServeDirectBuyerRehearsal$' ./internal/modules/order/integrationtest/rehearsal -args -kafuda-rehearsal "-kafuda-rehearsal-storefront-dir=$storefrontDir" "-kafuda-rehearsal-admin-dir=$adminDir"
+```
+
+用店面创建已付订单，在演练页读取该订单，选择「上游确认未开通」，再点击「授权模拟履约」和「推进模拟查单」。买家详情进入人工核对。在演练页点击「打开客服后台」，使用预置客服账号筛选「待直充核对」，进入订单详情并确认「记录人工交付完成」。切回买家订单详情可看到自动更新的完成状态。

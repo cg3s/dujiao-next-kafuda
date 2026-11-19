@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func writeDirectRehearsalPage(c *gin.Context, token string, productID, skuID uint, storefrontSlug string, online bool) {
+func writeDirectRehearsalPage(c *gin.Context, token string, productID, skuID uint, storefrontSlug string, online bool, adminToken string) {
 	var page bytes.Buffer
 	data := struct {
 		Token          string
@@ -16,7 +16,8 @@ func writeDirectRehearsalPage(c *gin.Context, token string, productID, skuID uin
 		SKUID          uint
 		StorefrontSlug string
 		Online         bool
-	}{Token: token, ProductID: productID, SKUID: skuID, StorefrontSlug: storefrontSlug, Online: online}
+		AdminToken     string
+	}{Token: token, ProductID: productID, SKUID: skuID, StorefrontSlug: storefrontSlug, Online: online, AdminToken: adminToken}
 	if err := directRehearsalPage.Execute(&page, data); err != nil {
 		c.Status(http.StatusInternalServerError)
 		return
@@ -31,6 +32,7 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="rehearsal-token" content="{{.Token}}">
+  {{if .AdminToken}}<meta name="rehearsal-admin-token" content="{{.AdminToken}}">{{end}}
   <title>Kafuda GPT 直充演练</title>
   <style>
     :root { color-scheme: light; color: #172e32; background: #eef3f1; font: 16px/1.6 system-ui, sans-serif; }
@@ -68,6 +70,11 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
     <header>
       <h1>Kafuda GPT 直充演练</h1>
       <p>{{if .Online}}本地测试环境，使用模拟收银台和模拟履约结果。{{else}}本地测试环境，使用演练钱包和模拟履约结果。{{end}}</p>
+      {{if .AdminToken}}
+      <div class="actions">
+        <button id="open-support-admin" class="secondary" type="button">打开客服后台</button>
+      </div>
+      {{end}}
     </header>
 
     {{if .StorefrontSlug}}
@@ -111,6 +118,7 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
         <legend>模拟结果</legend>
         <label><input id="result-success" type="radio" name="result" value="success" checked>成功开通</label>
         <label><input id="result-review" type="radio" name="result" value="manual_review">转人工核对</label>
+        {{if .AdminToken}}<label><input id="result-manual" type="radio" name="result" value="manual_delivery">上游确认未开通</label>{{end}}
       </fieldset>
       <div class="actions">
         {{if .Online}}<button id="confirm-online-payment" type="button" disabled>确认模拟入账</button>{{end}}
@@ -128,6 +136,7 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
     'use strict';
     const element = id => document.getElementById(id);
     const token = document.querySelector('meta[name="rehearsal-token"]').content;
+    const adminToken = document.querySelector('meta[name="rehearsal-admin-token"]')?.content || '';
     const storefrontSlug = document.body.dataset.storefrontSlug;
     const online = document.body.dataset.online === 'true';
     const items = [{
@@ -142,10 +151,11 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       submitting: '提交中',
       processing: '充值中',
       manual_review: '人工核对中',
+      manual_delivery: '待人工交付',
       completed: '已完成',
       refunded: '已退款',
     });
-    const finishedStages = new Set(['manual_review', 'completed', 'refunded']);
+    const finishedStages = new Set(['manual_review', 'manual_delivery', 'completed', 'refunded']);
     let orderNo = '';
     let stage = '';
     let previewed = false;
@@ -175,6 +185,7 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       element('refresh').disabled = busy || !orderNo;
       element('new-order').disabled = busy || !finishedStages.has(stage);
       if (online) element('confirm-online-payment').disabled = busy || !orderNo || paid || stage !== 'pending_payment';
+      if (adminToken) element('open-support-admin').disabled = busy;
       if (storefrontSlug) {
         element('storefront-classic').disabled = busy;
         element('storefront-vault').disabled = busy;
@@ -199,8 +210,12 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       element('stage-time').textContent = Number.isNaN(time.getTime()) ? '—' : time.toLocaleString('zh-CN');
     }
 
-    async function refreshStage() {
-      renderStage(await request('/orders/' + encodeURIComponent(orderNo) + '/direct-status'));
+    async function refreshStage(rehearsalStage = stage) {
+      const status = await request('/orders/' + encodeURIComponent(orderNo) + '/direct-status');
+      if (rehearsalStage === 'manual_delivery' && status.stage === 'manual_review') {
+        status.stage = rehearsalStage;
+      }
+      renderStage(status);
     }
 
     async function attachOrder(candidate) {
@@ -259,6 +274,13 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       }, 'submit');
     }
 
+    if (adminToken) {
+      onAction('open-support-admin', () => {
+        localStorage.setItem('admin_token', adminToken);
+        window.location.assign('/rehearsal-admin/orders');
+      });
+    }
+
     if (online) {
       onAction('confirm-online-payment', async () => {
         await request('/rehearsal/orders/' + encodeURIComponent(orderNo) + '/confirm-payment', 'POST');
@@ -287,8 +309,8 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       await refreshStage();
     });
     onAction('advance', async () => {
-      await request('/rehearsal/orders/' + encodeURIComponent(orderNo) + '/advance', 'POST');
-      await refreshStage();
+      const advanced = await request('/rehearsal/orders/' + encodeURIComponent(orderNo) + '/advance', 'POST');
+      await refreshStage(advanced.stage);
     });
     onAction('refresh', () => online && !paid ? attachOrder(orderNo) : refreshStage());
     onAction('new-order', () => {

@@ -31,14 +31,15 @@ import (
 )
 
 type directCheckoutFixture struct {
-	db       *gorm.DB
-	product  productdomain.Product
-	sku      productdomain.ProductSKU
-	users    []userdomain.User
-	options  orderapp.OrderServiceOptions
-	store    *kafudastore.Store
-	commerce *kafudaapp.CommerceService
-	tenant   resellercontract.TenantContext
+	db          *gorm.DB
+	product     productdomain.Product
+	sku         productdomain.ProductSKU
+	users       []userdomain.User
+	options     orderapp.OrderServiceOptions
+	store       *kafudastore.Store
+	commerce    *kafudaapp.CommerceService
+	tenant      resellercontract.TenantContext
+	adminTokens map[string]string
 }
 
 type rehearsalOrderQueue struct{}
