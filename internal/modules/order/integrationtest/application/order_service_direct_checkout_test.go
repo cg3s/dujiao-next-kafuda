@@ -474,6 +474,123 @@ func testDirectCheckoutRefund(t *testing.T, f directCheckoutFixture, method stri
 	}
 }
 
+func TestDirectAfterSalesRejectsInFlightAndCompleted(t *testing.T) {
+	testDirectAfterSalesRejectsInFlightAndCompleted(t, newDirectCheckoutFixture(t))
+}
+
+func testDirectAfterSalesRejectsInFlightAndCompleted(t *testing.T, f directCheckoutFixture) {
+	t.Helper()
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &orderdomain.OrderRefundRecord{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
+		t.Fatal(err)
+	}
+	order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+	if err != nil || order == nil || len(order.Children) != 1 {
+		t.Fatalf("create direct checkout: %+v, %v", order, err)
+	}
+	ctx, orders := t.Context(), f.options.OrderStore
+	childID := order.Children[0].ID
+	paidAt := time.Now().UTC().Truncate(time.Microsecond)
+	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
+		Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": paidAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := kafudaworkflow.ReserveBuyerAttempt(orders, ordercontract.TenantScope{}, order.OrderNo, order.UserID, paidAt, paidAt.Add(time.Minute))
+	if err != nil || reserved == nil || !reserved.Created || reserved.Attempt == nil {
+		t.Fatalf("reserve direct attempt: %+v, %v", reserved, err)
+	}
+	attemptID := reserved.Attempt.ID
+	records := kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), orders)
+	wallets := walletstore.New(f.db)
+	refunds := orderrefund.New(orders, nil, nil, nil, walletapp.NewService(walletapp.Options{Repository: wallets, Transactions: wallets}), nil)
+	const adminID, upstreamID = 9, 173
+	assertAfterSalesRejected := func(stage kafudadomain.Stage, attemptStatus kafudadomain.AttemptStatus, orderStatus string, at time.Time) {
+		t.Helper()
+		before, err := f.store.GetRecharge(ctx, childID)
+		if err != nil || before == nil || before.Stage != stage || before.CurrentAttemptID == nil || *before.CurrentAttemptID != attemptID {
+			t.Fatalf("expected recharge stage %s with original attempt: %+v, %v", stage, before, err)
+		}
+		attempt, err := f.store.GetAttempt(ctx, attemptID)
+		if err != nil || attempt == nil || attempt.Status != attemptStatus || attempt.Validate() != nil {
+			t.Fatalf("expected valid attempt in %s: %+v, %v", attemptStatus, attempt, err)
+		}
+		if attemptStatus == kafudadomain.AttemptChecking || attemptStatus == kafudadomain.AttemptSubmitting {
+			if attempt.UpstreamOrderID != nil {
+				t.Fatalf("attempt in %s unexpectedly has supplier order %d", attemptStatus, *attempt.UpstreamOrderID)
+			}
+		} else if attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID != upstreamID {
+			t.Fatalf("expected matching supplier identity in %s: %+v", attemptStatus, attempt.UpstreamOrderID)
+		}
+		if _, _, _, err := refunds.AdminRefundToWallet(orderrefund.AdminRefundToWalletInput{
+			OrderID: order.ID, DirectAttemptID: attemptID, Amount: order.TotalAmount,
+		}); !errors.Is(err, orderrefund.ErrOrderStatusInvalid) {
+			t.Fatalf("wallet refund in %s: %v", stage, err)
+		}
+		if _, _, err := refunds.AdminManualRefund(orderrefund.AdminManualRefundInput{
+			OrderID: order.ID, DirectAttemptID: attemptID, Amount: order.TotalAmount,
+		}); !errors.Is(err, orderrefund.ErrOrderStatusInvalid) {
+			t.Fatalf("manual refund in %s: %v", stage, err)
+		}
+		if err := kafudaworkflow.CompleteManual(orders, childID, attemptID, adminID, true, at); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+			t.Fatalf("manual delivery in %s: %v", stage, err)
+		}
+		if err := kafudaworkflow.ReleaseManual(orders, childID, attemptID, adminID, true, at); !errors.Is(err, orderapp.ErrOrderStatusInvalid) {
+			t.Fatalf("release in %s: %v", stage, err)
+		}
+		assertDirectShopOrderStatus(t, orders, order, orderStatus, paidAt)
+		after, err := f.store.GetRecharge(ctx, childID)
+		if err != nil || !reflect.DeepEqual(before, after) {
+			t.Fatalf("rejected after-sales changed recharge in %s: %+v, %v", stage, after, err)
+		}
+		updated, err := f.store.GetAttempt(ctx, attemptID)
+		if err != nil || !reflect.DeepEqual(attempt, updated) {
+			t.Fatalf("rejected after-sales changed attempt in %s: %+v, %v", stage, updated, err)
+		}
+		var wantDeliveries int64
+		if stage == kafudadomain.StageCompleted {
+			wantDeliveries = 1
+		}
+		for _, check := range []struct {
+			model any
+			want  int64
+		}{
+			{&kafudadomain.Attempt{}, 1},
+			{&orderdomain.OrderRefundRecord{}, 0},
+			{&walletdomain.Account{}, 0},
+			{&walletdomain.Transaction{}, 0},
+			{&fulfillmentdomain.Fulfillment{}, wantDeliveries},
+		} {
+			var count int64
+			if err := f.db.Model(check.model).Count(&count).Error; err != nil || count != check.want {
+				t.Fatalf("%T count in %s: %d, %v, want %d", check.model, stage, count, err, check.want)
+			}
+		}
+	}
+
+	assertAfterSalesRejected(kafudadomain.StageChecking, kafudadomain.AttemptChecking, constants.OrderStatusPaid, paidAt)
+	if err := records.MarkSubmitting(ctx, attemptID, "quote", paidAt, paidAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	assertAfterSalesRejected(kafudadomain.StageSubmitting, kafudadomain.AttemptSubmitting, constants.OrderStatusPaid, paidAt)
+	result := kafudacontract.OrderResult{ID: upstreamID, Reference: reserved.Attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "processing"}
+	processingAt := paidAt.Add(time.Second)
+	if completed, err := kafudaworkflow.ApplyResult(orders, childID, attemptID, result, processingAt, processingAt, time.Minute); err != nil || completed {
+		t.Fatalf("record supplier processing: completed=%t, %v", completed, err)
+	}
+	assertAfterSalesRejected(kafudadomain.StageProcessing, kafudadomain.AttemptProcessing, constants.OrderStatusPaid, processingAt)
+	result.Status = "completed"
+	completedAt := processingAt.Add(time.Second)
+	if completed, err := kafudaworkflow.ApplyResult(orders, childID, attemptID, result, completedAt, completedAt, time.Minute); err != nil || !completed {
+		t.Fatalf("complete supplier delivery: completed=%t, %v", completed, err)
+	}
+	assertAfterSalesRejected(kafudadomain.StageCompleted, kafudadomain.AttemptCompleted, constants.OrderStatusCompleted, completedAt)
+	var delivery fulfillmentdomain.Fulfillment
+	if err := f.db.Where("order_id = ?", childID).First(&delivery).Error; err != nil || delivery.Type != constants.FulfillmentTypeKafudaGPT ||
+		delivery.Status != constants.FulfillmentStatusDelivered || delivery.DeliveredBy != nil ||
+		delivery.DeliveredAt == nil || !delivery.DeliveredAt.Equal(completedAt) {
+		t.Fatalf("rejected after-sales changed supplier fulfillment: %+v, %v", delivery, err)
+	}
+}
+
 func TestReserveBuyerAttemptRequiresPaidScopedCheckoutAndDeduplicates(t *testing.T) {
 	f := newDirectCheckoutFixture(t)
 	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
