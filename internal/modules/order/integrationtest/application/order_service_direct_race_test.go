@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,11 +19,219 @@ import (
 	orderrefund "github.com/dujiao-next/internal/modules/order/application/refund"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
+	paymentapp "github.com/dujiao-next/internal/modules/payment/application"
+	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
+	paymentstore "github.com/dujiao-next/internal/modules/payment/infrastructure/gormstore"
 	walletapp "github.com/dujiao-next/internal/modules/wallet/application"
 	walletdomain "github.com/dujiao-next/internal/modules/wallet/domain"
 	walletstore "github.com/dujiao-next/internal/modules/wallet/infrastructure/gormstore"
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
 )
+
+func TestDirectCompetingBuyerDispatchKeepsUnknownAttempt(t *testing.T) {
+	testDirectCompetingBuyerDispatchKeepsUnknownAttempt(t, newDirectCheckoutFixture(t))
+}
+
+func testDirectCompetingBuyerDispatchKeepsUnknownAttempt(t *testing.T, f directCheckoutFixture) {
+	t.Helper()
+	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &paymentdomain.Payment{}, &paymentdomain.PaymentChannel{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
+		t.Fatal(err)
+	}
+	checkout, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+	if err != nil || checkout == nil || len(checkout.Children) != 1 {
+		t.Fatalf("create checkout: %+v, %v", checkout, err)
+	}
+	orders, childID := f.options.OrderStore, checkout.Children[0].ID
+	initial, err := f.store.GetRecharge(t.Context(), childID)
+	if err != nil || initial == nil || initial.Stage != kafudadomain.StageWaiting {
+		t.Fatalf("initial recharge: %+v, %v", initial, err)
+	}
+	wallets := walletstore.New(f.db)
+	if err := f.db.Create(&walletdomain.Account{UserID: checkout.UserID, Balance: checkout.TotalAmount}).Error; err != nil {
+		t.Fatal(err)
+	}
+	payments := paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{
+		OrderStore: orders, PaymentStore: paymentstore.New(f.db, "test-guest-credential-secret-with-32-bytes"), WalletRepo: wallets,
+		WalletService: walletapp.NewService(walletapp.Options{Repository: wallets, Transactions: wallets}),
+	})
+	paidResult, err := payments.CreatePayment(paymentapp.CreatePaymentInput{OrderID: checkout.ID, UseBalance: true, Context: t.Context()})
+	if err != nil || paidResult == nil || !paidResult.OrderPaid {
+		t.Fatalf("pay checkout with wallet: %+v, %v", paidResult, err)
+	}
+	paid, err := orders.GetByID(checkout.ID)
+	if err != nil || paid == nil || paid.PaidAt == nil || !paid.WalletPaidAmount.Equal(checkout.TotalAmount.Decimal) || !paid.OnlinePaidAmount.IsZero() {
+		t.Fatalf("load paid checkout: %+v, %v", paid, err)
+	}
+	assertDirectShopOrderStatus(t, orders, checkout, constants.OrderStatusPaid, *paid.PaidAt)
+	loadPayment := func() paymentdomain.Payment {
+		t.Helper()
+		var rows []paymentdomain.Payment
+		if err := f.db.Where("order_id = ?", checkout.ID).Find(&rows).Error; err != nil || len(rows) != 1 ||
+			rows[0].Status != constants.PaymentStatusSuccess || rows[0].ProviderType != constants.PaymentProviderWallet ||
+			rows[0].PaidAt == nil || !rows[0].Amount.Equal(checkout.TotalAmount.Decimal) || rows[0].Currency != paid.Currency {
+			t.Fatalf("expected one successful wallet payment: %+v, %v", rows, err)
+		}
+		return rows[0]
+	}
+	paidPayment := loadPayment()
+
+	reserve := func(at time.Time) (*kafudaapp.Reservation, error) {
+		return kafudaworkflow.ReserveBuyerAttempt(orders, ordercontract.TenantScope{}, checkout.OrderNo, checkout.UserID, at, at.Add(time.Minute))
+	}
+	type reserveResult struct {
+		reservation *kafudaapp.Reservation
+		err         error
+	}
+	start, reservations := make(chan struct{}), make(chan reserveResult, 2)
+	for range cap(reservations) {
+		go func() {
+			<-start
+			value, err := reserve(time.Now().UTC())
+			reservations <- reserveResult{value, err}
+		}()
+	}
+	close(start)
+	first, second := <-reservations, <-reservations
+	if first.err != nil || second.err != nil || first.reservation == nil || second.reservation == nil || first.reservation.Created == second.reservation.Created {
+		t.Fatalf("expected one new and one existing reservation: %+v, %+v", first, second)
+	}
+	winner, duplicate := first.reservation, second.reservation
+	if duplicate.Created {
+		winner, duplicate = duplicate, winner
+	}
+	if winner.Attempt == nil || winner.Attempt.Reference == "" || duplicate.Attempt == nil ||
+		duplicate.Attempt.ID != winner.Attempt.ID || duplicate.Attempt.Reference != winner.Attempt.Reference || duplicate.Attempt.Status != kafudadomain.AttemptChecking {
+		t.Fatalf("initial reservations did not share one attempt: %+v, %+v", winner.Attempt, duplicate.Attempt)
+	}
+	original := winner.Attempt
+
+	check := func(quoteID string, serviceFee int64) kafudacontract.CheckResult {
+		return kafudacontract.CheckResult{Country: "PH", PayMode: "auto_card", Plans: []kafudacontract.Quote{{
+			Plan: "plus", Status: "available", Kind: "new", QuoteID: quoteID,
+			PriceCents: serviceFee, ExpiresAt: time.Now().UTC().Add(time.Minute),
+			AutoCard: &kafudacontract.AutoCard{ProductCode: "checkout-card", LoadCents: 100, TotalCents: serviceFee + 100},
+		}}}
+	}
+	const firstQuote = "quote_original_dispatch"
+	wantCosts := &kafudadomain.QuoteCosts{ServiceFeeCents: 900, CardLoadCents: 100, TotalCents: 1000}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	type dispatchState struct {
+		request kafudacontract.CreateOrderRequest
+		record  *kafudadomain.Recharge
+		attempt *kafudadomain.Attempt
+		err     error
+	}
+	entered, blocked := make(chan dispatchState, 1), make(chan struct{})
+	allowResponse := sync.OnceFunc(func() { close(blocked) })
+	responseLost := errors.New("test gateway lost the create response")
+	var calls atomic.Int32
+	gateway := directCreateGateway{create: func(ctx context.Context, request kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
+		if calls.Add(1) != 1 {
+			return nil, errors.New("unexpected additional create order request")
+		}
+		// Independent store reads at gateway entry require the submission to be committed.
+		record, recordErr := f.store.GetRecharge(ctx, childID)
+		attempt, attemptErr := f.store.GetAttempt(ctx, original.ID)
+		entered <- dispatchState{request, record, attempt, errors.Join(recordErr, attemptErr)}
+		select {
+		case <-blocked:
+			return nil, responseLost
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}
+	const pollInterval = 10 * time.Second
+	records := kafudaapp.New(f.store)
+	submit := func(reservation *kafudaapp.Reservation, quote kafudacontract.CheckResult) (bool, error) {
+		return kafudaworkflow.SubmitCheckedQuote(ctx, orders, records, gateway, reservation, quote, pollInterval)
+	}
+	type submitResult struct {
+		completed bool
+		err       error
+	}
+	dispatchResult, dispatchDone := make(chan submitResult, 1), make(chan struct{})
+	go func() {
+		defer close(dispatchDone)
+		completed, err := submit(winner, check(firstQuote, 900))
+		dispatchResult <- submitResult{completed, err}
+	}()
+	defer func() {
+		allowResponse()
+		<-dispatchDone
+	}()
+	var dispatched dispatchState
+	select {
+	case dispatched = <-entered:
+	case unexpected := <-dispatchResult:
+		t.Fatalf("submission returned before reaching gateway: %+v", unexpected)
+	case <-ctx.Done():
+		t.Fatalf("gateway did not observe a committed submission: %v", ctx.Err())
+	}
+	assertOccupied := func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt, stage kafudadomain.Stage, status kafudadomain.AttemptStatus) {
+		t.Helper()
+		if record == nil || record.OrderID != childID || record.Stage != stage || record.CurrentAttemptID == nil ||
+			*record.CurrentAttemptID != original.ID || record.AttemptCount != 1 || record.CompletedAt != nil || !reflect.DeepEqual(record.Snapshot, initial.Snapshot) {
+			t.Fatalf("recharge did not keep original checkout snapshot and attempt: %+v", record)
+		}
+		if attempt == nil || attempt.ID != original.ID || attempt.OrderID != childID || attempt.Sequence != 1 || attempt.Status != status ||
+			attempt.ActiveOrderID == nil || *attempt.ActiveOrderID != childID || attempt.Reference != original.Reference || attempt.UpstreamOrderID != nil ||
+			attempt.NextPollAt == nil || !attempt.NextPollAt.After(attempt.UpdatedAt) || attempt.QuoteID != firstQuote || !reflect.DeepEqual(attempt.QuoteCosts, wantCosts) {
+			t.Fatalf("attempt did not keep original quote, reference and active slot: %+v", attempt)
+		}
+	}
+	if want := (kafudacontract.CreateOrderRequest{QuoteID: firstQuote, Reference: original.Reference}); dispatched.err != nil || dispatched.request != want {
+		t.Fatalf("gateway request = %+v, err = %v, want %+v", dispatched.request, dispatched.err, want)
+	}
+	assertOccupied(dispatched.record, dispatched.attempt, kafudadomain.StageSubmitting, kafudadomain.AttemptSubmitting)
+	assertDuplicate := func(at time.Time, record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) {
+		t.Helper()
+		current, err := reserve(at)
+		if err != nil || current == nil || current.Created || !reflect.DeepEqual(current.Attempt, attempt) || !reflect.DeepEqual(current.Recharge, record) {
+			t.Fatalf("retry did not return the same active reservation: %+v, %v", current, err)
+		}
+		// Replay both with the duplicate result and with the original Created=true claim.
+		for _, replay := range []*kafudaapp.Reservation{current, winner} {
+			if completed, err := submit(replay, check("quote_replacement_dispatch", 925)); completed || !errors.Is(err, kafudadomain.ErrInvalidTransition) {
+				t.Fatalf("duplicate submission was not rejected: completed=%t, err=%v", completed, err)
+			}
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("gateway received %d create requests, want one", got)
+		}
+	}
+	assertDuplicate(time.Now().UTC(), dispatched.record, dispatched.attempt)
+	allowResponse()
+	if result := <-dispatchResult; result.completed || !errors.Is(result.err, responseLost) {
+		t.Fatalf("expected lost response from the only create request: %+v", result)
+	}
+	review, err := f.store.GetRecharge(ctx, childID)
+	if err != nil || review == nil || review.ReasonCode != "outcome_unknown" {
+		t.Fatalf("lost response did not create manual review: %+v, %v", review, err)
+	}
+	var attempts []kafudadomain.Attempt
+	if err := f.db.Where("order_id = ?", childID).Find(&attempts).Error; err != nil || len(attempts) != 1 {
+		t.Fatalf("expected one persisted attempt: %+v, %v", attempts, err)
+	}
+	unknown := &attempts[0]
+	assertOccupied(review, unknown, kafudadomain.StageManualReview, kafudadomain.AttemptReview)
+	if unknown.NextPollAt.Sub(unknown.UpdatedAt) != pollInterval || kafudacontract.CanResolveManualAttempt(review, unknown) {
+		t.Fatalf("unknown outcome lost its recovery schedule or became resolvable: %+v", unknown)
+	}
+	assertDuplicate(unknown.NextPollAt.Add(time.Second), review, unknown)
+	storedReview, reviewErr := f.store.GetRecharge(ctx, childID)
+	storedAttempt, attemptErr := f.store.GetAttempt(ctx, original.ID)
+	if reviewErr != nil || attemptErr != nil || !reflect.DeepEqual(storedReview, review) || !reflect.DeepEqual(storedAttempt, unknown) {
+		t.Fatalf("replayed submissions changed manual review or the original attempt: review=%+v (%v), attempt=%+v (%v)", storedReview, reviewErr, storedAttempt, attemptErr)
+	}
+	assertDirectShopOrderStatus(t, orders, paid, constants.OrderStatusFulfilling, *paid.PaidAt)
+	final, err := orders.GetByID(checkout.ID)
+	if err != nil || final == nil || !final.WalletPaidAmount.Equal(paid.WalletPaidAmount.Decimal) || !final.OnlinePaidAmount.Equal(paid.OnlinePaidAmount.Decimal) ||
+		!final.Children[0].WalletPaidAmount.Equal(paid.Children[0].WalletPaidAmount.Decimal) || !final.Children[0].OnlinePaidAmount.Equal(paid.Children[0].OnlinePaidAmount.Decimal) ||
+		!reflect.DeepEqual(loadPayment(), paidPayment) {
+		t.Fatalf("replayed submissions changed paid checkout amounts or the payment record: %+v, %v", final, err)
+	}
+}
 
 func TestDirectAfterSalesCompetingResolutions(t *testing.T) {
 	testDirectAfterSalesCompetingResolutions(t, newDirectCheckoutFixture)

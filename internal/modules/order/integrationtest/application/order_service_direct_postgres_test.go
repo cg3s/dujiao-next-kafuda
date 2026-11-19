@@ -22,6 +22,15 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestPostgresDirectCompetingBuyerDispatchKeepsUnknownAttempt(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	db := openPostgresDirectRaceDB(t, dsn)
+	testDirectCompetingBuyerDispatchKeepsUnknownAttempt(t, seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-dispatch-race", 0, 0)))
+}
+
 func TestPostgresDirectAfterSalesCompetingResolutions(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 	if dsn == "" {

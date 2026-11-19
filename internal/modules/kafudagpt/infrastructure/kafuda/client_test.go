@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
 	"path/filepath"
 	"strings"
@@ -136,6 +138,57 @@ func TestCreateOrderHasStableIdempotencyAndNoCredential(t *testing.T) {
 	got, err := c.CreateOrder(context.Background(), kafudacontract.CreateOrderRequest{QuoteID: "quo_1", Reference: "kgpt.order-1"})
 	if err != nil || got.ID != 100001 || got.MaskedEmail != "b***@***" || calls != 1 {
 		t.Fatalf("create = (%+v, %v), calls=%d", got, err, calls)
+	}
+}
+
+func TestCreateOrderDoesNotReplayAfterDroppedResponse(t *testing.T) {
+	input := kafudacontract.CreateOrderRequest{QuoteID: "quo_1", Reference: "kgpt.order-1"}
+	var calls atomic.Int32
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/gpt/catalog" {
+			fmt.Fprint(w, `{"data":{}}`)
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != orderPath || r.Header.Get("Idempotency-Key") != input.Reference {
+			t.Error("unexpected order request")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		data, err := io.ReadAll(r.Body)
+		var body kafudacontract.CreateOrderRequest
+		if err != nil || json.Unmarshal(data, &body) != nil || body != input {
+			t.Error("supplier did not receive the complete order body")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if calls.Add(1) != 1 {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		// Accept the request and disconnect before sending any response headers.
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Errorf("hijack supplier connection: %v", err)
+			return
+		}
+		_ = conn.Close()
+	})
+	if _, err := c.Catalog(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var reused atomic.Bool
+	ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
+		if info.Reused {
+			reused.Store(true)
+		}
+	}})
+	got, err := c.CreateOrder(ctx, input)
+	if !reused.Load() {
+		t.Fatal("create did not use the warmed connection")
+	}
+	var apiErr *kafudacontract.APIError
+	if got != nil || !errors.As(err, &apiErr) || apiErr.Code != "transport_error" || calls.Load() != 1 {
+		t.Fatalf("create = (%+v, %v), supplier calls=%d", got, err, calls.Load())
 	}
 }
 

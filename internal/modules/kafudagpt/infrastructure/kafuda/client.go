@@ -193,6 +193,11 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 	if key != "" {
 		req.Header.Set("Idempotency-Key", key)
 	}
+	if method == http.MethodPost && path == orderPath {
+		// Preserve the original key while preventing transport replay of a
+		// potentially accepted order after a connection failure.
+		req.GetBody = nil
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return apiError(0, "transport_error")
