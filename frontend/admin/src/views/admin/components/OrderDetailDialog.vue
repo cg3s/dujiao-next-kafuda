@@ -34,7 +34,6 @@ const props = defineProps<{
   modelValue: boolean
   order: AdminOrder | null
   siteCurrency: string
-  maxRefundDays: number
 }>()
 
 const emit = defineEmits<{
@@ -468,27 +467,8 @@ const isPaidOrder = (order: AdminOrder | null) => {
   return Boolean(order.paid_at)
 }
 
-const normalizedMaxRefundDays = () => {
-  const parsed = Number(props.maxRefundDays)
-  if (!Number.isFinite(parsed)) return 30
-  const normalized = Math.trunc(parsed)
-  if (normalized < 0) return 30
-  if (normalized > 3650) return 3650
-  return normalized
-}
-
-const isOrderRefundWindowExpired = (order: AdminOrder | null) => {
-  if (!order || !isPaidOrder(order)) return false
-  if (normalizedMaxRefundDays() === 0) return false
-  const baseAtRaw = order.paid_at || order.created_at
-  if (!baseAtRaw) return false
-  const baseAtMs = Date.parse(baseAtRaw)
-  if (Number.isNaN(baseAtMs)) return false
-  const nowMs = Date.now()
-  if (!Number.isFinite(nowMs) || nowMs <= baseAtMs) return false
-  const diffDays = (nowMs - baseAtMs) / (1000 * 60 * 60 * 24)
-  return diffDays > normalizedMaxRefundDays()
-}
+const isRefundWindowOpen = (order: AdminOrder | null) =>
+  Boolean(order && isPaidOrder(order) && order.status !== 'canceled' && order.refund_window_expired === false)
 
 const refundableAmountValue = (order: AdminOrder | null) => {
   if (!order) return 0
@@ -502,37 +482,30 @@ const refundableAmountValue = (order: AdminOrder | null) => {
 
 const refundableAmountDisplay = (order: AdminOrder | null) => formatMoney(refundableAmountValue(order).toFixed(2), order?.currency)
 
-const canRefundDirect = (order: AdminOrder, permission: string) => {
+const canUseRefundMethod = (order: AdminOrder, action: 'refund-to-wallet' | 'manual-refund') => {
   const recharge = order.direct_recharge
-  return !recharge || (!order.parent_id && isOpenDirectOrder(order) && recharge.stage === 'manual_delivery'
-    && !!recharge.attempt && !recharge.attempt.active && auth.hasPermission(permission))
+  if (recharge && (order.parent_id || !isOpenDirectOrder(order) || recharge.stage !== 'manual_delivery'
+    || !recharge.attempt || recharge.attempt.active)) return false
+  const endpoint = recharge ? `direct-${action}` : action
+  return auth.hasPermission(`POST:/admin/orders/${order.id}/${endpoint}`)
 }
 
-const canRefundToWallet = (order: AdminOrder | null) => {
-  if (!order || !canRefundDirect(order, 'POST:/admin/orders/:id/direct-refund-to-wallet')) return false
-  if (!order.user_id) return false
-  if (!isPaidOrder(order)) return false
-  if (isOrderRefundWindowExpired(order)) return false
-  return refundableAmountValue(order) > 0
-}
+const canSelectWalletRefundTab = (order: AdminOrder | null) => Boolean(order?.user_id && canUseRefundMethod(order, 'refund-to-wallet'))
+const canSelectManualRefundTab = (order: AdminOrder | null) => Boolean(order && canUseRefundMethod(order, 'manual-refund'))
 
-const canManualRefund = (order: AdminOrder | null) => {
-  if (!order || !canRefundDirect(order, 'POST:/admin/orders/:id/direct-manual-refund')) return false
-  if (!isPaidOrder(order)) return false
-  if (isOrderRefundWindowExpired(order)) return false
-  return refundableAmountValue(order) > 0
-}
+const canRefundToWallet = (order: AdminOrder | null) =>
+  isRefundWindowOpen(order) && canSelectWalletRefundTab(order) && refundableAmountValue(order) > 0
 
-const shouldShowRefundCard = (order: AdminOrder | null) => {
-  if (!order) return false
-  if (!isPaidOrder(order)) return false
-  if (order.status === 'canceled') return false
-  if (order.direct_recharge && !canRefundToWallet(order) && !canManualRefund(order)) return false
-  if (isOrderRefundWindowExpired(order)) return false
-  return true
-}
+const canManualRefund = (order: AdminOrder | null) =>
+  isRefundWindowOpen(order) && canSelectManualRefundTab(order) && refundableAmountValue(order) > 0
 
-const canSelectWalletRefundTab = (order: AdminOrder | null) => Boolean(order?.user_id && (!order.direct_recharge || canRefundToWallet(order)))
+const shouldShowRefundCard = (order: AdminOrder | null) =>
+  isRefundWindowOpen(order) && (canSelectWalletRefundTab(order) || canSelectManualRefundTab(order)) &&
+    (!order?.direct_recharge || refundableAmountValue(order) > 0)
+
+const showWalletRefundForm = computed(() => canSelectWalletRefundTab(selectedOrder.value) &&
+  (refundTab.value === 'wallet' || !canSelectManualRefundTab(selectedOrder.value)))
+const showManualRefundForm = computed(() => !showWalletRefundForm.value && canSelectManualRefundTab(selectedOrder.value))
 
 const defaultRefundTab = (order: AdminOrder | null): 'manual' | 'wallet' => (canSelectWalletRefundTab(order) ? 'wallet' : 'manual')
 
@@ -659,7 +632,7 @@ const fetchOrderDetail = async (orderId: number) => {
     selectedOrder.value = order
     if (order?.direct_recharge) manualRefundForm.paymentFeeRefunded = false
     ensureRefundTabAvailable(order)
-    if (!order?.order_no) return
+    if (!order?.order_no || !auth.hasPermission('GET:/admin/procurement-orders')) return
     try {
       const procRes = await adminAPI.getProcurementOrders({ order_no: order.order_no, page_size: 1 })
       const procList = procRes.data.data
@@ -1438,15 +1411,16 @@ onUnmounted(() => { detailSession++ })
                 v-if="canSelectWalletRefundTab(selectedOrder)"
                 type="button"
                 class="rounded-md px-3 py-1.5 text-xs transition-colors"
-                :class="refundTab === 'wallet' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'"
+                :class="showWalletRefundForm ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'"
                 @click="refundTab = 'wallet'"
               >
                 {{ t('admin.orders.refundTabWallet') }}
               </button>
               <button
+                v-if="canSelectManualRefundTab(selectedOrder)"
                 type="button"
                 class="rounded-md px-3 py-1.5 text-xs transition-colors"
-                :class="refundTab === 'manual' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'"
+                :class="showManualRefundForm ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'"
                 @click="refundTab = 'manual'"
               >
                 {{ t('admin.orders.refundTabManual') }}
@@ -1454,7 +1428,7 @@ onUnmounted(() => { detailSession++ })
             </div>
 
             <form
-              v-if="refundTab === 'wallet' && canSelectWalletRefundTab(selectedOrder)"
+              v-if="showWalletRefundForm"
               class="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]"
               @submit.prevent="submitRefundToWallet"
             >
@@ -1481,7 +1455,7 @@ onUnmounted(() => { detailSession++ })
               </Button>
             </form>
             <form
-              v-else
+              v-else-if="showManualRefundForm"
               class="space-y-3"
               @submit.prevent="submitManualRefund"
             >
@@ -1521,37 +1495,37 @@ onUnmounted(() => { detailSession++ })
               </label>
             </form>
             <div
-              v-if="refundTab === 'wallet' && canSelectWalletRefundTab(selectedOrder) && !canRefundToWallet(selectedOrder)"
+              v-if="showWalletRefundForm && !canRefundToWallet(selectedOrder)"
               class="mt-3 text-xs text-muted-foreground"
             >
               {{ t('admin.orders.refundNoRemaining') }}
             </div>
             <div
-              v-if="(refundTab !== 'wallet' || !canSelectWalletRefundTab(selectedOrder)) && !canManualRefund(selectedOrder)"
+              v-if="showManualRefundForm && !canManualRefund(selectedOrder)"
               class="mt-3 text-xs text-muted-foreground"
             >
               {{ t('admin.orders.refundNoRemaining') }}
             </div>
             <div
-              v-if="refundTab === 'wallet' && canSelectWalletRefundTab(selectedOrder) && refundError"
+              v-if="showWalletRefundForm && refundError"
               class="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
             >
               {{ refundError }}
             </div>
             <div
-              v-if="refundTab === 'wallet' && canSelectWalletRefundTab(selectedOrder) && refundSuccess"
+              v-if="showWalletRefundForm && refundSuccess"
               class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"
             >
               {{ refundSuccess }}
             </div>
             <div
-              v-if="(refundTab !== 'wallet' || !canSelectWalletRefundTab(selectedOrder)) && manualRefundError"
+              v-if="showManualRefundForm && manualRefundError"
               class="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
             >
               {{ manualRefundError }}
             </div>
             <div
-              v-if="(refundTab !== 'wallet' || !canSelectWalletRefundTab(selectedOrder)) && manualRefundSuccess"
+              v-if="showManualRefundForm && manualRefundSuccess"
               class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"
             >
               {{ manualRefundSuccess }}

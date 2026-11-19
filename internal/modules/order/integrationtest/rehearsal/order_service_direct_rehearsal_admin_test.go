@@ -21,6 +21,9 @@ import (
 	orderrefund "github.com/dujiao-next/internal/modules/order/application/refund"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderhttp "github.com/dujiao-next/internal/modules/order/transport/http"
+	settingsapp "github.com/dujiao-next/internal/modules/settings/application"
+	settingsstore "github.com/dujiao-next/internal/modules/settings/infrastructure/gormstore"
+	settingshttp "github.com/dujiao-next/internal/modules/settings/transport/http"
 	"github.com/dujiao-next/internal/web"
 
 	"github.com/gin-gonic/gin"
@@ -63,9 +66,10 @@ func registerDirectRehearsalAdmin(t *testing.T, router *gin.Engine, f directChec
 		t.Fatal(err)
 	}
 
-	if err := f.db.AutoMigrate(&admindomain.Admin{}, &orderdomain.OrderRefundRecord{}); err != nil {
+	if err := f.db.AutoMigrate(&admindomain.Admin{}, &orderdomain.OrderRefundRecord{}, &settingsstore.SettingRecord{}); err != nil {
 		t.Fatal(err)
 	}
+	deps.SettingService = settingsapp.NewService(settingsstore.New(f.db))
 	deps.AdminStore = adminstore.New(f.db)
 	deps.AuthzService, err = authz.NewService(f.db)
 	if err != nil {
@@ -97,6 +101,7 @@ func registerDirectRehearsalAdmin(t *testing.T, router *gin.Engine, f directChec
 		middleware.AdminRBACMiddleware(deps.AuthzService),
 	)
 	admin.GET("/authz/me", adminauthzwiring.NewHandler(deps).GetAuthzMe)
+	settingshttp.RegisterAdminRoutes(admin, settingshttp.NewAdminHandler(deps.SettingService))
 	handlers := orderwiring.New(deps)
 	orderhttp.RegisterAdminRoutes(admin, handlers.Admin)
 	orderhttp.RegisterAdminRefundRoutes(admin, handlers.AdminRefund)

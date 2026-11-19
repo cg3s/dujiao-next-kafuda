@@ -55,6 +55,7 @@ const orderFixture = (id: number, status = 'fulfilling', stage = 'manual_deliver
     refunded_amount: status === 'refunded' ? 10 : 0,
     created_at: timestamp,
     paid_at: timestamp,
+    refund_window_expired: false,
     updated_at: timestamp,
     direct_recharge: {
       child_id: id + 100,
@@ -111,7 +112,6 @@ const mountDialog = () => {
       modelValue: context.open,
       order: context.order,
       siteCurrency: 'USD',
-      maxRefundDays: 0,
       onRefresh,
       'onUpdate:modelValue': (open: boolean) => {
         context.open = open
@@ -149,6 +149,52 @@ it.each([
   expect(Boolean(findButton('admin.orders.directReview.release'))).toBe(canResolve)
   expect(Boolean(findButton('admin.orders.refundSubmit'))).toBe(canResolve)
   expect(Boolean(findButton('admin.orders.directReview.reconcile'))).toBe(canReconcile)
+})
+
+it.each([
+  { direct: false, expired: false, canRefund: true },
+  { direct: false, expired: true, canRefund: false },
+  { direct: false, expired: undefined, canRefund: false },
+  { direct: true, expired: true, canRefund: false },
+  { direct: true, expired: undefined, canRefund: false },
+])('uses the server refund window for direct=$direct / expired=$expired', async ({ direct, expired, canRefund }) => {
+  const order = orderFixture(42)
+  if (!direct) delete order.direct_recharge
+  order.refund_window_expired = expired
+  api.getOrder.mockResolvedValue(response(order))
+  const { context } = mountDialog()
+  context.order = order
+  context.open = true
+
+  await vi.waitFor(() => expect(host.textContent).toContain(order.order_no))
+  expect(Boolean(findButton('admin.orders.refundSubmit'))).toBe(canRefund)
+  expect(Boolean(findButton('admin.orders.refundTabManual'))).toBe(canRefund)
+  expect(Boolean(findButton('admin.orders.directReview.complete'))).toBe(direct)
+})
+
+it.each([
+  { direct: false, action: 'refund-to-wallet' },
+  { direct: false, action: 'manual-refund' },
+  { direct: true, action: 'refund-to-wallet' },
+  { direct: true, action: 'manual-refund' },
+])('shows only the granted refund action and skips procurement for direct=$direct / $action', async ({ direct, action }) => {
+  const order = orderFixture(42)
+  if (!direct) delete order.direct_recharge
+  const endpoint = direct ? `direct-${action}` : action
+  hasPermission.mockImplementation((permission: string) => permission === `POST:/admin/orders/${order.id}/${endpoint}`)
+  api.getOrder.mockResolvedValue(response(order))
+  const { context } = mountDialog()
+  context.order = order
+  context.open = true
+
+  await vi.waitFor(() => expect(host.textContent).toContain(order.order_no))
+  expect(hasPermission).toHaveBeenCalledWith('GET:/admin/procurement-orders')
+  expect(api.getProcurementOrders).not.toHaveBeenCalled()
+  const wallet = action === 'refund-to-wallet'
+  expect(Boolean(findButton('admin.orders.refundTabWallet'))).toBe(wallet)
+  expect(Boolean(findButton('admin.orders.refundTabManual'))).toBe(!wallet)
+  expect(Boolean(findButton('admin.orders.refundSubmit'))).toBe(wallet)
+  expect(Boolean(findButton('admin.orders.manualRefundSubmit'))).toBe(!wallet)
 })
 
 it.each([undefined, '0.00', '15.46'])('shows a reported card charge in USD (%s)', async (cardCharge) => {

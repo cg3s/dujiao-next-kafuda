@@ -7,6 +7,7 @@ import (
 	"github.com/dujiao-next/internal/app/container"
 	"github.com/dujiao-next/internal/logger"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderqueue "github.com/dujiao-next/internal/modules/order/infrastructure/queueadapter"
 	ordertransport "github.com/dujiao-next/internal/modules/order/transport/http"
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
@@ -24,6 +25,10 @@ type Handlers struct {
 
 // New assembles order transports and their composition-boundary adapters.
 func New(c *container.Container) Handlers {
+	var refundWindowExpired func(*orderdomain.Order) (bool, error)
+	if c.OrderRefundService != nil {
+		refundWindowExpired = c.OrderRefundService.RefundWindowExpired
+	}
 	return Handlers{
 		Admin: ordertransport.NewAdminHandler(
 			orderAdminQueryAdapter{orders: c.OrderService},
@@ -33,6 +38,7 @@ func New(c *container.Container) Handlers {
 			orderAdminPaymentAdapter{payments: c.PaymentStore},
 			orderAdminPaymentChannelAdapter{channels: c.PaymentChannelStore},
 			orderAdminAccountingAdapter{settings: c.SettingService},
+			refundWindowExpired,
 			newAdminDirectStatusReader(c),
 			func(childID, attemptID, adminID uint, confirmed bool) error {
 				if c.OrderStore == nil {

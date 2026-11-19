@@ -84,6 +84,7 @@ func TestDirectAdminActionJSONRoutes(t *testing.T) {
 		}{},
 		struct{ orderhttp.AccountingPolicy }{},
 		nil,
+		nil,
 		manualAction("complete"),
 		manualAction("release"),
 		func(_ context.Context, orderID, attemptID, operatorID uint, upstreamID uint64) error {

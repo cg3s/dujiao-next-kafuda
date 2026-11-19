@@ -21,6 +21,7 @@ import (
 
 	userdomain "github.com/dujiao-next/internal/modules/identity/user/domain"
 
+	"github.com/dujiao-next/internal/logger"
 	"github.com/dujiao-next/internal/platform/http/ginutil"
 	"github.com/dujiao-next/internal/platform/http/response"
 	"github.com/dujiao-next/internal/shared/money"
@@ -101,6 +102,7 @@ type AdminHandler struct {
 	payments        PaymentDirectory
 	channels        PaymentChannelDirectory
 	accounting      AccountingPolicy
+	refundExpired   func(*orderdomain.Order) (bool, error)
 	direct          AdminDirectStatusReader
 	completeDirect  func(childID, attemptID, adminID uint, confirmed bool) error
 	releaseDirect   func(childID, attemptID, adminID uint, confirmed bool) error
@@ -116,6 +118,7 @@ func NewAdminHandler(
 	payments PaymentDirectory,
 	channels PaymentChannelDirectory,
 	accounting AccountingPolicy,
+	refundExpired func(*orderdomain.Order) (bool, error),
 	direct AdminDirectStatusReader,
 	completeDirect func(childID, attemptID, adminID uint, confirmed bool) error,
 	releaseDirect func(childID, attemptID, adminID uint, confirmed bool) error,
@@ -133,6 +136,7 @@ func NewAdminHandler(
 		payments:        payments,
 		channels:        channels,
 		accounting:      accounting,
+		refundExpired:   refundExpired,
 		direct:          direct,
 		completeDirect:  completeDirect,
 		releaseDirect:   releaseDirect,
@@ -164,8 +168,9 @@ type AdminOrderDetail struct {
 	PromotionName   string                  `json:"promotion_name,omitempty"`
 	Payments        []AdminOrderPaymentItem `json:"payments,omitempty"`
 	// RefundReversesCost 为 true 时，订单详情利润在退款时按比例冲回成本。
-	RefundReversesCost bool               `json:"refund_reverses_cost"`
-	DirectRecharge     *AdminDirectStatus `json:"direct_recharge,omitempty"`
+	RefundReversesCost  bool               `json:"refund_reverses_cost"`
+	RefundWindowExpired *bool              `json:"refund_window_expired,omitempty"`
+	DirectRecharge      *AdminDirectStatus `json:"direct_recharge,omitempty"`
 }
 
 type AdminDirectStatus struct {
@@ -526,6 +531,15 @@ func (h *AdminHandler) AdminGetOrder(c *gin.Context) {
 			return
 		}
 	}
+	var refundWindowExpired *bool
+	if order.PaidAt != nil && h.refundExpired != nil {
+		expired, err := h.refundExpired(order)
+		if err != nil {
+			logger.Warnw("admin_order_refund_window_unavailable", "order_id", order.ID, "error", err)
+		} else {
+			refundWindowExpired = &expired
+		}
+	}
 	order.TruncateFulfillmentPayload()
 	response.Success(c, AdminOrderDetail{
 		Order:           *order,
@@ -535,8 +549,9 @@ func (h *AdminHandler) AdminGetOrder(c *gin.Context) {
 		PromotionName:   promotionName,
 		Payments:        paymentItems,
 
-		RefundReversesCost: h.accounting.RefundReversesCost(),
-		DirectRecharge:     direct,
+		RefundReversesCost:  h.accounting.RefundReversesCost(),
+		RefundWindowExpired: refundWindowExpired,
+		DirectRecharge:      direct,
 	})
 }
 

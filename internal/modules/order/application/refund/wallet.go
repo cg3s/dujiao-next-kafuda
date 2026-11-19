@@ -56,16 +56,12 @@ func (s *Service) AdminRefundToWallet(
 		refundRecordResult *orderdomain.OrderRefundRecord
 	)
 
-	config := settingsapp.DefaultOrderRefundConfig()
-	if s.settingService != nil {
-		loaded, err := s.settingService.GetOrderRefundConfig()
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		config = loaded
+	config, err := s.loadRefundConfig()
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
-	err := s.orderStore.WithinTransaction(func(tx ordercontract.Transaction) error {
+	err = s.orderStore.WithinTransaction(func(tx ordercontract.Transaction) error {
 		orderRepository := tx.Orders()
 		locked, err := orderRepository.GetByIDForUpdateWithChildren(input.OrderID)
 		if err != nil {

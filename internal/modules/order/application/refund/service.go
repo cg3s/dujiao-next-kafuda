@@ -140,6 +140,22 @@ func (s *Service) SetResellerAccounting(accounting resellerAccountingTransaction
 	s.resellerAccounting = accounting
 }
 
+// RefundWindowExpired reports whether the refund time limit has passed for an order.
+func (s *Service) RefundWindowExpired(order *orderdomain.Order) (bool, error) {
+	cfg, err := s.loadRefundConfig()
+	if err != nil {
+		return false, err
+	}
+	return settingsapp.IsOrderRefundWindowExpired(order.CreatedAt, order.PaidAt, cfg.MaxRefundDays, time.Now()), nil
+}
+
+func (s *Service) loadRefundConfig() (settingsapp.OrderRefundConfig, error) {
+	if s.settingService == nil {
+		return settingsapp.DefaultOrderRefundConfig(), nil
+	}
+	return s.settingService.GetOrderRefundConfig()
+}
+
 // ParseRefundAmount 解析并校验退款金额。
 func (s *Service) ParseRefundAmount(raw string) (money.Amount, error) {
 	parsed, err := decimal.NewFromString(strings.TrimSpace(raw))
@@ -265,13 +281,9 @@ func (s *Service) AdminManualRefund(input AdminManualRefundInput) (*orderdomain.
 		return nil, nil, ErrOrderFetchFailed
 	}
 
-	cfg := settingsapp.DefaultOrderRefundConfig()
-	if s.settingService != nil {
-		cfgLoaded, cfgErr := s.settingService.GetOrderRefundConfig()
-		if cfgErr != nil {
-			return nil, nil, cfgErr
-		}
-		cfg = cfgLoaded
+	cfg, err := s.loadRefundConfig()
+	if err != nil {
+		return nil, nil, err
 	}
 	initialOrder, err := s.orderStore.GetByID(input.OrderID)
 	if err != nil {

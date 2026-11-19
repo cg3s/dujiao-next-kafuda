@@ -215,6 +215,7 @@ export interface AdminOrder {
   user_email?: string
   // 订单详情接口返回：退款时是否按比例冲回成本（仪表盘统计口径）
   refund_reverses_cost?: boolean
+  refund_window_expired?: boolean
 }
 
 export interface AdminUserOAuthIdentity {

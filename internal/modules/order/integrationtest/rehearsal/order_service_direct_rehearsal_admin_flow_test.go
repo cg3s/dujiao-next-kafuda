@@ -10,16 +10,21 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dujiao-next/internal/constants"
+	"github.com/dujiao-next/internal/i18n"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	admindomain "github.com/dujiao-next/internal/modules/identity/admin/domain"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderhttp "github.com/dujiao-next/internal/modules/order/transport/http"
+	settingsapp "github.com/dujiao-next/internal/modules/settings/application"
+	settingsstore "github.com/dujiao-next/internal/modules/settings/infrastructure/gormstore"
 	walletdomain "github.com/dujiao-next/internal/modules/wallet/domain"
 	"github.com/dujiao-next/internal/platform/http/response"
+	"github.com/dujiao-next/internal/shared/jsonmap"
 )
 
 func TestDirectBuyerAdminManualDeliveryRehearsal(t *testing.T) {
@@ -40,9 +45,10 @@ func TestDirectBuyerAdminManualDeliveryRehearsal(t *testing.T) {
 	if err := f.db.Where("username = ?", "support").First(&admin).Error; err != nil || admin.ID == 0 || admin.IsSuper {
 		t.Fatalf("support account fixture is invalid: %v", err)
 	}
-	readJSON := func(method, path, body, token string, wantCode int, data any) {
+	readJSON := func(method, path, body, token string, wantCode int, data any) string {
 		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(t.Context())
+		req.Header.Set("Accept-Language", "en-US")
 		if body != "" {
 			req.Header.Set("Content-Type", "application/json")
 		}
@@ -53,6 +59,7 @@ func TestDirectBuyerAdminManualDeliveryRehearsal(t *testing.T) {
 		router.ServeHTTP(res, req)
 		var reply struct {
 			StatusCode int             `json:"status_code"`
+			Message    string          `json:"msg"`
 			Data       json.RawMessage `json:"data"`
 		}
 		if err := json.Unmarshal(res.Body.Bytes(), &reply); err != nil {
@@ -66,6 +73,7 @@ func TestDirectBuyerAdminManualDeliveryRehearsal(t *testing.T) {
 				t.Fatalf("decode %s %s data: %v", method, path, err)
 			}
 		}
+		return reply.Message
 	}
 	var created struct {
 		OrderNo          string `json:"order_no"`
@@ -92,6 +100,14 @@ func TestDirectBuyerAdminManualDeliveryRehearsal(t *testing.T) {
 		paid.Children[0].Status != constants.OrderStatusPaid || paid.Children[0].PaidAt == nil {
 		t.Fatal("wallet payment did not mark both orders paid")
 	}
+	historicPaidAt := paid.PaidAt.AddDate(0, 0, -2)
+	if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{paid.ID, childID}).UpdateColumns(map[string]any{
+		"created_at": historicPaidAt.Add(-time.Minute),
+		"paid_at":    historicPaidAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	paid = loadOrder()
 
 	walletLedger := func() walletdomain.Transaction {
 		t.Helper()
@@ -159,6 +175,40 @@ func TestDirectBuyerAdminManualDeliveryRehearsal(t *testing.T) {
 		adminStatus.Attempt.Active || adminStatus.Attempt.ID != inFlight.Attempt.ID {
 		t.Fatalf("failed supplier result did not enter controlled manual delivery: %+v", adminStatus)
 	}
+
+	settings := settingsstore.New(f.db)
+	setRefundDays := func(days int) {
+		t.Helper()
+		if _, err := settings.Upsert(constants.SettingKeyOrderConfig, jsonmap.JSON{settingsapp.OrderConfigFieldMaxRefundDays: days}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertWindowExpired := func(want bool) {
+		t.Helper()
+		var detail struct {
+			Expired *bool `json:"refund_window_expired"`
+		}
+		readJSON(http.MethodGet, parentDetail, "", support, 0, &detail)
+		if detail.Expired == nil || *detail.Expired != want {
+			t.Fatalf("admin order details should include refund_window_expired=%t", want)
+		}
+	}
+	readJSON(http.MethodGet, "/api/v1/admin/settings?key="+constants.SettingKeyOrderConfig, "", support, response.CodeForbidden, nil)
+	setRefundDays(1)
+	assertWindowExpired(true)
+	refund := fmt.Sprintf(`{"attempt_id":%d,"confirmed":true,"amount":"100.00"}`, adminStatus.Attempt.ID)
+	for _, endpoint := range []string{"direct-refund-to-wallet", "direct-manual-refund"} {
+		path := fmt.Sprintf("/api/v1/admin/orders/%d/%s", paid.ID, endpoint)
+		message := readJSON(http.MethodPost, path, refund, support, response.CodeBadRequest, nil)
+		if message != i18n.T("en-US", "error.order_refund_expired") {
+			t.Fatalf("%s did not reject the expired refund window: %q", endpoint, message)
+		}
+	}
+	assertBuyerStage(kafudadomain.StageManualReview)
+	walletLedger()
+	setRefundDays(0)
+	assertWindowExpired(false)
+
 	const reviewList = "/api/v1/admin/orders?direct_review=true"
 	var queue []struct {
 		ID      uint   `json:"id"`

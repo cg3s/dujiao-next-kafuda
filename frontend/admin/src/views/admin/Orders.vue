@@ -56,22 +56,12 @@ const showDetail = ref(false)
 const showFulfillmentModal = ref(false)
 const selectedOrder = ref<AdminOrder | null>(null)
 const fulfillmentParentId = ref<number | null>(null)
-const maxRefundDays = ref(30)
 const route = useRoute()
 const { t, locale } = useI18n()
 const userDetailLink = (userId: number) => adminUrl(`/users/${userId}`)
 
 const itemSkuLabel = (item: AdminOrderItem & Record<string, unknown>) =>
   formatSkuDisplayLabel((item as any)?.sku_snapshot, locale.value)
-
-const normalizeMaxRefundDays = (raw: unknown) => {
-  const parsed = Number(raw)
-  if (!Number.isFinite(parsed)) return 30
-  const normalized = Math.trunc(parsed)
-  if (normalized < 0) return 30
-  if (normalized > 3650) return 3650
-  return normalized
-}
 
 const normalizeFilterValue = (value: string) => (value === '__all__' ? '' : value)
 
@@ -120,15 +110,6 @@ const fetchOrders = async (page = 1, options: ListFetchOptions = {}) => {
     }
   } finally {
     if (!options.preserveRows) loading.value = false
-  }
-}
-
-const fetchRefundConfig = async () => {
-  try {
-    const res = await adminAPI.getSettings({ key: 'order_config' })
-    maxRefundDays.value = normalizeMaxRefundDays(res.data?.data?.max_refund_days)
-  } catch {
-    maxRefundDays.value = 30
   }
 }
 
@@ -241,7 +222,6 @@ onMounted(() => {
   const initialUserId = toQueryText(route.query.user_id)
   filters.userId = initialUserId
 
-  fetchRefundConfig()
   fetchOrders()
 
   const orderId = Number(route.query.order_id)
@@ -477,7 +457,6 @@ watch(
       :model-value="showDetail"
       :order="selectedOrder"
       site-currency=""
-      :max-refund-days="maxRefundDays"
       @update:model-value="handleDetailClose"
       @refresh="refresh"
       @open-fulfillment="handleDetailOpenFulfillment"
