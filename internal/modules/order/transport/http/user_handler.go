@@ -2,9 +2,13 @@ package orderhttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 
@@ -72,11 +76,12 @@ type OrderPaymentChannelsRequest struct {
 
 // UserHandler 处理前台用户订单 HTTP（只读 + 取消 + 支付渠道查询）。
 type UserHandler struct {
-	orders   UserOrderQuery
-	payments PaymentChannelPolicy
-	refunds  RefundRecordDirectory
-	users    UserLookup
-	direct   DirectStatusReader
+	orders          UserOrderQuery
+	payments        PaymentChannelPolicy
+	refunds         RefundRecordDirectory
+	users           UserLookup
+	direct          DirectStatusReader
+	authorizeDirect DirectAuthorizer
 }
 
 type DirectStatus struct {
@@ -92,6 +97,10 @@ func NewUserHandler(orders UserOrderQuery, payments PaymentChannelPolicy, refund
 		panic("order user handler: orders is nil")
 	}
 	return &UserHandler{orders: orders, payments: payments, refunds: refunds, users: users, direct: direct}
+}
+
+func (h *UserHandler) SetDirectAuthorizer(authorize DirectAuthorizer) {
+	h.authorizeDirect = authorize
 }
 
 func (h *UserHandler) GetDirectStatus(c *gin.Context) {
@@ -115,6 +124,90 @@ func (h *UserHandler) GetDirectStatus(c *gin.Context) {
 		return
 	}
 	response.Success(c, status)
+}
+
+type DirectAuthorizer func(context.Context, string, uint, string) error
+
+var (
+	ErrDirectSessionInvalid = errors.New("direct recharge session invalid")
+	ErrDirectRetry          = errors.New("direct recharge can be retried")
+)
+
+func (h *UserHandler) AuthorizeDirect(c *gin.Context) {
+	uid, ok := ginutil.GetUserID(c)
+	if !ok {
+		return
+	}
+	tenant := tenantFromRequest(c)
+	orderNo := strings.TrimSpace(c.Param("order_no"))
+	if h.authorizeDirect == nil || orderNo == "" || len(orderNo) > 64 || !tenant.IsMain || tenant.ResellerID != nil || tenant.Unavailable {
+		ginutil.RespondError(c, response.CodeNotFound, "error.order_not_found", nil)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10))
+	decoder.DisallowUnknownFields()
+	var input struct {
+		Session string `json:"session"`
+	}
+	decodeErr := decoder.Decode(&input)
+	if decodeErr == nil {
+		decodeErr = decoder.Decode(new(json.RawMessage))
+	} else if decodeErr == io.EOF {
+		decodeErr = io.ErrUnexpectedEOF
+	}
+	if decodeErr != io.EOF {
+		key := "error.bad_request"
+		var oversized *http.MaxBytesError
+		if errors.As(decodeErr, &oversized) {
+			key = "error.request_too_large"
+		}
+		ginutil.RespondError(c, response.CodeBadRequest, key, nil)
+		return
+	}
+	session := buyerSessionToken(input.Session)
+	if session == "" {
+		ginutil.RespondError(c, response.CodeBadRequest, "error.direct_session_invalid", nil)
+		return
+	}
+	// The workflow may forward the token to the synchronous check. Never log
+	// errors from this credential-bearing request or return their raw text.
+	err := h.authorizeDirect(c.Request.Context(), orderNo, uid, session)
+	switch {
+	case err == nil:
+		response.Success(c, nil)
+	case errors.Is(err, ErrOrderNotFound):
+		ginutil.RespondError(c, response.CodeNotFound, "error.order_not_found", nil)
+	case errors.Is(err, ErrOrderStatusInvalid):
+		ginutil.RespondError(c, response.CodeBadRequest, "error.order_status_invalid", nil)
+	case errors.Is(err, ErrDirectSessionInvalid):
+		ginutil.RespondError(c, response.CodeBadRequest, "error.direct_session_invalid", nil)
+	case errors.Is(err, ErrDirectRetry):
+		ginutil.RespondError(c, response.CodeBadRequest, "error.direct_retry", nil)
+	default:
+		ginutil.RespondError(c, response.CodeInternal, "error.direct_check_progress", nil)
+	}
+}
+
+func buyerSessionToken(input string) string {
+	value := strings.TrimSpace(input)
+	if strings.HasPrefix(value, "{") {
+		var session struct {
+			Token string `json:"sessionToken"`
+		}
+		if json.Unmarshal([]byte(value), &session) != nil {
+			return ""
+		}
+		// Forward only the session token, even if the pasted JSON contains
+		// additional fields such as account details or an access token.
+		value = strings.TrimSpace(session.Token)
+	}
+	if value == "" || strings.ContainsAny(value, "{}[]\"\\") || strings.IndexFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) >= 0 || strings.HasPrefix(value, "eyJ") && strings.Count(value, ".") == 2 {
+		return ""
+	}
+	return value
 }
 
 func tenantFromRequest(c *gin.Context) reseller.TenantContext {

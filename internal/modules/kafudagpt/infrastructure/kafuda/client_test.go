@@ -294,6 +294,19 @@ func TestCreateOrderClassifiesDefinitiveRejections(t *testing.T) {
 	}
 }
 
+func TestCheckClassifiesExpiredSessionWithoutExposingResponse(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"code":"session_invalid","message":"private-fixture"}}`)
+	})
+	if _, err := c.Check(t.Context(), kafudacontract.CheckRequest{Session: "private-fixture"}); !errors.Is(err, kafudacontract.ErrCheckSessionInvalid) || strings.Contains(err.Error(), "private-fixture") {
+		t.Fatal("check failure must be classified without reporting supplier data")
+	}
+	if _, err := c.CreateOrder(t.Context(), kafudacontract.CreateOrderRequest{QuoteID: "quote", Reference: "reference"}); errors.Is(err, kafudacontract.ErrCheckSessionInvalid) {
+		t.Fatal("only checks may report an invalid Session")
+	}
+}
+
 func TestRejectsRedirectsWithoutForwardingSession(t *testing.T) {
 	forwarded := 0
 	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded++ }))

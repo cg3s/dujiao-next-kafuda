@@ -219,6 +219,11 @@ func (s *Service) CheckRejected(ctx context.Context, attemptID uint, retryable b
 	return s.rejectCheck(ctx, attemptID, kafudadomain.StageManualDelivery, "check_rejected", now)
 }
 
+// InterruptCheck releases a check that never reached the chargeable endpoint.
+func (s *Service) InterruptCheck(ctx context.Context, attemptID uint, now time.Time) error {
+	return s.rejectCheck(ctx, attemptID, kafudadomain.StageWaiting, "check_interrupted", now)
+}
+
 func (s *Service) rejectCheck(ctx context.Context, attemptID uint, stage kafudadomain.Stage, reason string, now time.Time) error {
 	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 		if !hasLiveCheck(record, attempt, now) {

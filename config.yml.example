@@ -48,7 +48,7 @@ bootstrap:
   default_admin_password: ""  # 首次初始化管理员密码；留空则随机生成并在启动输出中显示一次
 
 # Kafuda GPT Direct：商户配置只放部署侧，API Key 可通过 KAFUDA_GPT_API_KEY 注入。
-# 开售前须完成测试环境验证、卡头地区验证、worker 检查及未知订单人工核对验证。
+# 启用销售需完整商户配置、已确认的未知订单核对渠道和运行中的队列 worker。
 kafuda_gpt:
   api_base_url: https://kafuda.com
   api_key: ""
@@ -57,7 +57,7 @@ kafuda_gpt:
   allowed_kinds: [new]                  # 仅接受已验证业务类型；升级等能力须单独确认
   sales_enabled: false                 # 仅控制新购，关停后仍处理已付订单
   reference_lookup_verified: false     # 验证控制台按 reference 人工查单渠道后设为 true
-  catalog_ttl_seconds: 3600
+  catalog_ttl_seconds: 3600             # worker 在缓存到期前刷新目录
   poll_review_after_seconds: 86400      # 直充尝试迟迟无结论时转待核对，继续查单
   poll_interval_seconds: 10            # 周期扫描与正常查单间隔，限制在 5–900 秒
   review_after_seconds: 900

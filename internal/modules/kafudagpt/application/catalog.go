@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
@@ -11,10 +12,12 @@ import (
 )
 
 type CatalogService struct {
-	store   kafudacontract.Store
-	gateway kafudacontract.Gateway
-	profile string
-	ttl     time.Duration
+	store       kafudacontract.Store
+	gateway     kafudacontract.Gateway
+	profile     string
+	ttl         time.Duration
+	refreshMu   sync.Mutex
+	nextRefresh time.Time
 }
 
 func NewCatalogService(store kafudacontract.Store, gateway kafudacontract.Gateway, profile string, ttl time.Duration) *CatalogService {
@@ -48,6 +51,34 @@ func (s *CatalogService) Sync(ctx context.Context) (*kafudadomain.Catalog, error
 		return nil, fmt.Errorf("%w: %w", kafudacontract.ErrCatalogWriteFailed, err)
 	}
 	return s.Cached(ctx)
+}
+
+// RefreshBeforeExpiry keeps an enabled storefront on a fresh supplier snapshot.
+// Failed refreshes keep the last snapshot and are retried by a later worker tick.
+func (s *CatalogService) RefreshBeforeExpiry(ctx context.Context, interval time.Duration) error {
+	if s.ttl <= 0 || !s.refreshMu.TryLock() {
+		return nil
+	}
+	defer s.refreshMu.Unlock()
+	now := time.Now()
+	if now.Before(s.nextRefresh) {
+		return nil
+	}
+	lead := min(s.ttl/2, max(interval*2, 2*time.Minute))
+	s.nextRefresh = now.Add(min(time.Minute, lead/2))
+	catalog, err := s.Cached(ctx)
+	if err != nil {
+		return err
+	}
+	if catalog != nil && catalog.ExpiresAt.After(now.Add(lead)) {
+		s.nextRefresh = catalog.ExpiresAt.Add(-lead)
+		return nil
+	}
+	if _, err := s.Sync(ctx); err != nil {
+		return err
+	}
+	s.nextRefresh = now.Add(s.ttl - lead)
+	return nil
 }
 
 // ParseCatalog consumes the documented catalog shape supplied in

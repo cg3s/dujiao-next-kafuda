@@ -51,7 +51,7 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 		return nil, err
 	}
 	var err error
-	c.KafudaGPT, err = kafudawiring.New(gormdb.DB, cfg.KafudaGPT, c.OrderStore)
+	c.KafudaGPT, err = kafudawiring.New(gormdb.DB, cfg.KafudaGPT, c.OrderStore, c.QueueClient.KafudaWorkerReady)
 	if err != nil {
 		return nil, err
 	}

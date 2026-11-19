@@ -75,7 +75,7 @@ func TestNewBackfillsLegacyManualOrderStatuses(t *testing.T) {
 			}
 			var previousUpdates [2]time.Time
 			for i := range 2 {
-				module, err := New(db, config.KafudaGPTConfig{}, store)
+				module, err := New(db, config.KafudaGPTConfig{}, store, nil)
 				if err != nil {
 					t.Fatalf("initialize module %d: %v", i+1, err)
 				}

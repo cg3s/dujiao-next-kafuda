@@ -65,6 +65,11 @@ func RegisterUserCancelRoute(user gin.IRoutes, handler *UserHandler) {
 	user.POST("/orders/:order_no/cancel", handler.CancelOrder)
 }
 
+// RegisterUserDirectAuthorizationRoute registers the authenticated submission endpoint.
+func RegisterUserDirectAuthorizationRoute(user gin.IRoutes, handler *UserHandler, limits ...gin.HandlerFunc) {
+	user.POST("/orders/:order_no/direct-authorize", append(limits, handler.AuthorizeDirect)...)
+}
+
 // RegisterGuestReadRoutes 注册前台游客订单只读路由。
 func RegisterGuestReadRoutes(guest gin.IRoutes, handler *GuestHandler) {
 	if guest == nil || handler == nil {

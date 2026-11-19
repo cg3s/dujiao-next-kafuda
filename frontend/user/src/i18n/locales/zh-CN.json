@@ -1747,6 +1747,19 @@
     "viewDetail": "查看详情"
   },
   "directPurchase": {
+    "authorization": {
+      "title": "授权直充",
+      "description": "请确认已购套餐和地区，再提交待充值账号的登录 Session。",
+      "sessionLabel": "登录 Session",
+      "sessionPlaceholder": "粘贴 Session Token 或含有 sessionToken 的 JSON",
+      "show": "显示",
+      "hide": "隐藏",
+      "privacy": "商城仅将 Session Token 转发给 Kafuda 验证账号资格，不保存该凭据。",
+      "submit": "提交直充",
+      "submitting": "正在检查并提交…",
+      "accepted": "请求已处理，请查看直充进度。",
+      "failed": "暂时无法确认提交结果，请查看直充进度。"
+    },
     "progress": {
       "title": "直充进度",
       "waiting_session": "待提交",

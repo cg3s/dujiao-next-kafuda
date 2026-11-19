@@ -2,11 +2,14 @@ package orderwiring
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/dujiao-next/internal/app/container"
 	"github.com/dujiao-next/internal/logger"
+	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
+	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderqueue "github.com/dujiao-next/internal/modules/order/infrastructure/queueadapter"
 	ordertransport "github.com/dujiao-next/internal/modules/order/transport/http"
@@ -29,7 +32,7 @@ func New(c *container.Container) Handlers {
 	if c.OrderRefundService != nil {
 		refundWindowExpired = c.OrderRefundService.RefundWindowExpired
 	}
-	return Handlers{
+	handlers := Handlers{
 		Admin: ordertransport.NewAdminHandler(
 			orderAdminQueryAdapter{orders: c.OrderService},
 			orderAdminUserAdapter{users: c.UserStore},
@@ -98,6 +101,39 @@ func New(c *container.Container) Handlers {
 			orderGuestCreateCaptchaAdapter{captcha: c.CaptchaService},
 			orderPaymentCreatorAdapter{payments: c.PaymentService},
 		),
+	}
+	handlers.User.SetDirectAuthorizer(newDirectAuthorizer(c))
+	return handlers
+}
+
+func newDirectAuthorizer(c *container.Container) ordertransport.DirectAuthorizer {
+	if c.OrderStore == nil || c.KafudaGPT == nil || c.KafudaGPT.Records == nil || c.KafudaGPT.Store == nil {
+		return nil
+	}
+	module := c.KafudaGPT
+	return func(ctx context.Context, orderNo string, userID uint, session string) error {
+		if module.Gateway == nil {
+			return ordertransport.ErrDirectRetry
+		}
+		childID, completed, err := kafudaworkflow.SubmitBuyerSession(ctx, c.OrderStore, module.Records, module.Gateway,
+			orderNo, userID, session, c.Config.KafudaPollInterval())
+		if completed {
+			kafudaworkflow.EnqueueCompletionEmail(ctx, c.OrderStore, module.Store, orderqueue.NewDirectCompletion(c.QueueClient), c.SettingService, c.Config, childID)
+		}
+		switch {
+		case errors.Is(err, kafudacontract.ErrCheckSessionInvalid):
+			return ordertransport.ErrDirectSessionInvalid
+		case errors.Is(err, kafudaworkflow.ErrBuyerCheckRetry), errors.Is(err, kafudaapp.ErrQuoteExpired):
+			return ordertransport.ErrDirectRetry
+		case errors.Is(err, kafudadomain.ErrNotFound):
+			return ordertransport.ErrOrderNotFound
+		case errors.Is(err, kafudadomain.ErrInvalidTransition):
+			return ordertransport.ErrOrderStatusInvalid
+		case err == kafudaapp.ErrQuotePolicy, err == kafudaapp.ErrQuoteUnavailable, err == kafudaapp.ErrQuoteRegionLocked:
+			return nil
+		default:
+			return mapOrderTransportError(err)
+		}
 	}
 }
 

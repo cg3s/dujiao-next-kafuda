@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dujiao-next/internal/constants"
@@ -38,8 +39,47 @@ type directRehearsalActions struct {
 
 type directRehearsalGateway struct {
 	kafudacontract.Gateway
+	check  func(context.Context, kafudacontract.CheckRequest) (*kafudacontract.CheckResult, error)
 	create func(context.Context, kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error)
 	get    func(context.Context, uint64) (*kafudacontract.OrderResult, error)
+}
+
+func (g directRehearsalGateway) Check(ctx context.Context, req kafudacontract.CheckRequest) (*kafudacontract.CheckResult, error) {
+	return g.check(ctx, req)
+}
+
+const directRehearsalSession = "local-rehearsal-session"
+
+func newDirectRehearsalBuyerGateway(f directCheckoutFixture) kafudacontract.Gateway {
+	plan := f.sku.SpecValuesJSON["plan"].(string)
+	country := f.sku.SpecValuesJSON["country"].(string)
+	product := "gpt"
+	if plan == "credit250" {
+		product = "gpt_credits"
+	}
+	const quoteID = "local-buyer-quote"
+	var orderSequence atomic.Uint64
+	return directRehearsalGateway{
+		check: func(_ context.Context, req kafudacontract.CheckRequest) (*kafudacontract.CheckResult, error) {
+			if req.Session != directRehearsalSession {
+				return nil, kafudacontract.ErrCheckSessionInvalid
+			}
+			if req.Country != country || req.PayMode != "auto_card" || req.ProductCode != directRehearsalCard {
+				return nil, kafudadomain.ErrInvalidTransition
+			}
+			return &kafudacontract.CheckResult{Country: req.Country, PayMode: req.PayMode, Plans: []kafudacontract.Quote{{
+				Plan: plan, Status: "available", Kind: "new", QuoteID: quoteID, PriceCents: 900,
+				ExpiresAt: time.Now().Add(time.Minute),
+				AutoCard:  &kafudacontract.AutoCard{ProductCode: directRehearsalCard, LoadCents: 100, TotalCents: 1000},
+			}}}, nil
+		},
+		create: func(_ context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
+			if req.QuoteID != quoteID || req.Reference == "" {
+				return nil, kafudadomain.ErrInvalidTransition
+			}
+			return &kafudacontract.OrderResult{ID: 1000 + orderSequence.Add(1), Reference: req.Reference, Product: product, Plan: plan, Country: country, Status: "completed"}, nil
+		},
+	}
 }
 
 func (g directRehearsalGateway) CreateOrder(ctx context.Context, req kafudacontract.CreateOrderRequest) (*kafudacontract.OrderResult, error) {
@@ -229,13 +269,19 @@ func (a *directRehearsalActions) advance(c *gin.Context) {
 	case "manual_delivery":
 		status = "failed"
 	}
-	// Advance to the time of the scheduled lookup, at most a few milliseconds
-	// forward for these local-only attempts.
+	// Wait for the short rehearsal lease so subsequent real-time admin
+	// operations do not encounter a future fulfillment timestamp.
+	if delay := time.Until(*attempt.NextPollAt); delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+	}
 	lookupStarted := time.Now()
 	startedAt := lookupStarted.UTC()
-	if attempt.NextPollAt.After(startedAt) {
-		startedAt = *attempt.NextPollAt
-	}
 	gateway := directRehearsalGateway{get: func(_ context.Context, upstreamID uint64) (*kafudacontract.OrderResult, error) {
 		result := directRehearsalSupplierOrder(record, attempt, status)
 		if upstreamID != result.ID {

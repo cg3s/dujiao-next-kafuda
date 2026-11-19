@@ -248,6 +248,18 @@ func KeyByUserIDAndIP(c *gin.Context) string {
 	return fmt.Sprintf("%v|%s", userID, c.ClientIP())
 }
 
+func KeyByUserID(c *gin.Context) string {
+	if userID, exists := c.Get("user_id"); exists {
+		return fmt.Sprint(userID)
+	}
+	return c.ClientIP()
+}
+
+func KeyByUserIDAndOrderNo(c *gin.Context) string {
+	orderNo := strings.TrimSpace(c.Param("order_no"))
+	return KeyByUserID(c) + "|" + orderNo[:min(len(orderNo), 64)]
+}
+
 // KeyByIPAndHeader 以 "IP|header 值" 作为限流 key。
 // 限流位于鉴权之前，header 未经校验，因此计数必须同时绑定来源 IP。
 func KeyByIPAndHeader(header string) RateLimitKeyFunc {

@@ -234,6 +234,19 @@
     "viewDetail": "View Details"
   },
   "directPurchase": {
+    "authorization": {
+      "title": "Authorize recharge",
+      "description": "Confirm your purchased plan and region, then submit the login session for the account you want to recharge.",
+      "sessionLabel": "Login session",
+      "sessionPlaceholder": "Paste a session token or JSON containing sessionToken",
+      "show": "Show",
+      "hide": "Hide",
+      "privacy": "The store sends the session token to Kafuda to check eligibility and does not store it.",
+      "submit": "Submit recharge",
+      "submitting": "Checking and submitting…",
+      "accepted": "Request processed. Check your recharge progress for updates.",
+      "failed": "The submission result could not be confirmed. Check your recharge progress for updates."
+    },
     "progress": {
       "title": "Recharge progress",
       "waiting_session": "Awaiting submission",

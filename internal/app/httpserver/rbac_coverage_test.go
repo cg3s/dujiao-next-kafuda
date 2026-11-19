@@ -384,8 +384,8 @@ func TestKafudaAdminRoutesEnforceScopedPermissions(t *testing.T) {
 	}
 }
 
-func TestKafudaProductionStartupBlocksDirectCheckoutUntilFulfillmentWired(t *testing.T) {
-	testKafudaProductionStartupDirectGate(t, "https://supplier.example.test", "test-catalog-api-key", "fulfillment_not_wired")
+func TestKafudaProductionStartupBlocksDirectCheckoutWithoutWorker(t *testing.T) {
+	testKafudaProductionStartupDirectGate(t, "https://supplier.example.test", "test-catalog-api-key", "worker_not_ready")
 }
 
 func TestKafudaProductionStartupKeepsShopAvailableWithInvalidGateway(t *testing.T) {

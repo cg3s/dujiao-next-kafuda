@@ -148,6 +148,12 @@ func registerStorefrontRoutes(
 		ordertransport.RegisterUserPreviewRoute(user, orderPreviewHandler)
 		ordertransport.RegisterUserPaymentChannelsRoute(user, userOrderHandler)
 		ordertransport.RegisterUserReadRoutes(user, userOrderHandler)
+		directLimit := middleware.RateLimitRule{Prefix: loginRule.Prefix + ":direct:user", WindowSeconds: 60, MaxRequests: 12}
+		orderLimit := middleware.RateLimitRule{Prefix: loginRule.Prefix + ":direct:order", WindowSeconds: 60, MaxRequests: 6}
+		ordertransport.RegisterUserDirectAuthorizationRoute(user, userOrderHandler,
+			middleware.RateLimitMiddleware(redisClient, directLimit, middleware.KeyByUserID),
+			middleware.RateLimitMiddleware(redisClient, orderLimit, middleware.KeyByUserIDAndOrderNo),
+		)
 		ordertransport.RegisterUserCancelRoute(user, userOrderHandler)
 		paymenttransport.RegisterUserWriteRoutes(user, paymentWriteHandler)
 		paymenttransport.RegisterUserLatestRoute(user, paymentLatestHandler)

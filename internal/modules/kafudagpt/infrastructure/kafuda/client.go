@@ -22,6 +22,7 @@ const (
 	maxResponseBytes       = 2 << 20
 	maxOrderRejectionBytes = 4 << 10
 	orderPath              = "/api/v1/gpt/orders"
+	checkPath              = "/api/v1/gpt/check"
 )
 
 var safeKey = regexp.MustCompile(`^[a-zA-Z0-9._:-]{1,80}$`)
@@ -87,7 +88,7 @@ func (c *Client) Check(ctx context.Context, input kafudacontract.CheckRequest) (
 			} `json:"auto_card"`
 		} `json:"plans"`
 	}
-	if err := c.request(ctx, http.MethodPost, "/api/v1/gpt/check", input, "", &wire); err != nil {
+	if err := c.request(ctx, http.MethodPost, checkPath, input, "", &wire); err != nil {
 		return nil, err
 	}
 	// An explicit null means unlocked. An omitted result cannot establish eligibility.
@@ -206,8 +207,8 @@ func (c *Client) request(ctx context.Context, method, path string, input any, ke
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if method == http.MethodPost && path == orderPath && resp.StatusCode == http.StatusBadRequest {
-			if rejection := readOrderRejection(resp.Body); rejection != nil {
+		if method == http.MethodPost && resp.StatusCode == http.StatusBadRequest {
+			if rejection := readRejection(path, resp.Body); rejection != nil {
 				return rejection
 			}
 		}
@@ -264,9 +265,12 @@ func retryAfterDelay(header string, now time.Time) time.Duration {
 	return 0
 }
 
-// readOrderRejection recognizes only documented reasons that reject creation.
+// readRejection recognizes documented errors only on their corresponding endpoint.
 // Return a local sentinel, never the supplier's code, message, or details.
-func readOrderRejection(body io.Reader) error {
+func readRejection(path string, body io.Reader) error {
+	if path != orderPath && path != checkPath {
+		return nil
+	}
 	data, err := io.ReadAll(io.LimitReader(body, maxOrderRejectionBytes+1))
 	if err != nil || len(data) > maxOrderRejectionBytes {
 		return nil
@@ -278,6 +282,12 @@ func readOrderRejection(body io.Reader) error {
 		Data json.RawMessage `json:"data"`
 	}
 	if json.Unmarshal(data, &wire) != nil || len(wire.Data) > 0 && !bytes.Equal(wire.Data, []byte("null")) {
+		return nil
+	}
+	if path == checkPath {
+		if wire.Error.Code == "session_invalid" {
+			return kafudacontract.ErrCheckSessionInvalid
+		}
 		return nil
 	}
 	switch wire.Error.Code {

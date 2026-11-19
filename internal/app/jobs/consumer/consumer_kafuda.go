@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dujiao-next/internal/logger"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
@@ -39,7 +40,15 @@ func (c *Consumer) handleKafudaRecoverChecks(ctx context.Context, _ *asynq.Task)
 	if module.Gateway == nil {
 		return recoveryErr
 	}
-	return errors.Join(recoveryErr, c.pollKnownKafudaOrders(ctx))
+	pollErr := c.pollKnownKafudaOrders(ctx)
+	if c.Config != nil && c.Config.KafudaGPT.SalesEnabled && module.Catalog != nil {
+		refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := module.Catalog.RefreshBeforeExpiry(refreshCtx, c.Config.KafudaPollInterval()); err != nil {
+			logger.Warnw("kafuda_scheduled_catalog_refresh_failed")
+		}
+	}
+	return errors.Join(recoveryErr, pollErr)
 }
 
 func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {

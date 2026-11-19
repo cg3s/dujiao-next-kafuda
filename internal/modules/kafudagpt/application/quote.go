@@ -47,8 +47,11 @@ func (s *Service) PrepareCheckedSubmission(ctx context.Context, attemptID, order
 		expiresAt = quote.ExpiresAt
 		return nil
 	})
-	if err != nil || rejection != nil {
-		return kafudacontract.CreateOrderRequest{}, time.Time{}, errors.Join(rejection, err)
+	if err != nil {
+		return kafudacontract.CreateOrderRequest{}, time.Time{}, err
+	}
+	if rejection != nil {
+		return kafudacontract.CreateOrderRequest{}, time.Time{}, rejection
 	}
 	return request, expiresAt, nil
 }

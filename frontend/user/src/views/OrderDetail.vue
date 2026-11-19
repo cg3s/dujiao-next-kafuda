@@ -80,6 +80,8 @@
         </div>
 
         <DirectOrderStatus v-if="directOrderNo" :status="directStatus" :unavailable="directStatusUnavailable" :format-date="formatDate" />
+        <DirectOrderAuthorization v-if="directOrderNo" :key="directOrderNo" :order-no="directOrderNo"
+          :available="directStatus?.stage === 'waiting_session' && !directStatusUnavailable" @submitted="refreshDirectStatus" />
 
         <div v-if="order.children && order.children.length > 0"
           class="rounded-2xl border bg-card shadow-sm p-6">
@@ -449,6 +451,7 @@ import BreadcrumbNav from '../components/BreadcrumbNav.vue'
 import SmartImage from '../components/SmartImage.vue'
 import { useOrderDetail } from '../composables/useOrderDetail'
 import { isDirectOrderFulfillment } from '../utils/directOrderStatus'
+import DirectOrderAuthorization from '../components/DirectOrderAuthorization.vue'
 import DirectOrderStatus from '../components/DirectOrderStatus.vue'
 
 const { t } = useI18n()
@@ -462,6 +465,6 @@ const {
   hasItemDiscount, formatItemDiscountTotal, formatItemPaidAmount, resolvedChildStatus,
   fulfillmentDeliveryLines, instructionBlocks, isFulfillmentTruncated,
   fulfillmentCopied, handleCopyFulfillment, fulfillmentDownloading, handleDownloadFulfillment,
-  directOrderNo, directStatus, directStatusUnavailable,
+  directOrderNo, directStatus, directStatusUnavailable, refreshDirectStatus,
 } = useOrderDetail()
 </script>

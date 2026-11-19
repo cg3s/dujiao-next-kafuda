@@ -9,6 +9,7 @@ import (
 )
 
 var (
+	ErrCheckSessionInvalid         = errors.New("kafuda rejected the buyer session")
 	ErrCreateQuoteExpired          = errors.New("kafuda rejected an expired order quote")
 	ErrMerchantBalanceInsufficient = errors.New("kafuda rejected an order for insufficient merchant balance")
 )

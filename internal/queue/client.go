@@ -1,8 +1,11 @@
 package queue
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dujiao-next/internal/config"
@@ -21,6 +24,10 @@ type Client struct {
 	client       *asynq.Client
 	enabled      bool
 	defaultQueue string
+	inspector    *asynq.Inspector
+	workerMu     sync.Mutex
+	workerReady  bool
+	workerCheck  time.Time
 }
 
 // NewClient 创建队列客户端
@@ -30,10 +37,12 @@ func NewClient(cfg *config.QueueConfig) (*Client, error) {
 	}
 	opt := buildRedisOpt(cfg)
 	client := asynq.NewClient(opt)
+	opt.DialTimeout, opt.ReadTimeout, opt.WriteTimeout = 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond
 	return &Client{
 		client:       client,
 		enabled:      true,
 		defaultQueue: DefaultQueue,
+		inspector:    asynq.NewInspector(opt),
 	}, nil
 }
 
@@ -47,7 +56,45 @@ func (c *Client) Close() error {
 	if c == nil || c.client == nil {
 		return nil
 	}
-	return c.client.Close()
+	return errors.Join(c.client.Close(), c.inspector.Close())
+}
+
+// KafudaWorkerReady uses the Redis queue's worker and scheduler heartbeats.
+// A queue client alone cannot recover a paid order after the process restarts.
+func (c *Client) KafudaWorkerReady(ctx context.Context) bool {
+	if !c.Enabled() || ctx.Err() != nil {
+		return false
+	}
+	c.workerMu.Lock()
+	defer c.workerMu.Unlock()
+	if time.Since(c.workerCheck) >= 2*time.Second {
+		c.workerReady = c.hasKafudaWorker()
+		c.workerCheck = time.Now()
+	}
+	return ctx.Err() == nil && c.workerReady
+}
+
+func (c *Client) hasKafudaWorker() bool {
+	workers, err := c.inspector.Servers()
+	if err != nil {
+		return false
+	}
+	for _, worker := range workers {
+		if worker.Status != "active" || worker.Queues[c.defaultQueue] <= 0 {
+			continue
+		}
+		entries, err := c.inspector.SchedulerEntries()
+		if err != nil {
+			return false
+		}
+		for _, entry := range entries {
+			if entry.Task.Type() == TaskKafudaRecoverChecks {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // EnqueueOrderStatusEmail 推送订单状态邮件任务

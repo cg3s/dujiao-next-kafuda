@@ -1,6 +1,7 @@
 package kafudawiring
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -30,7 +31,7 @@ type Module struct {
 	gatewayConfigInvalid bool
 }
 
-func New(db *gorm.DB, cfg config.KafudaGPTConfig, orders ordercontract.Store) (*Module, error) {
+func New(db *gorm.DB, cfg config.KafudaGPTConfig, orders ordercontract.Store, workerReady func(context.Context) bool) (*Module, error) {
 	store := kafudastore.New(db)
 	var gateway kafudacontract.Gateway
 	gatewayConfigInvalid := false
@@ -59,6 +60,7 @@ func New(db *gorm.DB, cfg config.KafudaGPTConfig, orders ordercontract.Store) (*
 			ProductCode:             cfg.ProductCode,
 			MaxCostCents:            cfg.MaxCostCents,
 			AllowedKinds:            cfg.AllowedKinds,
+			WorkerReady:             workerReady,
 		}),
 		gatewayConfigInvalid: gatewayConfigInvalid,
 	}, nil

@@ -128,6 +128,29 @@ func (g failingCatalogGateway) Catalog(context.Context) (json.RawMessage, error)
 	return g.data, g.err
 }
 
+func TestScheduledCatalogRefreshKeepsReviewedSKUAvailable(t *testing.T) {
+	_, store, _ := database(t)
+	now := time.Now().UTC()
+	const plan, country, card = "plus", "PH", "checkout-card"
+	initial := &kafudadomain.Catalog{Profile: "default", Enabled: true, SyncedAt: now.Add(-time.Hour), ExpiresAt: now.Add(15 * time.Second),
+		Options: []kafudadomain.CatalogOption{{Plan: plan, Country: country, Product: "gpt", Label: "Plus", Available: true}},
+		Cards:   []kafudadomain.CardProduct{{ProductCode: card}},
+	}
+	if err := store.SaveCatalog(t.Context(), initial); err != nil {
+		t.Fatal(err)
+	}
+	gateway := failingCatalogGateway{data: json.RawMessage(`{"enabled":true,"plans":[{"plan":"plus","label":"Plus","credit":false,"regions":[{"country":"PH","currency":"PHP","estimated_plan_usd_cents":1000,"estimated_local_minor":55000}]}],"auto_card_products":[{"product_code":"checkout-card","restriction_reason":null}]}`)}
+	service := kafudaapp.NewCatalogService(store, gateway, initial.Profile, time.Hour)
+	if err := service.RefreshBeforeExpiry(t.Context(), 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := service.Cached(t.Context())
+	if err != nil || fresh == nil || !fresh.Available(plan, country, initial.ExpiresAt) ||
+		fresh.Revision(plan, country) != initial.Revision(plan, country) {
+		t.Fatalf("scheduled refresh did not preserve reviewed availability: %+v (%v)", fresh, err)
+	}
+}
+
 func TestFailedCatalogSyncPreservesLastValidHistory(t *testing.T) {
 	_, store, _ := database(t)
 	ctx, now := context.Background(), time.Now().UTC()

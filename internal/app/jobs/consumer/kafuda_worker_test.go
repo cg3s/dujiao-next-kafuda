@@ -120,7 +120,7 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 	}
 	store := gormstore.New(db)
 	orders := orderstore.New(db, "test-guest-credential-secret-with-32-bytes")
-	module, err := kafudawiring.New(db, config.KafudaGPTConfig{}, orders)
+	module, err := kafudawiring.New(db, config.KafudaGPTConfig{}, orders, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -822,7 +822,7 @@ func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway, orderIDs .
 	}
 	store := gormstore.New(db)
 	orders := orderstore.New(db, "test-guest-credential-secret-with-32-bytes")
-	module, err := kafudawiring.New(db, config.KafudaGPTConfig{}, orders)
+	module, err := kafudawiring.New(db, config.KafudaGPTConfig{}, orders, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

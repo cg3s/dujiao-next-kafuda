@@ -47,6 +47,8 @@
       </div>
 
       <DirectOrderStatus v-if="directOrderNo" class="mb-[18px]" :status="directStatus" :unavailable="directStatusUnavailable" :format-date="formatDate" />
+      <DirectOrderAuthorization v-if="directOrderNo" :key="directOrderNo" class="mb-[18px]" :order-no="directOrderNo"
+        :available="directStatus?.stage === 'waiting_session' && !directStatusUnavailable" @submitted="refreshDirectStatus" />
 
       <VaultOrderBody
         :order="order"
@@ -66,12 +68,13 @@ import { Button } from '@/components/ui/button'
 import VaultOrderBody from './components/VaultOrderBody.vue'
 import { useOrderDetail } from '../../composables/useOrderDetail'
 import DirectOrderStatus from '../../components/DirectOrderStatus.vue'
+import DirectOrderAuthorization from '../../components/DirectOrderAuthorization.vue'
 
 const { t } = useI18n()
 
 const {
   loading, order, orderOffline, orderLoadFailed, debouncedLoadOrder, cancelOrder, fulfillmentDownloading, handleDownloadFulfillment,
   statusLabel, statusVariant, formatDate, formatMoney,
-  directOrderNo, directStatus, directStatusUnavailable,
+  directOrderNo, directStatus, directStatusUnavailable, refreshDirectStatus,
 } = useOrderDetail()
 </script>

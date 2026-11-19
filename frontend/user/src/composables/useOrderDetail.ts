@@ -29,6 +29,7 @@ export function useOrderDetail() {
   const fulfillmentDownloading = ref(false)
   const orderNo = computed(() => String(route.params.order_no || '').trim())
   const directStatus = ref<DirectOrderStatus | null>(null)
+  const directStatusRefresh = ref(0)
   const directStatusUnavailable = ref(false)
   const currentOrder = computed(() => order.value?.order_no === orderNo.value ? order.value : null)
   const directOrderNo = computed(() => directStatusOrderNo(currentOrder.value))
@@ -216,9 +217,11 @@ export function useOrderDetail() {
 
   watch(pendingDirectOrderNo, scheduleDirectPaymentRefresh)
 
-  watch(directOrderNo, (number, _, onCleanup) => {
-    directStatus.value = null
-    directStatusUnavailable.value = false
+  watch([directOrderNo, directStatusRefresh], ([number], [previousNumber], onCleanup) => {
+    if (number !== previousNumber) {
+      directStatus.value = null
+      directStatusUnavailable.value = false
+    }
     if (!number) return
     onCleanup(startDirectOrderPolling(
       async () => {
@@ -309,6 +312,7 @@ export function useOrderDetail() {
     directOrderNo,
     directStatus,
     directStatusUnavailable,
+    refreshDirectStatus: () => { directStatusRefresh.value++ },
     debouncedLoadOrder,
     cancelOrder,
     fulfillmentDownloading,

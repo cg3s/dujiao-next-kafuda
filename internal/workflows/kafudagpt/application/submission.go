@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
@@ -12,8 +13,50 @@ import (
 )
 
 var errCreateResultMissing = errors.New("kafuda create order result missing")
+var ErrBuyerCheckRetry = errors.New("kafuda buyer check temporarily unavailable")
 
 const submissionRecoveryTimeout = 5 * time.Second
+
+// SubmitBuyerSession reserves the paid order as a whole before checking the
+// supplied session. A repeated request never checks or submits an active attempt.
+func SubmitBuyerSession(ctx context.Context, orders ordercontract.Store, records *kafudaapp.Service, gateway kafudacontract.Gateway, orderNo string, buyerID uint, session string, pollInterval time.Duration) (uint, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, false, err
+	}
+	now := time.Now().UTC()
+	reservation, err := ReserveBuyerAttempt(orders, ordercontract.TenantScope{}, orderNo, buyerID, now, now.Add(time.Minute))
+	if err != nil {
+		return 0, false, err
+	}
+	if !reservation.Created {
+		return 0, false, nil
+	}
+	snapshot := reservation.Recharge.Snapshot
+	checkCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	check, err := gateway.Check(checkCtx, kafudacontract.CheckRequest{
+		Country: snapshot.Country, PayMode: snapshot.PayMode, ProductCode: snapshot.ProductCode, Session: session,
+	})
+	cancel()
+	if err == nil && check != nil && ctx.Err() == nil {
+		completed, err := SubmitCheckedQuote(ctx, orders, records, gateway, reservation, *check, pollInterval)
+		return reservation.Recharge.OrderID, completed, err
+	}
+
+	recoverCtx, cancelRecovery := context.WithTimeout(context.WithoutCancel(ctx), submissionRecoveryTimeout)
+	defer cancelRecovery()
+	observedAt := time.Now().UTC()
+	attemptID := reservation.Attempt.ID
+	var upstream *kafudacontract.APIError
+	switch {
+	case errors.Is(err, kafudacontract.ErrCheckSessionInvalid):
+		return 0, false, errors.Join(err, records.CheckRejected(recoverCtx, attemptID, true, observedAt))
+	case errors.As(err, &upstream) && upstream.HTTPStatus == http.StatusBadRequest:
+		// A definitive business rejection occurs before any chargeable request.
+		return 0, false, records.CheckRejected(recoverCtx, attemptID, false, observedAt)
+	default:
+		return 0, false, errors.Join(ErrBuyerCheckRetry, records.InterruptCheck(recoverCtx, attemptID, observedAt))
+	}
+}
 
 // SubmitCheckedQuote consumes a server-side check result and a newly reserved
 // attempt. The caller should enqueue completion mail when completed is true.

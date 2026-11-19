@@ -26,6 +26,7 @@ import (
 	"github.com/dujiao-next/internal/constants"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	userauthapp "github.com/dujiao-next/internal/modules/identity/userauth/application"
+	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	orderhttp "github.com/dujiao-next/internal/modules/order/transport/http"
@@ -37,7 +38,9 @@ import (
 	walletapp "github.com/dujiao-next/internal/modules/wallet/application"
 	walletdomain "github.com/dujiao-next/internal/modules/wallet/domain"
 	walletstore "github.com/dujiao-next/internal/modules/wallet/infrastructure/gormstore"
+	"github.com/dujiao-next/internal/platform/http/response"
 	"github.com/dujiao-next/internal/shared/money"
+	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -114,7 +117,10 @@ func assembleDirectRehearsalRouter(t *testing.T, f directCheckoutFixture, storef
 	deps := &container.Container{
 		OrderStore: f.options.OrderStore, OrderService: orderapp.NewOrderService(f.options), UserStore: f.options.UserStore,
 		WalletRepo: wallets, WalletService: walletService, PaymentStore: payments, PaymentChannelStore: channels,
-		KafudaGPT: &kafudawiring.Module{Store: f.store, Commerce: f.commerce},
+		KafudaGPT: &kafudawiring.Module{
+			Store: f.store, Commerce: f.commerce, Gateway: newDirectRehearsalBuyerGateway(f),
+			Records: kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), f.options.OrderStore),
+		},
 		PaymentService: paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{
 			OrderStore: f.options.OrderStore, ProductRepo: f.options.ProductStore, ProductSKURepo: f.options.ProductSKUStore,
 			PaymentStore: payments, ChannelStore: channels, UserStore: f.options.UserStore, WalletRepo: wallets, WalletService: walletService,
@@ -158,6 +164,7 @@ func assembleDirectRehearsalRouter(t *testing.T, f directCheckoutFixture, storef
 	orderhttp.RegisterUserCreateRoute(member, orders.Create)
 	orderhttp.RegisterUserCreateAndPayRoute(member, orders.Create)
 	orderhttp.RegisterUserReadRoutes(member, orders.User)
+	orderhttp.RegisterUserDirectAuthorizationRoute(member, orders.User)
 	orderhttp.RegisterUserPaymentChannelsRoute(member, orders.User)
 	member.GET("/wallet", walletwiring.New(deps).User.GetWallet)
 	newDirectRehearsalActions(f, adminDir != "", renewalCancelled).register(member)
@@ -172,6 +179,63 @@ func assembleDirectRehearsalRouter(t *testing.T, f directCheckoutFixture, storef
 
 func TestDirectBuyerFlowRehearsal(t *testing.T) {
 	forEachDirectRehearsalDatabase(t, testDirectBuyerFlowRehearsal)
+}
+
+func TestDirectBuyerAuthorizationRehearsal(t *testing.T) {
+	forEachDirectRehearsalDatabase(t, func(t *testing.T, dsn string) {
+		f, router, buyer, other := newConfiguredDirectRehearsalRouter(t, "", "", "", directRehearsalOptions{postgresDSN: dsn})
+		const orders = "/api/v1/orders"
+		checkout := fmt.Sprintf(`{"items":[{"product_id":%d,"sku_id":%d,"quantity":1}]`, f.product.ID, f.sku.ID)
+		type createdOrder struct {
+			OrderNo string `json:"order_no"`
+			Paid    bool   `json:"order_paid"`
+		}
+		var draft, paid createdOrder
+		readDirectRehearsalJSON(t, router, http.MethodPost, orders, checkout+`}`, buyer, response.CodeOK, &draft)
+		readDirectRehearsalJSON(t, router, http.MethodPost, orders+"/create-and-pay", checkout+`,"use_balance":true}`, buyer, response.CodeOK, &paid)
+		if draft.OrderNo == "" || !paid.Paid || paid.OrderNo == "" {
+			t.Fatal("expected an unpaid order and a wallet-paid order")
+		}
+		authorize := func(orderNo, body, token string, code int) string {
+			t.Helper()
+			return readDirectRehearsalJSON(t, router, http.MethodPost, orders+"/"+orderNo+"/direct-authorize", body, token, code, nil)
+		}
+		const private = "abc-private-access-token"
+		validBody := fmt.Sprintf(`{"session":%q}`, fmt.Sprintf(`{"sessionToken":%q,"accessToken":%q}`, directRehearsalSession, private))
+		authorize(draft.OrderNo, validBody, buyer, response.CodeBadRequest)
+		authorize(paid.OrderNo, validBody, other, response.CodeNotFound)
+		authorize(paid.OrderNo, `{"session":"eyJfixture.abc.def"}`, buyer, response.CodeBadRequest)
+		authorize(paid.OrderNo, `{"session":"local-rehearsal-session","access_token":"ignored"}`, buyer, response.CodeBadRequest)
+		authorize(paid.OrderNo, validBody+strings.Repeat(" ", 32<<10), buyer, response.CodeBadRequest)
+		if msg := authorize(paid.OrderNo, `{"session":"expired-fixture"}`, buyer, response.CodeBadRequest); !strings.Contains(msg, "expired") {
+			t.Fatal("invalid sessions should offer the buyer a retry")
+		}
+		var progress orderhttp.DirectStatus
+		progressPath := orders + "/" + paid.OrderNo + "/direct-status"
+		readDirectRehearsalJSON(t, router, http.MethodGet, progressPath, "", buyer, response.CodeOK, &progress)
+		if progress.Stage != string(kafudadomain.StageWaiting) {
+			t.Fatalf("expired Session left order in %s", progress.Stage)
+		}
+		authorize(paid.OrderNo, validBody, buyer, response.CodeOK)
+		authorize(paid.OrderNo, validBody, buyer, response.CodeBadRequest)
+		readDirectRehearsalJSON(t, router, http.MethodGet, progressPath, "", buyer, response.CodeOK, &progress)
+		if progress.Stage != string(kafudadomain.StageCompleted) {
+			t.Fatalf("buyer sees stage %q after successful submission", progress.Stage)
+		}
+		var attempts []kafudadomain.Attempt
+		if err := f.db.Order("id").Find(&attempts).Error; err != nil || len(attempts) != 2 ||
+			attempts[0].Status != kafudadomain.AttemptFailed || attempts[1].Status != kafudadomain.AttemptCompleted {
+			t.Fatalf("expected exactly one rejected check and one completed attempt: %v", err)
+		}
+		stored, err := json.Marshal(attempts)
+		if err != nil || strings.Contains(string(stored), directRehearsalSession) || strings.Contains(string(stored), private) {
+			t.Fatal("credential persisted in attempts")
+		}
+		var deliveries int64
+		if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Count(&deliveries).Error; err != nil || deliveries != 1 {
+			t.Fatalf("expected a single fulfillment, got %d (%v)", deliveries, err)
+		}
+	})
 }
 
 func testDirectBuyerFlowRehearsal(t *testing.T, postgresDSN string) {

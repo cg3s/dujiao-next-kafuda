@@ -69,6 +69,14 @@ func kafudaRedisFixture(t *testing.T, dbIndex int) (*config.QueueConfig, *asynq.
 
 func TestRedisKafudaScheduledRecoveryAfterWorkerRestart(t *testing.T) {
 	cfg, inspector := kafudaRedisFixture(t, 15)
+	queueClient, err := queue.NewClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = queueClient.Close() })
+	if queueClient.KafudaWorkerReady(t.Context()) {
+		t.Fatal("queue connection alone must not make Direct purchasable")
+	}
 	path := filepath.Join(t.TempDir(), "worker.sqlite")
 	open := func() (*gorm.DB, func() error) {
 		t.Helper()
@@ -92,7 +100,7 @@ func TestRedisKafudaScheduledRecoveryAfterWorkerRestart(t *testing.T) {
 	newWorker := func(db *gorm.DB, gateway kafudacontract.Gateway) (*Service, *kafudawiring.Module, ordercontract.Store) {
 		t.Helper()
 		orders := orderstore.New(db, "test-guest-credential-secret-with-32-bytes")
-		module, err := kafudawiring.New(db, appConfig.KafudaGPT, orders)
+		module, err := kafudawiring.New(db, appConfig.KafudaGPT, orders, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -200,6 +208,7 @@ func TestRedisKafudaScheduledRecoveryAfterWorkerRestart(t *testing.T) {
 	}
 	t.Cleanup(afterRestart.server.Shutdown)
 	awaitKafudaRedis(t, 15*time.Second, func() bool { return runs.Load() >= 2 })
+	awaitKafudaRedis(t, 15*time.Second, func() bool { return queueClient.KafudaWorkerReady(ctx) })
 	assertRecovered := func(original *kafudadomain.Attempt, stage kafudadomain.Stage, status kafudadomain.AttemptStatus) (*kafudadomain.Recharge, *kafudadomain.Attempt) {
 		t.Helper()
 		recharge, err := current.Store.GetRecharge(ctx, original.OrderID)
