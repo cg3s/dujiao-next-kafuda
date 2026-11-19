@@ -117,6 +117,30 @@ test('known offline polls pause, reconnect while visible and detach when stopped
   assert.deepEqual(seen, [null, 'manual_review', null, 'manual_review'])
 })
 
+test('restoring a cached order page refreshes its Direct status and detaches when stopped', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const page = testPage()
+  const connectivity = testConnectivity()
+  let requests = 0
+  const stop = startDirectOrderPolling(async () => {
+    requests++
+    return { stage: 'manual_review', updated_at: '2026-11-18T08:00:00Z' }
+  }, () => {}, page, undefined, connectivity)
+  await Promise.resolve()
+  assert.equal(requests, 1)
+  const show = (persisted: boolean) => connectivity.events.dispatchEvent(Object.assign(new Event('pageshow'), { persisted }))
+  show(false)
+  assert.equal(requests, 1)
+  show(true)
+  show(true)
+  assert.equal(requests, 2)
+  await Promise.resolve()
+  stop()
+  show(true)
+  t.mock.timers.tick(60_000)
+  assert.equal(requests, 2)
+})
+
 test('reconnect during a failing in-flight poll refreshes immediately without overlapping requests', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const connectivity = testConnectivity()

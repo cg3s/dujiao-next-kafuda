@@ -78,6 +78,7 @@ export function startDirectOrderPolling(
     page.removeEventListener('visibilitychange', onVisibilityChange)
     connectivity?.events.removeEventListener('online', onOnline)
     connectivity?.events.removeEventListener('offline', onOffline)
+    connectivity?.events.removeEventListener('pageshow', onPageShow)
   }
   const schedule = (interval: number, retryAfterReconnect: boolean) => {
     if (stopped || page.visibilityState !== 'visible' || !isOnline()) return
@@ -131,6 +132,9 @@ export function startDirectOrderPolling(
     clearTimeout(timer)
     void refresh()
   }
+  const onPageShow = (event: Event) => {
+    if ((event as PageTransitionEvent).persisted) onVisibilityChange()
+  }
   const onOffline = () => {
     clearTimeout(timer)
     if (!terminalStage()) onUpdate(null)
@@ -144,6 +148,7 @@ export function startDirectOrderPolling(
   page.addEventListener('visibilitychange', onVisibilityChange)
   connectivity?.events.addEventListener('online', onOnline)
   connectivity?.events.addEventListener('offline', onOffline)
+  connectivity?.events.addEventListener('pageshow', onPageShow)
   void refresh()
   return stop
 }
