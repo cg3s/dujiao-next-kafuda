@@ -308,6 +308,9 @@ func (s *OrderService) UpdateOrderStatus(orderID uint, targetStatus string) (*or
 		err = s.orderStore.UpdateStatus(order.ID, target, updates)
 	}
 	if err != nil {
+		if errors.Is(err, ErrOrderStatusInvalid) {
+			return nil, ErrOrderStatusInvalid
+		}
 		return nil, ErrOrderUpdateFailed
 	}
 	if target == constants.OrderStatusCanceled && s.affiliateSvc != nil {
@@ -392,6 +395,16 @@ func (s *OrderService) cancelSingleOrderInTx(tx ordercontract.Transaction, order
 		return ErrOrderNotFound
 	}
 	orderStore := tx.Orders()
+	locked, err := orderStore.GetByIDForUpdateWithChildren(order.ID)
+	if err != nil {
+		return err
+	}
+	if locked == nil || locked.Status != constants.OrderStatusPendingPayment || locked.PaidAt != nil || locked.ParentID != nil || len(locked.Children) != 0 {
+		return ErrOrderStatusInvalid
+	}
+	locked.Fulfillment = order.Fulfillment // Preserve the association loaded for the admin response.
+	*order = *locked
+
 	productRepo := tx.Products()
 	productSKURepo := tx.ProductSKUs()
 	if err := orderStore.UpdateStatus(order.ID, target, updates); err != nil {

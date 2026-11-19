@@ -15,13 +15,30 @@ import (
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productstore "github.com/dujiao-next/internal/modules/catalog/product/store/gormstore"
+	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
+	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderstore "github.com/dujiao-next/internal/modules/order/infrastructure/gormstore"
 	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
 
 	"gorm.io/gorm"
 )
+
+func TestPostgresAdminSingleOrderCancelKeepsCommittedPayment(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	testAdminSingleOrderCancelKeepsCommittedPayment(t, func(t *testing.T) *gorm.DB {
+		db := openPostgresDirectRaceDB(t, dsn)
+		if err := db.AutoMigrate(&productdomain.Product{}, &productdomain.ProductSKU{}, &orderdomain.Order{}, &orderdomain.OrderItem{},
+			&fulfillmentdomain.Fulfillment{}, &cardsecretdomain.Secret{}, &paymentdomain.Payment{}); err != nil {
+			t.Fatal(err)
+		}
+		return db
+	})
+}
 
 func TestPostgresManualOrderCannotReopenAfterSKUDeletion(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
