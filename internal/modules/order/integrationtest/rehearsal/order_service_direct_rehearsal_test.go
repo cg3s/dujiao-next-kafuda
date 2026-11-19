@@ -48,6 +48,7 @@ var (
 	directRehearsalPort          = flag.Int("kafuda-rehearsal-port", 5179, "loopback port used by the buyer rehearsal")
 	directRehearsalStorefrontDir = flag.String("kafuda-rehearsal-storefront-dir", "", "absolute path to the built user storefront")
 	directRehearsalOnline        = flag.Bool("kafuda-rehearsal-online", false, "enable the synthetic same-origin online payment channel")
+	directRehearsalPostgres      = flag.Bool("kafuda-rehearsal-postgres", false, "use an isolated PostgreSQL schema through TEST_POSTGRES_DSN")
 	directRehearsalAdminDir      = flag.String("kafuda-rehearsal-admin-dir", "", "absolute path to the fullstack admin build")
 	directRehearsalProductType   = flag.String("kafuda-rehearsal-product", "gpt", "synthetic supplier product: gpt or gpt_credits")
 	directRehearsalRenewal       = flag.String("kafuda-rehearsal-renewal-cancelled", "", "supplier completion renewal result: true, false, or omitted")
@@ -56,6 +57,7 @@ var (
 type directRehearsalOptions struct {
 	productType      string
 	renewalCancelled *bool
+	postgresDSN      string
 }
 
 func newDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigin string, adminDirs ...string) (directCheckoutFixture, *gin.Engine, string, string) {
@@ -84,7 +86,7 @@ func newConfiguredDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigi
 		t.Fatal("rehearsal product must be gpt or gpt_credits")
 	}
 	gin.SetMode(gin.TestMode)
-	f := newDirectCheckoutFixture(t, productType)
+	f := newDirectCheckoutFixture(t, productType, options.postgresDSN)
 	if err := f.db.AutoMigrate(&kafudadomain.Attempt{}, &paymentdomain.Payment{}, &paymentdomain.PaymentChannel{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +167,10 @@ func newConfiguredDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigi
 }
 
 func TestDirectBuyerFlowRehearsal(t *testing.T) {
+	forEachDirectRehearsalDatabase(t, testDirectBuyerFlowRehearsal)
+}
+
+func testDirectBuyerFlowRehearsal(t *testing.T, postgresDSN string) {
 	renewalCancelled, renewalNotCancelled := true, false
 	for _, scenario := range []struct {
 		name        string
@@ -184,7 +190,9 @@ func TestDirectBuyerFlowRehearsal(t *testing.T) {
 			options: directRehearsalOptions{productType: "gpt_credits", renewalCancelled: &renewalCancelled}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			f, router, buyer, other := newConfiguredDirectRehearsalRouter(t, "", "", "", scenario.options)
+			options := scenario.options
+			options.postgresDSN = postgresDSN
+			f, router, buyer, other := newConfiguredDirectRehearsalRouter(t, "", "", "", options)
 			type data struct {
 				OrderNo     string          `json:"order_no"`
 				OrderPaid   bool            `json:"order_paid"`
@@ -325,6 +333,12 @@ func TestServeDirectBuyerRehearsal(t *testing.T) {
 		onlineOrigin = "http://" + addr
 	}
 	options := directRehearsalOptions{productType: *directRehearsalProductType}
+	if *directRehearsalPostgres {
+		options.postgresDSN = strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+		if options.postgresDSN == "" {
+			t.Fatal("-kafuda-rehearsal-postgres requires TEST_POSTGRES_DSN")
+		}
+	}
 	switch *directRehearsalRenewal {
 	case "true", "false":
 		cancelled := *directRehearsalRenewal == "true"
@@ -334,7 +348,9 @@ func TestServeDirectBuyerRehearsal(t *testing.T) {
 	default:
 		t.Fatal("rehearsal renewal result must be true or false")
 	}
-	_, router, _, _ := newConfiguredDirectRehearsalRouter(t, *directRehearsalStorefrontDir, onlineOrigin, *directRehearsalAdminDir, options)
+	ctx, stop := signal.NotifyContext(t.Context(), os.Interrupt)
+	defer stop()
+	fixture, router, _, _ := newConfiguredDirectRehearsalRouter(t, *directRehearsalStorefrontDir, onlineOrigin, *directRehearsalAdminDir, options)
 	listener, err := net.Listen("tcp4", addr)
 	if err != nil {
 		t.Fatal(err)
@@ -353,15 +369,13 @@ func TestServeDirectBuyerRehearsal(t *testing.T) {
 			router.ServeHTTP(w, r)
 		}),
 	}
-	ctx, stop := signal.NotifyContext(t.Context(), os.Interrupt)
-	defer stop()
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	consolePath := "/"
 	if *directRehearsalStorefrontDir != "" {
 		consolePath = "/rehearsal"
 	}
-	t.Logf("Synthetic buyer rehearsal: http://%s%s", addr, consolePath)
+	t.Logf("Synthetic buyer rehearsal (%s): http://%s%s", fixture.db.Dialector.Name(), addr, consolePath)
 	select {
 	case err := <-done:
 		t.Fatal(err)

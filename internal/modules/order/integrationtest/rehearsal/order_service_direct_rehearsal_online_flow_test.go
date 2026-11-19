@@ -21,13 +21,17 @@ import (
 )
 
 func TestDirectBuyerOnlinePaymentRehearsal(t *testing.T) {
+	forEachDirectRehearsalDatabase(t, testDirectBuyerOnlinePaymentRehearsal)
+}
+
+func testDirectBuyerOnlinePaymentRehearsal(t *testing.T, postgresDSN string) {
 	const origin = "http://127.0.0.1:5180"
 	const price = "100.00"
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>fixture storefront</html>"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f, router, buyer, other := newDirectRehearsalRouter(t, dir, origin)
+	f, router, buyer, other := newConfiguredDirectRehearsalRouter(t, dir, origin, "", directRehearsalOptions{postgresDSN: postgresDSN})
 	request := func(method, path, body, contentType, token string) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, origin+path, strings.NewReader(body)).WithContext(t.Context())
@@ -144,7 +148,7 @@ func TestDirectBuyerOnlinePaymentRehearsal(t *testing.T) {
 		originalRecharge.Snapshot.SellPrice.String() != price || originalRecharge.CurrentAttemptID != nil {
 		t.Fatalf("unexpected Direct checkout snapshot before payment: %+v, %v", originalRecharge, err)
 	}
-	assertNoWalletOrFulfillment := func() {
+	assertWalletUnchanged := func() {
 		t.Helper()
 		var wallet struct {
 			Balance string `json:"balance"`
@@ -153,7 +157,15 @@ func TestDirectBuyerOnlinePaymentRehearsal(t *testing.T) {
 		if wallet.Balance != "200.00" {
 			t.Fatalf("online checkout changed wallet balance: %s", wallet.Balance)
 		}
-		for _, model := range []any{&walletdomain.Transaction{}, &kafudadomain.Attempt{}, &fulfillmentdomain.Fulfillment{}} {
+		var count int64
+		if err := f.db.Model(&walletdomain.Transaction{}).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("online checkout created unexpected wallet transactions: %d, %v", count, err)
+		}
+	}
+	assertNoFulfillment := func() {
+		t.Helper()
+		assertWalletUnchanged()
+		for _, model := range []any{&kafudadomain.Attempt{}, &fulfillmentdomain.Fulfillment{}} {
 			var count int64
 			if err := f.db.Model(model).Count(&count).Error; err != nil || count != 0 {
 				t.Fatalf("online checkout created unexpected %T rows: %d, %v", model, count, err)
@@ -176,7 +188,7 @@ func TestDirectBuyerOnlinePaymentRehearsal(t *testing.T) {
 			payment.Amount.String() != price || payment.Currency != "CNY" || payment.GatewayOrderNo == "" {
 			t.Fatalf("unconfirmed checkout changed payment state: order=%s child=%s payment=%s", order.Status, child.Status, payment.Status)
 		}
-		assertNoWalletOrFulfillment()
+		assertNoFulfillment()
 	}
 	assertPending()
 
@@ -201,6 +213,10 @@ func TestDirectBuyerOnlinePaymentRehearsal(t *testing.T) {
 		assertPending()
 	}
 	readJSON(http.MethodGet, orderPath+"/direct-status", "", buyer, false, nil)
+	actionPath := "/api/v1/rehearsal/orders/" + url.PathEscape(created.OrderNo)
+	const selection = `{"result":"success"}`
+	readJSON(http.MethodPost, actionPath+"/authorize", selection, buyer, false, nil)
+	assertPending()
 
 	var channel paymentdomain.PaymentChannel
 	if err := f.db.First(&channel, channels[0].ID).Error; err != nil {
@@ -220,7 +236,7 @@ func TestDirectBuyerOnlinePaymentRehearsal(t *testing.T) {
 	}
 	assertPending()
 
-	confirmPath := "/api/v1/rehearsal/orders/" + url.PathEscape(created.OrderNo) + "/confirm-payment"
+	confirmPath := actionPath + "/confirm-payment"
 	readJSON(http.MethodPost, confirmPath, "", other, false, nil)
 	assertPending()
 	type stages struct {
@@ -251,11 +267,44 @@ func TestDirectBuyerOnlinePaymentRehearsal(t *testing.T) {
 			}
 		}
 		settledOrder, settledPayment = order, payment
-		assertNoWalletOrFulfillment()
+		assertNoFulfillment()
 	}
-	var status stages
-	readJSON(http.MethodGet, orderPath+"/direct-status", "", buyer, true, &status)
-	if status.Stage != string(kafudadomain.StageWaiting) {
-		t.Fatalf("buyer progress after online payment = %q", status.Stage)
+	assertStage := func(method, path, body string, want kafudadomain.Stage) {
+		t.Helper()
+		var status stages
+		readJSON(method, path, body, buyer, true, &status)
+		if status.Stage != string(want) {
+			t.Fatalf("%s %s returned stage %q, want %q", method, path, status.Stage, want)
+		}
 	}
+	assertStage(http.MethodGet, orderPath+"/direct-status", "", kafudadomain.StageWaiting)
+	for range 2 {
+		assertStage(http.MethodPost, actionPath+"/authorize", selection, kafudadomain.StageProcessing)
+	}
+	assertStage(http.MethodGet, orderPath+"/direct-status", "", kafudadomain.StageProcessing)
+	for range 2 {
+		assertStage(http.MethodPost, actionPath+"/advance", "", kafudadomain.StageCompleted)
+	}
+	assertStage(http.MethodGet, orderPath+"/direct-status", "", kafudadomain.StageCompleted)
+	order, payment := loadOrderAndPayment()
+	child := order.Children[0]
+	if order.Status != constants.OrderStatusCompleted || child.Status != constants.OrderStatusCompleted ||
+		order.PaidAt == nil || !order.PaidAt.Equal(*settledOrder.PaidAt) ||
+		payment.Status != constants.PaymentStatusSuccess || payment.ProviderRef != settledPayment.ProviderRef {
+		t.Fatalf("online fulfillment did not preserve payment and complete both orders: order=%s child=%s payment=%s", order.Status, child.Status, payment.Status)
+	}
+	recharge, err := f.store.GetRecharge(t.Context(), childID)
+	if err != nil || recharge == nil || !reflect.DeepEqual(recharge.Snapshot, originalRecharge.Snapshot) {
+		t.Fatalf("online fulfillment changed the original snapshot: %v", err)
+	}
+	var attempts []kafudadomain.Attempt
+	if err := f.db.Find(&attempts).Error; err != nil || len(attempts) != 1 || attempts[0].OrderID != childID {
+		t.Fatalf("expected one attempt for online checkout, got %d, %v", len(attempts), err)
+	}
+	var deliveries []fulfillmentdomain.Fulfillment
+	if err := f.db.Find(&deliveries).Error; err != nil || len(deliveries) != 1 || deliveries[0].OrderID != childID ||
+		deliveries[0].Type != constants.FulfillmentTypeKafudaGPT || deliveries[0].Payload != "" {
+		t.Fatalf("expected one content-free delivery for online checkout, got %d, %v", len(deliveries), err)
+	}
+	assertWalletUnchanged()
 }

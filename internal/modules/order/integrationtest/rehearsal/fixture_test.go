@@ -3,6 +3,8 @@ package rehearsal_test
 import (
 	"context"
 	"crypto/rand"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,7 +28,10 @@ import (
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
 	"github.com/glebarez/sqlite"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/shopspring/decimal"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -49,8 +54,23 @@ func (rehearsalOrderQueue) Enabled() bool                                  { ret
 func (rehearsalOrderQueue) EnqueueTimeoutCancel(uint, time.Duration) error { return nil }
 func (rehearsalOrderQueue) EnqueueStatusEmail(uint, string) error          { return nil }
 
-func newDirectCheckoutFixture(t *testing.T, productType string) directCheckoutFixture {
+func forEachDirectRehearsalDatabase(t *testing.T, run func(*testing.T, string)) {
 	t.Helper()
+	t.Run("sqlite", func(t *testing.T) { run(t, "") })
+	t.Run("postgres", func(t *testing.T) {
+		dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+		if dsn == "" {
+			t.Skip("TEST_POSTGRES_DSN is empty")
+		}
+		run(t, dsn)
+	})
+}
+
+func openDirectRehearsalDatabase(t *testing.T, postgresDSN string) *gorm.DB {
+	t.Helper()
+	if postgresDSN != "" {
+		return openDirectRehearsalPostgres(t, postgresDSN)
+	}
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -61,6 +81,46 @@ func newDirectCheckoutFixture(t *testing.T, productType string) directCheckoutFi
 	}
 	pool.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = pool.Close() })
+	return db
+}
+
+func openDirectRehearsalPostgres(t *testing.T, dsn string) *gorm.DB {
+	t.Helper()
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal("invalid PostgreSQL test DSN")
+	}
+	admin := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() { _ = admin.Close() })
+
+	schema := pgx.Identifier{"kafuda_rehearsal_" + strings.ToLower(rand.Text())}
+	if _, err := admin.ExecContext(t.Context(), "CREATE SCHEMA "+schema.Sanitize()); err != nil {
+		t.Fatalf("create rehearsal PostgreSQL schema: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := admin.ExecContext(ctx, "DROP SCHEMA "+schema.Sanitize()+" CASCADE"); err != nil {
+			t.Errorf("drop rehearsal PostgreSQL schema: %v", err)
+		}
+	})
+
+	// Set the search path on every connection before GORM can migrate or seed.
+	scopedConfig := cfg.Copy()
+	scopedConfig.RuntimeParams["search_path"] = schema[0]
+	pool := stdlib.OpenDB(*scopedConfig)
+	t.Cleanup(func() { _ = pool.Close() })
+	pool.SetMaxOpenConns(4)
+	db, err := gorm.Open(postgres.New(postgres.Config{Conn: pool}), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open rehearsal PostgreSQL schema: %v", err)
+	}
+	return db
+}
+
+func newDirectCheckoutFixture(t *testing.T, productType, postgresDSN string) directCheckoutFixture {
+	t.Helper()
+	db := openDirectRehearsalDatabase(t, postgresDSN)
 	if err := db.AutoMigrate(&userdomain.User{}, &categorydomain.Category{}, &productdomain.Product{}, &productdomain.ProductSKU{},
 		&orderdomain.Order{}, &orderdomain.OrderItem{}, &fulfillmentdomain.Fulfillment{}, &promotiondomain.Promotion{},
 		&kafudadomain.Catalog{}, &kafudadomain.Recharge{}); err != nil {
