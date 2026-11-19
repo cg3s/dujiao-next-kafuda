@@ -31,7 +31,7 @@ func (rehearsalRelatedPosts) ListPostsForProduct(context.Context, uint, int) ([]
 	return nil, nil
 }
 
-func registerDirectRehearsalStorefront(t *testing.T, router *gin.Engine, f directCheckoutFixture, dir string) {
+func registerDirectRehearsalStorefront(t *testing.T, router *gin.Engine, f directCheckoutFixture, dir string, paymentChannels []map[string]interface{}) {
 	t.Helper()
 	if !filepath.IsAbs(dir) {
 		t.Fatal("the rehearsal storefront directory must be absolute")
@@ -78,7 +78,7 @@ func registerDirectRehearsalStorefront(t *testing.T, router *gin.Engine, f direc
 	public.GET("/config", func(c *gin.Context) {
 		response.Success(c, gin.H{
 			"site_name": "Direct rehearsal", "site_currency": "CNY", "storefront_template": "classic",
-			"wallet_only_payment": true, "payment_channels": []any{},
+			"wallet_only_payment": len(paymentChannels) == 0, "payment_channels": paymentChannels,
 		})
 	})
 	producthttp.RegisterPublicRoutes(public, catalogproductbootstrap.NewPublicHTTP(catalogproductbootstrap.PublicHTTPDependencies{
@@ -110,7 +110,7 @@ func TestDirectBuyerRehearsalStorefrontRoutes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	f, router, buyer, _ := newDirectRehearsalRouter(t, dir)
+	f, router, buyer, _ := newDirectRehearsalRouter(t, dir, "")
 	request := func(path string, wantStatus int) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(t.Context())

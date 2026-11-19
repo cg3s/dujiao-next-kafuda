@@ -30,6 +30,7 @@ import (
 	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	orderhttp "github.com/dujiao-next/internal/modules/order/transport/http"
 	paymentapp "github.com/dujiao-next/internal/modules/payment/application"
+	paymentcontract "github.com/dujiao-next/internal/modules/payment/contract"
 	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
 	paymentstore "github.com/dujiao-next/internal/modules/payment/infrastructure/gormstore"
 	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
@@ -46,9 +47,10 @@ var (
 	serveDirectRehearsal         = flag.Bool("kafuda-rehearsal", false, "serve the isolated, synthetic buyer rehearsal on loopback")
 	directRehearsalPort          = flag.Int("kafuda-rehearsal-port", 5179, "loopback port used by the buyer rehearsal")
 	directRehearsalStorefrontDir = flag.String("kafuda-rehearsal-storefront-dir", "", "absolute path to the built user storefront")
+	directRehearsalOnline        = flag.Bool("kafuda-rehearsal-online", false, "enable the synthetic same-origin online payment channel")
 )
 
-func newDirectRehearsalRouter(t *testing.T, storefrontDir string) (directCheckoutFixture, *gin.Engine, string, string) {
+func newDirectRehearsalRouter(t *testing.T, storefrontDir, onlineOrigin string) (directCheckoutFixture, *gin.Engine, string, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	f := newDirectCheckoutFixture(t)
@@ -64,6 +66,14 @@ func newDirectRehearsalRouter(t *testing.T, storefrontDir string) (directCheckou
 	walletService := walletapp.NewService(walletapp.Options{Repository: wallets, Transactions: wallets})
 	payments := paymentstore.New(f.db, rand.Text())
 	channels := paymentstore.NewChannelStore(f.db)
+	var online *directRehearsalOnlinePayment
+	var paymentRegistry paymentcontract.GatewayRegistry
+	if onlineOrigin != "" {
+		if storefrontDir == "" {
+			t.Fatal("online rehearsal requires built storefront assets")
+		}
+		online, paymentRegistry = newDirectRehearsalOnlinePayment(t, f, payments, onlineOrigin)
+	}
 	deps := &container.Container{
 		OrderStore: f.options.OrderStore, OrderService: orderapp.NewOrderService(f.options), UserStore: f.options.UserStore,
 		WalletRepo: wallets, WalletService: walletService, PaymentStore: payments, PaymentChannelStore: channels,
@@ -71,6 +81,7 @@ func newDirectRehearsalRouter(t *testing.T, storefrontDir string) (directCheckou
 		PaymentService: paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{
 			OrderStore: f.options.OrderStore, ProductRepo: f.options.ProductStore, ProductSKURepo: f.options.ProductSKUStore,
 			PaymentStore: payments, ChannelStore: channels, UserStore: f.options.UserStore, WalletRepo: wallets, WalletService: walletService,
+			PaymentProviderRegistry: paymentRegistry,
 		}),
 	}
 	jwtSecret := rand.Text()
@@ -88,10 +99,19 @@ func newDirectRehearsalRouter(t *testing.T, storefrontDir string) (directCheckou
 	consolePath, storefrontSlug := "/", ""
 	if storefrontDir != "" {
 		consolePath, storefrontSlug = "/rehearsal", f.product.Slug
-		registerDirectRehearsalStorefront(t, router, f, storefrontDir)
+		available := []map[string]interface{}{}
+		if online != nil {
+			available, err = deps.PaymentService.GetAvailableChannels(paymentapp.AvailablePaymentChannelFilter{
+				User: &f.users[0], PaymentType: constants.PaymentTypeOrder,
+			})
+			if err != nil || len(available) != 1 {
+				t.Fatalf("expected one online rehearsal payment channel: %v", err)
+			}
+		}
+		registerDirectRehearsalStorefront(t, router, f, storefrontDir, available)
 	}
 	router.GET(consolePath, func(c *gin.Context) {
-		writeDirectRehearsalPage(c, token, f.product.ID, f.sku.ID, storefrontSlug)
+		writeDirectRehearsalPage(c, token, f.product.ID, f.sku.ID, storefrontSlug, online != nil)
 	})
 	member := router.Group("/api/v1", func(c *gin.Context) {
 		c.Request = c.Request.WithContext(resellercontract.WithTenantContext(c.Request.Context(), f.tenant))
@@ -104,6 +124,9 @@ func newDirectRehearsalRouter(t *testing.T, storefrontDir string) (directCheckou
 	orderhttp.RegisterUserPaymentChannelsRoute(member, orders.User)
 	member.GET("/wallet", walletwiring.New(deps).User.GetWallet)
 	newDirectRehearsalActions(f).register(member)
+	if online != nil {
+		online.register(router, member, deps)
+	}
 	return f, router, token, otherToken
 }
 
@@ -117,7 +140,7 @@ func TestDirectBuyerFlowRehearsal(t *testing.T) {
 		{result: "manual_review", stage: kafudadomain.StageManualReview, status: constants.OrderStatusFulfilling},
 	} {
 		t.Run(scenario.result, func(t *testing.T) {
-			f, router, buyer, other := newDirectRehearsalRouter(t, "")
+			f, router, buyer, other := newDirectRehearsalRouter(t, "", "")
 			type data struct {
 				OrderNo     string `json:"order_no"`
 				OrderPaid   bool   `json:"order_paid"`
@@ -233,8 +256,12 @@ func TestServeDirectBuyerRehearsal(t *testing.T) {
 	if *directRehearsalPort < 1 || *directRehearsalPort > 65535 {
 		t.Fatal("invalid rehearsal port")
 	}
-	_, router, _, _ := newDirectRehearsalRouter(t, *directRehearsalStorefrontDir)
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(*directRehearsalPort))
+	onlineOrigin := ""
+	if *directRehearsalOnline {
+		onlineOrigin = "http://" + addr
+	}
+	_, router, _, _ := newDirectRehearsalRouter(t, *directRehearsalStorefrontDir, onlineOrigin)
 	listener, err := net.Listen("tcp4", addr)
 	if err != nil {
 		t.Fatal(err)

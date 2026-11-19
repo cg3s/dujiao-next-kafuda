@@ -8,14 +8,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func writeDirectRehearsalPage(c *gin.Context, token string, productID, skuID uint, storefrontSlug string) {
+func writeDirectRehearsalPage(c *gin.Context, token string, productID, skuID uint, storefrontSlug string, online bool) {
 	var page bytes.Buffer
 	data := struct {
 		Token          string
 		ProductID      uint
 		SKUID          uint
 		StorefrontSlug string
-	}{Token: token, ProductID: productID, SKUID: skuID, StorefrontSlug: storefrontSlug}
+		Online         bool
+	}{Token: token, ProductID: productID, SKUID: skuID, StorefrontSlug: storefrontSlug, Online: online}
 	if err := directRehearsalPage.Execute(&page, data); err != nil {
 		c.Status(http.StatusInternalServerError)
 		return
@@ -62,23 +63,23 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
     @media (max-width: 500px) { main { margin-block: 24px; } section { padding: 16px; } }
   </style>
 </head>
-<body data-product-id="{{.ProductID}}" data-sku-id="{{.SKUID}}"{{if .StorefrontSlug}} data-storefront-slug="{{.StorefrontSlug}}"{{end}}>
+<body data-product-id="{{.ProductID}}" data-sku-id="{{.SKUID}}"{{if .StorefrontSlug}} data-storefront-slug="{{.StorefrontSlug}}"{{end}}{{if .Online}} data-online="true"{{end}}>
   <main>
     <header>
       <h1>Kafuda GPT 直充演练</h1>
-      <p>本地测试环境，使用演练钱包和模拟履约结果。</p>
+      <p>{{if .Online}}本地测试环境，使用模拟收银台和模拟履约结果。{{else}}本地测试环境，使用演练钱包和模拟履约结果。{{end}}</p>
     </header>
 
     {{if .StorefrontSlug}}
     <section aria-labelledby="storefront-heading">
       <h2 id="storefront-heading">店面演练</h2>
-      <p class="hint">在店面选择套餐并用演练钱包付款。完成支付后回到此页，输入订单号接续履约。</p>
+      <p class="hint">{{if .Online}}在店面选择演练支付渠道。模拟收银台回跳后，回到此页输入待付款订单号，再点击「确认模拟入账」。{{else}}在店面选择套餐并用演练钱包付款。完成支付后回到此页，输入订单号接续履约。{{end}}</p>
       <div class="actions">
         <button id="storefront-classic" type="button">打开 Classic 店面</button>
         <button id="storefront-vault" type="button">打开 Vault 店面</button>
       </div>
       <form id="attach-order-form" class="actions attach-order">
-        <label for="attach-order-no">已付款订单号</label>
+        <label for="attach-order-no">{{if .Online}}演练订单号{{else}}已付款订单号{{end}}</label>
         <input id="attach-order-no" type="text" autocomplete="off" spellcheck="false" required>
         <button id="attach-order" class="secondary" type="submit">读取店面订单</button>
       </form>
@@ -112,6 +113,7 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
         <label><input id="result-review" type="radio" name="result" value="manual_review">转人工核对</label>
       </fieldset>
       <div class="actions">
+        {{if .Online}}<button id="confirm-online-payment" type="button" disabled>确认模拟入账</button>{{end}}
         <button id="authorize" type="button" disabled>授权模拟履约</button>
         <button id="advance" type="button" disabled>推进模拟查单</button>
         <button id="refresh" class="secondary" type="button" disabled>刷新订单进度</button>
@@ -127,12 +129,14 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
     const element = id => document.getElementById(id);
     const token = document.querySelector('meta[name="rehearsal-token"]').content;
     const storefrontSlug = document.body.dataset.storefrontSlug;
+    const online = document.body.dataset.online === 'true';
     const items = [{
       product_id: Number(document.body.dataset.productId),
       sku_id: Number(document.body.dataset.skuId),
       quantity: 1,
     }];
     const stageLabels = Object.freeze({
+      pending_payment: '待确认入账',
       waiting_session: '待买家确认',
       checking: '检查中',
       submitting: '提交中',
@@ -170,6 +174,7 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       element('advance').disabled = busy || !paid || stage !== 'processing';
       element('refresh').disabled = busy || !orderNo;
       element('new-order').disabled = busy || !finishedStages.has(stage);
+      if (online) element('confirm-online-payment').disabled = busy || !orderNo || paid || stage !== 'pending_payment';
       if (storefrontSlug) {
         element('storefront-classic').disabled = busy;
         element('storefront-vault').disabled = busy;
@@ -196,6 +201,28 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
 
     async function refreshStage() {
       renderStage(await request('/orders/' + encodeURIComponent(orderNo) + '/direct-status'));
+    }
+
+    async function attachOrder(candidate) {
+      const path = '/orders/' + encodeURIComponent(candidate);
+      const detail = await request(path);
+      const isPaid = Boolean(detail.paid_at) && ['paid', 'fulfilling', 'completed'].includes(detail.status);
+      const childItems = detail.children?.[0]?.items;
+      const isPending = online && !detail.paid_at && detail.status === 'pending_payment' &&
+        detail.children?.length === 1 && childItems?.length === 1 && childItems[0].fulfillment_type === 'kafuda_gpt_direct';
+      if (detail.order_no !== candidate || (!isPaid && !isPending)) {
+        throw new Error(online ? '请选择待付款或已付款的直充演练订单。' : '请选择已付款的直充演练订单。');
+      }
+      const status = isPaid
+        ? await request(path + '/direct-status')
+        : { stage: detail.status, updated_at: detail.updated_at };
+      orderNo = candidate;
+      paid = isPaid;
+      previewed = false;
+      element('order-no').textContent = orderNo;
+      element('price').textContent = detail.total_amount + ' ' + detail.currency;
+      renderStage(status);
+      void refreshBalance();
     }
 
     function onAction(id, action, eventName = 'click') {
@@ -228,22 +255,17 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       onAction('attach-order-form', async () => {
         const candidate = element('attach-order-no').value.trim();
         if (!candidate) throw new Error('请输入演练订单号。');
-        const path = '/orders/' + encodeURIComponent(candidate);
-        const detail = await request(path);
-        if (detail.order_no !== candidate || !detail.paid_at || !['paid', 'fulfilling', 'completed'].includes(detail.status)) {
-          throw new Error('请选择已付款的直充演练订单。');
-        }
-        const status = await request(path + '/direct-status');
-        orderNo = candidate;
-        paid = true;
-        previewed = false;
-        element('order-no').textContent = orderNo;
-        element('price').textContent = detail.total_amount + ' ' + detail.currency;
-        renderStage(status);
-        void refreshBalance();
+        await attachOrder(candidate);
       }, 'submit');
     }
 
+    if (online) {
+      onAction('confirm-online-payment', async () => {
+        await request('/rehearsal/orders/' + encodeURIComponent(orderNo) + '/confirm-payment', 'POST');
+        await attachOrder(orderNo);
+        if (!paid) throw new Error('模拟入账尚未确认。');
+      });
+    }
     onAction('preview', async () => {
       previewed = false;
       const preview = await request('/orders/preview', 'POST', { items });
@@ -268,7 +290,7 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       await request('/rehearsal/orders/' + encodeURIComponent(orderNo) + '/advance', 'POST');
       await refreshStage();
     });
-    onAction('refresh', refreshStage);
+    onAction('refresh', () => online && !paid ? attachOrder(orderNo) : refreshStage());
     onAction('new-order', () => {
       orderNo = '';
       stage = '';
