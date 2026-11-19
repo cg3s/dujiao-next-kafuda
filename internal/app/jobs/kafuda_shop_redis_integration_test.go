@@ -37,7 +37,6 @@ import (
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
 	"github.com/gin-gonic/gin"
-	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/shopspring/decimal"
@@ -150,14 +149,6 @@ func testRedisKafudaProductionShop(t *testing.T, redisDB int, postgresDSN string
 	if shortCatalogTTL {
 		cfg.KafudaGPT.CatalogTTLSeconds = 24
 		cfg.KafudaGPT.PollIntervalSeconds = 120
-		// Establish the queue without running a task so worker readiness can be
-		// measured independently of the first catalog or order tick.
-		opt, _ := queue.BuildServerConfig(redis)
-		client := asynq.NewClient(opt)
-		t.Cleanup(func() { _ = client.Close() })
-		if _, err := client.Enqueue(queue.NewKafudaRecoverChecksTask(), asynq.Queue(queue.DefaultQueue), asynq.ProcessIn(5*time.Minute)); err != nil {
-			t.Fatal(err)
-		}
 	}
 	deps, err := container.NewContainer(cfg)
 	if err != nil {
@@ -239,8 +230,9 @@ func testRedisKafudaProductionShop(t *testing.T, redisDB int, postgresDSN string
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = worker.Stop(context.Background()) })
-		if err := worker.scheduler.Start(); err != nil {
-			t.Fatal(err)
+		worker.startScheduler(ctx)
+		if _, err := inspector.GetQueueInfo(queue.DefaultQueue); err != nil {
+			t.Fatalf("scheduler did not initialize the recovery queue at startup: %v", err)
 		}
 		if err := worker.server.Start(worker.mux); err != nil {
 			t.Fatal(err)

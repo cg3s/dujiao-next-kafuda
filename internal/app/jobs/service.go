@@ -53,7 +53,7 @@ func registerPeriodicTasks(scheduler *asynq.Scheduler, consumer *jobconsumer.Con
 	if scheduler == nil || consumer == nil {
 		return
 	}
-	if consumer.Container != nil && consumer.KafudaGPT != nil && consumer.KafudaGPT.Records != nil {
+	if kafudaRecoveryConfigured(consumer) {
 		task := queue.NewKafudaRecoverChecksTask()
 		interval := consumer.Config.KafudaPollInterval()
 		entryID, err := scheduler.Register("@every "+interval.String(), task, asynq.Queue(queue.DefaultQueue), asynq.Unique(time.Minute))
@@ -139,6 +139,10 @@ func registerPeriodicTasks(scheduler *asynq.Scheduler, consumer *jobconsumer.Con
 	}
 }
 
+func kafudaRecoveryConfigured(consumer *jobconsumer.Consumer) bool {
+	return consumer != nil && consumer.Container != nil && consumer.KafudaGPT != nil && consumer.KafudaGPT.Records != nil
+}
+
 // Name 服务名称
 func (s *Service) Name() string {
 	if s == nil || s.name == "" {
@@ -152,12 +156,27 @@ func (s *Service) Start(ctx context.Context) error {
 	if s == nil || s.server == nil || s.mux == nil {
 		return errors.New("worker not initialized")
 	}
-	if s.scheduler != nil {
-		if err := s.scheduler.Start(); err != nil {
-			logger.Warnw("scheduler_start_failed", "error", err)
-		}
-	}
+	s.startScheduler(ctx)
 	return s.server.Run(s.mux)
+}
+
+func (s *Service) startScheduler(ctx context.Context) {
+	if s.scheduler == nil {
+		return
+	}
+	if err := s.scheduler.Start(); err != nil {
+		logger.Warnw("scheduler_start_failed", "error", err)
+		return
+	}
+	if !kafudaRecoveryConfigured(s.consumer) {
+		return
+	}
+	// Recover existing work at startup and create the default queue before the first periodic tick.
+	enqueueCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := s.consumer.QueueClient.EnqueueKafudaRecoverChecks(enqueueCtx); err != nil {
+		logger.Warnw("scheduler_enqueue_kafuda_recover_checks_failed", "error", err)
+	}
 }
 
 // Stop 停止服务

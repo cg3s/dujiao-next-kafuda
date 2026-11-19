@@ -98,6 +98,18 @@ func (c *Client) hasKafudaWorker() bool {
 	return false
 }
 
+// EnqueueKafudaRecoverChecks wakes the recovery scan when a worker starts.
+func (c *Client) EnqueueKafudaRecoverChecks(ctx context.Context) error {
+	if !c.Enabled() {
+		return nil
+	}
+	_, err := c.client.EnqueueContext(ctx, NewKafudaRecoverChecksTask(), asynq.Queue(c.defaultQueue), asynq.Unique(time.Minute))
+	if errors.Is(err, asynq.ErrDuplicateTask) {
+		return nil
+	}
+	return err
+}
+
 // EnqueueOrderStatusEmail 推送订单状态邮件任务
 func (c *Client) EnqueueOrderStatusEmail(payload OrderStatusEmailPayload, opts ...asynq.Option) error {
 	if !c.Enabled() {
