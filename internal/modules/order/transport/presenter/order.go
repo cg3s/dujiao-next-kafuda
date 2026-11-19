@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dujiao-next/internal/constants"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 
@@ -195,7 +196,7 @@ func newOrderItemResp(item *orderdomain.OrderItem) OrderItemResp {
 		MemberDiscountAmount:     item.MemberDiscount,
 		PromotionDiscountAmount:  item.PromotionDiscount,
 		WholesaleDiscountAmount:  item.WholesaleDiscount,
-		FulfillmentType:          ft,
+		FulfillmentType:          constants.BuyerFulfillmentType(ft),
 		ManualFormSchemaSnapshot: item.ManualFormSchemaSnapshotJSON,
 		ManualFormSubmission:     item.ManualFormSubmissionJSON,
 		Instructions:             item.InstructionsJSON,
@@ -219,7 +220,7 @@ func newFulfillmentResp(f *fulfillmentdomain.Fulfillment) FulfillmentResp {
 		typ = "manual"
 	}
 	return FulfillmentResp{
-		Type:             typ,
+		Type:             constants.BuyerFulfillmentType(typ),
 		Status:           f.Status,
 		Payload:          f.Payload,
 		PayloadLineCount: f.PayloadLineCount,

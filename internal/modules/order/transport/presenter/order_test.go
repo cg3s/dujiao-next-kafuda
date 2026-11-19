@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dujiao-next/internal/constants"
 	fulfillmentdomain "github.com/dujiao-next/internal/modules/fulfillment/domain"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 
@@ -17,6 +18,18 @@ import (
 
 func newMoney(value string) money.Amount {
 	return money.FromDecimal(decimal.RequireFromString(value))
+}
+
+func TestBuyerOrderUsesProviderNeutralFulfillmentType(t *testing.T) {
+	order := &orderdomain.Order{Children: []orderdomain.Order{{
+		Items:       []orderdomain.OrderItem{{FulfillmentType: constants.FulfillmentTypeKafudaGPT}},
+		Fulfillment: &fulfillmentdomain.Fulfillment{Type: constants.FulfillmentTypeKafudaGPT},
+	}}}
+	detail, summary := NewOrderDetail(order), NewOrderSummary(order)
+	if detail.Children[0].Items[0].FulfillmentType != "gpt_direct" || detail.Children[0].Fulfillment.Type != "gpt_direct" ||
+		summary.Children[0].Items[0].FulfillmentType != "gpt_direct" {
+		t.Fatal("buyer order responses must use the same provider-neutral direct recharge type")
+	}
 }
 
 func TestOrderDetailOmitsSensitiveFields(t *testing.T) {

@@ -1,6 +1,10 @@
 import type { CartItem } from '../stores/cart'
 
-export const KAFUDA_GPT_DIRECT = 'kafuda_gpt_direct'
+export const GPT_DIRECT = 'gpt_direct'
+
+// Older checkout drafts and storefront APIs used a provider-prefixed value.
+export const isDirectFulfillmentType = (type: unknown): boolean =>
+  typeof type === 'string' && (type === GPT_DIRECT || type.endsWith(`_${GPT_DIRECT}`))
 
 const isPositiveSkuId = (id: unknown): id is number =>
   typeof id === 'number' && Number.isSafeInteger(id) && id > 0
@@ -18,7 +22,7 @@ export const directCheckoutRestriction = (
   authenticated: boolean,
   reseller: boolean,
 ) => {
-  const direct = items.find((item) => item.fulfillmentType === KAFUDA_GPT_DIRECT)
+  const direct = items.find((item) => isDirectFulfillmentType(item.fulfillmentType))
   if (!direct) return ''
   if (!buyNow || reseller || items.length !== 1 || !isPositiveSkuId(direct.skuId) || direct.quantity !== 1) {
     return 'directPurchase.checkoutRestricted'

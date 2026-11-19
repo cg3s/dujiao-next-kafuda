@@ -241,7 +241,7 @@
       "sessionPlaceholder": "Paste a session token or JSON containing sessionToken",
       "show": "Show",
       "hide": "Hide",
-      "privacy": "The store sends the session token to Kafuda to check eligibility and does not store it.",
+      "privacy": "The store sends the session token to the recharge provider only to verify account eligibility and does not store it.",
       "submit": "Submit recharge",
       "submitting": "Checking and submitting…",
       "accepted": "Request processed. Check your recharge progress for updates.",
@@ -261,7 +261,7 @@
       "updated": "Updated {time}",
       "retrying": "Progress is temporarily unavailable. Retrying automatically."
     },
-    "label": "Kafuda GPT Direct",
+    "label": "GPT Direct Recharge",
     "sku": "Plan {plan} · Region {country}",
     "available": "Available",
     "unavailable": "Currently unavailable",

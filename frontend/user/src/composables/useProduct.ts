@@ -1,7 +1,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../stores/app'
-import { KAFUDA_GPT_DIRECT } from '../utils/directPurchase'
+import { isDirectFulfillmentType } from '../utils/directPurchase'
 import { amountToCents, centsToAmount } from '../utils/money'
 import { resolveCardDisplayPrice, resolveMemberPriceAmount } from '../utils/productPricing'
 import { useUserAuthStore } from '../stores/userAuth'
@@ -53,7 +53,7 @@ export function useProductLabels() {
   }
 
   const getFulfillmentTypeLabel = (fulfillmentType: string) => {
-    if (fulfillmentType === KAFUDA_GPT_DIRECT) return t('directPurchase.label')
+    if (isDirectFulfillmentType(fulfillmentType)) return t('directPurchase.label')
     return fulfillmentType === 'auto' ? t('products.fulfillmentType.auto') : t('products.fulfillmentType.manual')
   }
 
@@ -72,7 +72,7 @@ export function useProductLabels() {
 
   const getStockStatusLabel = (product: any) => {
     const status = product?.stock_status || ''
-    if (product?.fulfillment_type === KAFUDA_GPT_DIRECT) {
+    if (isDirectFulfillmentType(product?.fulfillment_type)) {
       return t(status === 'in_stock' && !product?.is_sold_out ? 'directPurchase.available' : 'directPurchase.unavailable')
     }
     if (status === 'unlimited') return t('products.stockStatus.unlimited')

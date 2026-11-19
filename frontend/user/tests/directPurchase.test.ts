@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { directCheckoutRestriction, isDirectSkuAvailable, KAFUDA_GPT_DIRECT } from '../src/utils/directPurchase.ts'
+import { directCheckoutRestriction, GPT_DIRECT, isDirectSkuAvailable } from '../src/utils/directPurchase.ts'
 import { resolveCardDisplayPrice } from '../src/utils/productPricing.ts'
 
 const availableSku = {
@@ -23,7 +23,7 @@ test('direct SKU availability follows the storefront status at zero inventory', 
   assert.equal(isDirectSkuAvailable(null), false)
 })
 
-const direct = { fulfillmentType: KAFUDA_GPT_DIRECT, skuId: 7, quantity: 1 }
+const direct = { fulfillmentType: GPT_DIRECT, skuId: 7, quantity: 1 }
 const ordinary = { fulfillmentType: 'auto', skuId: 8, quantity: 2 }
 
 test('direct checkout accepts one specified SKU for an authenticated main storefront buyer', () => {
@@ -31,6 +31,20 @@ test('direct checkout accepts one specified SKU for an authenticated main storef
   assert.equal(directCheckoutRestriction([direct], true, false, false), 'directPurchase.loginRequired')
   assert.equal(directCheckoutRestriction([direct], true, true, true), 'directPurchase.checkoutRestricted')
   assert.equal(directCheckoutRestriction([direct], false, true, false), 'directPurchase.checkoutRestricted')
+})
+
+test('an existing provider-prefixed checkout draft keeps the direct restrictions', () => {
+  const legacy = { ...direct, fulfillmentType: 'kafuda_gpt_direct' }
+  assert.equal(directCheckoutRestriction([legacy], true, true, false), '')
+  assert.equal(directCheckoutRestriction([legacy], false, true, false), 'directPurchase.checkoutRestricted')
+})
+
+test('storefront translations omit the provider name and still disclose the token transfer', () => {
+  for (const [locale, provider] of [['zh-CN', '直充服务商'], ['zh-TW', '直充服務商'], ['en-US', 'recharge provider']]) {
+    const source = readFileSync(new URL(`../src/i18n/locales/${locale}.json`, import.meta.url), 'utf8')
+    assert.doesNotMatch(source, /kafuda/i, locale)
+    assert.ok(JSON.parse(source).directPurchase.authorization.privacy.includes(provider), locale)
+  }
 })
 
 test('direct checkout rejects mixed lines, quantities other than one, and missing SKU IDs', () => {
@@ -55,7 +69,7 @@ test('ordinary product checkout keeps its existing modes', () => {
 
 test('direct product cards calculate member pricing only for available SKUs', () => {
   const unavailable = { ...availableSku, id: 8, stock_status: 'out_of_stock', price_amount: '20.00' }
-  const product = { fulfillment_type: KAFUDA_GPT_DIRECT, price_amount: '100.00', skus: [unavailable, { ...availableSku, price_amount: '100.00' }] }
+  const product = { fulfillment_type: GPT_DIRECT, price_amount: '100.00', skus: [unavailable, { ...availableSku, price_amount: '100.00' }] }
   assert.equal(resolveCardDisplayPrice(product, 3, 80), '80.00')
   assert.equal(resolveCardDisplayPrice({ ...product, skus: [unavailable] }, 3, 80), null)
 })

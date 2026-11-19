@@ -153,7 +153,7 @@ func TestDirectBuyerRehearsalStorefrontRoutes(t *testing.T) {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(product.Body.Bytes(), &item); err != nil || item.StatusCode != 0 || item.Data.ID != f.product.ID ||
-		item.Data.FulfillmentType != constants.FulfillmentTypeKafudaGPT || item.Data.IsSoldOut {
+		item.Data.FulfillmentType != constants.FulfillmentTypeGPTDirect || item.Data.IsSoldOut || strings.Contains(strings.ToLower(product.Body.String()), "kafuda") {
 		t.Fatalf("real catalog route did not expose a purchasable fixture: %s (%v)", product.Body.String(), err)
 	}
 	console := request("/rehearsal", http.StatusOK)

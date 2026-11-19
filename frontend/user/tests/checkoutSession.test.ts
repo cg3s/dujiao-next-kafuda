@@ -134,7 +134,7 @@ test('checkout and order detail keep settlement within the correct browser sessi
     const app = renderer.createApp({ setup() {
       useAppStore().config = { wallet_only_payment: !online, site_currency: 'CNY', payment_channels: [channel] }
       buyNow = useBuyNowStore()
-      buyNow.setItem({ productId: 1, skuId: 7, slug: 'demo', title: { 'zh-CN': 'Test product' }, priceAmount: '100.00', quantity: 1, fulfillmentType: direct ? 'kafuda_gpt_direct' : 'manual' })
+      buyNow.setItem({ productId: 1, skuId: 7, slug: 'demo', title: { 'zh-CN': 'Test product' }, priceAmount: '100.00', quantity: 1, fulfillmentType: direct ? 'gpt_direct' : 'manual' })
       checkout = useCheckout()
       return () => h('div')
     } })
@@ -295,7 +295,7 @@ test('checkout and order detail keep settlement within the correct browser sessi
     const response = (data: unknown) => Response.json({ status_code: 0, data })
     const order = {
       order_no: 'ORDER-1', status: 'pending_payment',
-      children: [{ items: [{ fulfillment_type: direct ? 'kafuda_gpt_direct' : 'manual' }] }],
+      children: [{ items: [{ fulfillment_type: direct ? 'gpt_direct' : 'manual' }] }],
     }
     const originalPath = '/api/v1/orders/ORDER-1'
     const requests: string[] = []

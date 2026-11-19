@@ -3,7 +3,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useCartStore, type CartItem } from '../stores/cart'
 import { useBuyNowStore } from '../stores/buyNow'
-import { directCheckoutRestriction, KAFUDA_GPT_DIRECT } from '../utils/directPurchase'
+import { directCheckoutRestriction, GPT_DIRECT, isDirectFulfillmentType } from '../utils/directPurchase'
 import { useAppStore } from '../stores/app'
 import { useUserAuthStore } from '../stores/userAuth'
 import { guestOrderAPI, userOrderAPI, walletAPI, type CaptchaPayload } from '../api'
@@ -66,7 +66,7 @@ export function useCheckout() {
     }
     return cartStore.items
   })
-  const hasDirectItems = computed(() => cartItems.value.some((item) => item.fulfillmentType === KAFUDA_GPT_DIRECT))
+  const hasDirectItems = computed(() => cartItems.value.some((item) => isDirectFulfillmentType(item.fulfillmentType)))
   const checkoutLoginTo = computed(() => hasDirectItems.value
     ? { path: '/auth/login', query: { redirect: route.fullPath } }
     : '/auth/login')
@@ -396,7 +396,7 @@ export function useCheckout() {
   const manualFormProducts = computed<ManualFormProduct[]>(() => {
     const grouped = new Map<number, ManualFormProduct>()
     cartItems.value.forEach((item) => {
-      if (item.fulfillmentType === KAFUDA_GPT_DIRECT) return
+      if (isDirectFulfillmentType(item.fulfillmentType)) return
       // 按 schema 而非交付类型判断：对接商品对外展示为 auto 时也可能需要交付资料
       const fields = normalizeManualFormSchema(item.manualFormSchema)
       if (fields.length === 0) {
@@ -665,7 +665,7 @@ export function useCheckout() {
     product_id: item.productId,
     sku_id: normalizeSkuId(item.skuId) || undefined,
     quantity: item.quantity,
-    fulfillment_type: item.fulfillmentType || undefined,
+    fulfillment_type: isDirectFulfillmentType(item.fulfillmentType) ? GPT_DIRECT : item.fulfillmentType || undefined,
   }))
 
   const buildOrderPayload = () => ({
@@ -1044,7 +1044,7 @@ export function useCheckout() {
   const cartItemKey = (item: CartItem) => `${item.productId}:${normalizeSkuId(item.skuId)}`
 
   const itemSkuDisplay = (item: CartItem) => {
-    if (item.fulfillmentType === KAFUDA_GPT_DIRECT && item.skuSpecValues?.plan && item.skuSpecValues?.country) {
+    if (isDirectFulfillmentType(item.fulfillmentType) && item.skuSpecValues?.plan && item.skuSpecValues?.country) {
       return t('directPurchase.sku', { plan: item.skuSpecValues.plan, country: item.skuSpecValues.country })
     }
     return buildSkuDisplayText({

@@ -265,13 +265,13 @@ func assertDirectPreviewHTTP(t *testing.T, svc *orderapp.OrderService, input ord
 					t.Fatal(err)
 				}
 				if mode == "main_preview" {
-					if result.StatusCode != 0 || !strings.Contains(recorder.Body.String(), constants.FulfillmentTypeKafudaGPT) {
+					if result.StatusCode != 0 || !strings.Contains(recorder.Body.String(), `"fulfillment_type":"gpt_direct"`) {
 						t.Fatalf("main adapter did not enable preview: %s", recorder.Body.String())
 					}
 				} else if result.StatusCode != response.CodeBadRequest || result.Msg != i18n.T(locale, "error.product_purchase_not_allowed") {
 					t.Fatalf("forged preview flag bypassed endpoint restriction: %s", recorder.Body.String())
 				}
-				for _, secret := range []string{"merchant-profile", "merchant-card", "merchant_cost", "must-not-leak", "cost_price", "max_cost", "45.00"} {
+				for _, secret := range []string{"kafuda", "merchant-profile", "merchant-card", "merchant_cost", "must-not-leak", "cost_price", "max_cost", "45.00"} {
 					if strings.Contains(recorder.Body.String(), secret) {
 						t.Fatalf("HTTP preview leaked %s", secret)
 					}

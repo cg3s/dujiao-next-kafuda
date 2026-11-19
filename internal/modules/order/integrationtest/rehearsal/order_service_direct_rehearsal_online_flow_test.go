@@ -75,7 +75,7 @@ func testDirectBuyerOnlinePaymentRehearsal(t *testing.T, postgresDSN string) {
 		} `json:"skus"`
 	}
 	readJSON(http.MethodGet, "/api/v1/public/products/"+f.product.Slug, "", "", true, &product)
-	if product.ID != f.product.ID || product.FulfillmentType != constants.FulfillmentTypeKafudaGPT || product.IsSoldOut ||
+	if product.ID != f.product.ID || product.FulfillmentType != constants.FulfillmentTypeGPTDirect || product.IsSoldOut ||
 		len(product.SKUs) != 1 || product.SKUs[0].ID != f.sku.ID {
 		t.Fatalf("online rehearsal product is not available: %+v", product)
 	}

@@ -241,7 +241,7 @@
       "sessionPlaceholder": "貼上 Session Token 或含有 sessionToken 的 JSON",
       "show": "顯示",
       "hide": "隱藏",
-      "privacy": "商城僅將 Session Token 轉發給 Kafuda 驗證帳號資格，不儲存該憑證。",
+      "privacy": "商城僅將 Session Token 傳送給直充服務商以驗證帳號資格，不儲存該憑證。",
       "submit": "提交直充",
       "submitting": "正在檢查並提交…",
       "accepted": "請求已處理，請查看直充進度。",
@@ -261,7 +261,7 @@
       "updated": "更新於 {time}",
       "retrying": "暫時無法更新，稍後會自動重試。"
     },
-    "label": "Kafuda GPT 直充",
+    "label": "GPT 直充",
     "sku": "方案 {plan} · 地區 {country}",
     "available": "可購買",
     "unavailable": "暫不可購買",

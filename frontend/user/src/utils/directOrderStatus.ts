@@ -1,4 +1,4 @@
-import { KAFUDA_GPT_DIRECT } from './directPurchase.ts'
+import { isDirectFulfillmentType } from './directPurchase.ts'
 
 const DIRECT_ORDER_STAGES = ['waiting_session', 'checking', 'submitting', 'processing', 'manual_review', 'completed', 'refunded'] as const
 
@@ -21,7 +21,7 @@ type DirectOrderCandidate = {
 }
 
 export function isDirectOrderFulfillment(items?: readonly OrderItemFulfillment[], fulfillmentType?: string): boolean {
-  return fulfillmentType === KAFUDA_GPT_DIRECT || (items?.length === 1 && items[0]?.fulfillment_type === KAFUDA_GPT_DIRECT)
+  return isDirectFulfillmentType(fulfillmentType) || (items?.length === 1 && isDirectFulfillmentType(items[0]?.fulfillment_type))
 }
 
 function directParentOrderNo(order: DirectOrderCandidate): string {

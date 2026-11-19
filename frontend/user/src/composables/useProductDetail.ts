@@ -10,7 +10,7 @@ import { useBuyNowStore } from '../stores/buyNow'
 import { useUserAuthStore } from '../stores/userAuth'
 import { useUserProfileStore } from '../stores/userProfile'
 import { debounceAsync } from '../utils/debounce'
-import { isDirectSkuAvailable, KAFUDA_GPT_DIRECT } from '../utils/directPurchase'
+import { isDirectFulfillmentType, isDirectSkuAvailable } from '../utils/directPurchase'
 import { buildSkuDisplayText, normalizeSkuId } from '../utils/sku'
 import { resolveSkuAvailableStock, resolveSkuStockDisplay, type PublicStockDisplay } from '../utils/publicStock'
 import { useLocalized, useProductLabels } from './useProduct'
@@ -61,7 +61,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
 
   const loading = ref(true)
   const product = ref<any>(null)
-  const isDirect = computed(() => product.value?.fulfillment_type === KAFUDA_GPT_DIRECT)
+const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillment_type))
   const relatedPosts = computed<any[]>(() => product.value?.related_posts || [])
   const formatRelatedPostDate = (dateString: string) => {
     if (!dateString) return ''

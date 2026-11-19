@@ -338,7 +338,7 @@ import { useUserAuthStore } from '../stores/userAuth'
 import { useUserProfileStore } from '../stores/userProfile'
 import { getFirstImageUrl, getImageUrl } from '../utils/image'
 import { normalizeSkuId, buildSkuDisplayText } from '../utils/sku'
-import { KAFUDA_GPT_DIRECT } from '../utils/directPurchase'
+import { isDirectFulfillmentType } from '../utils/directPurchase'
 import { resolveSkuAvailableStock, resolveSkuStockDisplay, type PublicStockDisplay } from '../utils/publicStock'
 import { useLocalized, useProductLabels } from '../composables/useProduct'
 import { toast } from '../composables/useToast'
@@ -384,7 +384,7 @@ const {
 const selectedSkuId = ref(0)
 const quantity = ref(1)
 const purchaseWarning = ref('')
-const isDirect = computed(() => props.product?.fulfillment_type === KAFUDA_GPT_DIRECT)
+const isDirect = computed(() => isDirectFulfillmentType(props.product?.fulfillment_type))
 
 const productTitle = computed(() => getLocalizedText(props.product?.title))
 const productDescription = computed(() => getLocalizedText(props.product?.description))

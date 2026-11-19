@@ -640,7 +640,7 @@ func mapOrderPreview(preview *orderapp.OrderPreview) *ordertransport.OrderPrevie
 			CouponDiscount:     item.CouponDiscount,
 			PromotionDiscount:  item.PromotionDiscount,
 			WholesaleDiscount:  item.WholesaleDiscount,
-			FulfillmentType:    item.FulfillmentType,
+			FulfillmentType:    constants.BuyerFulfillmentType(item.FulfillmentType),
 		})
 	}
 	return &ordertransport.OrderPreview{

@@ -1,4 +1,4 @@
-import { KAFUDA_GPT_DIRECT } from './directPurchase'
+import { isDirectFulfillmentType } from './directPurchase'
 
 type TranslateFn = (key: string, params?: Record<string, any>) => string
 
@@ -6,7 +6,7 @@ export type FulfillmentLabelScope = 'orderDetail'
 
 export const fulfillmentTypeLabel = (t: TranslateFn, type?: string, scope: FulfillmentLabelScope = 'orderDetail') => {
   if (!type) return '-'
-  if (type === KAFUDA_GPT_DIRECT) return t('directPurchase.label')
+  if (isDirectFulfillmentType(type)) return t('directPurchase.label')
   const baseKey = `${scope}.fulfillmentTypes`
   const map: Record<string, string> = {
     manual: t(`${baseKey}.manual`),

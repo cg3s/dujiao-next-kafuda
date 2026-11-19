@@ -210,7 +210,7 @@ func testRedisKafudaProductionShop(t *testing.T, redisDB int, postgresDSN string
 		t.Helper()
 		var public productpresenter.Product
 		request(http.MethodGet, "/api/v1/public/products/"+product.Slug, "", response.CodeOK, &public)
-		if public.ID != product.ID || public.IsSoldOut != soldOut || len(public.SKUs) != 1 ||
+		if public.ID != product.ID || public.FulfillmentType != constants.FulfillmentTypeGPTDirect || public.IsSoldOut != soldOut || len(public.SKUs) != 1 ||
 			public.SKUs[0].ID != sku.ID || !public.SKUs[0].IsActive || public.SKUs[0].IsSoldOut != soldOut {
 			t.Fatalf("configured Direct SKU did not show sold_out=%t: %+v", soldOut, public)
 		}
@@ -242,7 +242,11 @@ func testRedisKafudaProductionShop(t *testing.T, redisDB int, postgresDSN string
 	}
 	worker := startWorker()
 	assertAvailability(false)
-	request(http.MethodPost, orders+"/preview", items+"}", response.CodeOK, nil)
+	var preview orderhttp.OrderPreview
+	request(http.MethodPost, orders+"/preview", items+"}", response.CodeOK, &preview)
+	if len(preview.Items) != 1 || preview.Items[0].FulfillmentType != constants.FulfillmentTypeGPTDirect {
+		t.Fatalf("checkout preview did not use the public direct fulfillment type: %+v", preview.Items)
+	}
 	if shortCatalogTTL {
 		awaitKafudaRedis(t, time.Until(catalog.ExpiresAt)+3*time.Second, func() bool {
 			assertAvailability(false)

@@ -540,7 +540,7 @@ func testKafudaProductionStartupDirectGate(t *testing.T, apiURL, apiKey, wantRea
 	}
 	var public productpresenter.Product
 	request(http.MethodGet, "/api/v1/public/products/"+direct.Slug, "", "", response.CodeOK, &public)
-	if public.ID != direct.ID || public.FulfillmentType != constants.FulfillmentTypeKafudaGPT || !public.IsSoldOut ||
+	if public.ID != direct.ID || public.FulfillmentType != constants.FulfillmentTypeGPTDirect || !public.IsSoldOut ||
 		len(public.SKUs) != 1 || public.SKUs[0].ID != savedSKU.ID || !public.SKUs[0].IsSoldOut || !public.SKUs[0].IsActive {
 		t.Fatalf("storefront did not keep the configured SKU visible and sold out: %+v", public)
 	}

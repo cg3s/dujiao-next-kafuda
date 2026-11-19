@@ -225,7 +225,7 @@ var directRehearsalPage = template.Must(template.New("direct-rehearsal").Parse(`
       const isPaid = Boolean(detail.paid_at) && ['paid', 'fulfilling', 'completed'].includes(detail.status);
       const childItems = detail.children?.[0]?.items;
       const isPending = online && !detail.paid_at && detail.status === 'pending_payment' &&
-        detail.children?.length === 1 && childItems?.length === 1 && childItems[0].fulfillment_type === 'kafuda_gpt_direct';
+        detail.children?.length === 1 && childItems?.length === 1 && childItems[0].fulfillment_type === 'gpt_direct';
       if (detail.order_no !== candidate || (!isPaid && !isPending)) {
         throw new Error(online ? '请选择待付款或已付款的直充演练订单。' : '请选择已付款的直充演练订单。');
       }

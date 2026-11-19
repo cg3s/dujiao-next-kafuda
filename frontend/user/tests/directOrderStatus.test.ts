@@ -5,7 +5,7 @@ import { directPendingPaymentOrderNo, directStatusOrderNo, isDirectOrderFulfillm
 const order = {
   order_no: 'ORDER-1',
   status: 'paid',
-  children: [{ items: [{ fulfillment_type: 'kafuda_gpt_direct' }] }],
+  children: [{ items: [{ fulfillment_type: 'gpt_direct' }] }],
 }
 
 test('polling targets only an eligible direct checkout parent', () => {
@@ -38,6 +38,7 @@ test('manual delivery retains the direct order presentation only for a direct pu
   const directItems = order.children[0]!.items
   assert.equal(isDirectOrderFulfillment(directItems, 'manual'), true)
   assert.equal(isDirectOrderFulfillment([{ fulfillment_type: 'manual' }], 'manual'), false)
+  assert.equal(isDirectOrderFulfillment(undefined, 'gpt_direct'), true)
   assert.equal(isDirectOrderFulfillment(undefined, 'kafuda_gpt_direct'), true)
   assert.equal(isDirectOrderFulfillment([...directItems, { fulfillment_type: 'manual' }], 'manual'), false)
 })

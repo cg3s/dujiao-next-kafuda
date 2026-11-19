@@ -30,6 +30,17 @@ const (
 	FulfillmentStatusDelivered = "delivered"
 )
 
+// FulfillmentTypeGPTDirect is the provider-neutral type published to buyers.
+const FulfillmentTypeGPTDirect = "gpt_direct"
+
+// BuyerFulfillmentType converts internal direct recharge types at the storefront boundary.
+func BuyerFulfillmentType(value string) string {
+	if value == FulfillmentTypeKafudaGPT {
+		return FulfillmentTypeGPTDirect
+	}
+	return value
+}
+
 // 支付状态常量
 const (
 	PaymentStatusInitiated = "initiated"

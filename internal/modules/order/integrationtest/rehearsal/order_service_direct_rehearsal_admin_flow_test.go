@@ -86,7 +86,7 @@ func testDirectSalesStopPreservesPaidOrderAndSKURehearsal(t *testing.T, postgres
 	productPath := "/api/v1/public/products/" + f.product.Slug
 	assertPublicProduct := func(product productpresenter.Product, soldOut bool) {
 		t.Helper()
-		if product.ID != f.product.ID || product.FulfillmentType != constants.FulfillmentTypeKafudaGPT || product.IsSoldOut != soldOut ||
+		if product.ID != f.product.ID || product.FulfillmentType != constants.FulfillmentTypeGPTDirect || product.IsSoldOut != soldOut ||
 			len(product.SKUs) != 1 || product.SKUs[0].ID != f.sku.ID || product.SKUs[0].SKUCode != f.sku.SKUCode ||
 			product.SKUs[0].IsSoldOut != soldOut || !product.SKUs[0].IsActive {
 			t.Fatalf("expected the original product and SKU with sold_out=%t: %+v", soldOut, product)
@@ -193,7 +193,7 @@ func testDirectSalesStopPreservesPaidOrderAndSKURehearsal(t *testing.T, postgres
 			!detail.OnlinePaidAmount.IsZero() || !detail.RefundedAmount.IsZero() || len(detail.Children) != 1 ||
 			detail.Children[0].OrderNo != paid.Children[0].OrderNo || detail.Children[0].Status != wantStatus || detail.Children[0].PaidAt == nil ||
 			!detail.Children[0].PaidAt.Equal(*paid.Children[0].PaidAt) || len(detail.Children[0].Items) != 1 ||
-			detail.Children[0].Items[0].FulfillmentType != constants.FulfillmentTypeKafudaGPT ||
+			detail.Children[0].Items[0].FulfillmentType != constants.FulfillmentTypeGPTDirect ||
 			!reflect.DeepEqual(detail.Children[0].Items[0].SKUSnapshot, paid.Children[0].Items[0].SKUSnapshotJSON) {
 			t.Fatalf("buyer order detail changed the original purchase: %+v", detail)
 		}
