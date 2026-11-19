@@ -3,6 +3,7 @@ package application_test
 import (
 	"crypto/md5" // EPay v1 callbacks use MD5 signatures.
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -79,8 +80,17 @@ func TestMixedCheckoutPaymentsAndFulfillment(t *testing.T) {
 func testMixedCheckoutPaymentsAndFulfillment(t *testing.T, fixture func(*testing.T) directCheckoutFixture) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	for _, method := range []string{"wallet", "signed_epay_callback"} {
-		t.Run(method, func(t *testing.T) {
+	for _, scenario := range []struct {
+		name         string
+		wallet       bool
+		salesEnabled bool
+	}{
+		{name: "wallet/sales_enabled", wallet: true, salesEnabled: true},
+		{name: "wallet/sales_disabled", wallet: true},
+		{name: "signed_epay_callback/sales_enabled", salesEnabled: true},
+		{name: "signed_epay_callback/sales_disabled"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
 			f := fixture(t)
 			if err := f.db.AutoMigrate(&cardsecretdomain.Batch{}, &cardsecretdomain.Secret{}, &paymentdomain.Payment{}, &paymentdomain.PaymentChannel{}, &walletdomain.Account{}, &walletdomain.Transaction{}); err != nil {
 				t.Fatal(err)
@@ -122,7 +132,7 @@ func testMixedCheckoutPaymentsAndFulfillment(t *testing.T, fixture func(*testing
 
 			buyer := &f.users[0]
 			total := money.FromDecimal(decimal.NewFromInt(60))
-			walletPayment := method == "wallet"
+			walletPayment := scenario.wallet
 			const merchantID, merchantKey = "mixed-checkout", "mixed-checkout-test-key"
 			var channel paymentdomain.PaymentChannel
 			if walletPayment {
@@ -146,7 +156,18 @@ func testMixedCheckoutPaymentsAndFulfillment(t *testing.T, fixture func(*testing
 			queue := &mixedCheckoutQueue{concurrentCouponQueue: f.queue}
 			notifications := &mixedCheckoutNotifications{}
 			f.options.Queue = queue
+			commerce := directCheckoutCommerce(f.store, scenario.salesEnabled)
+			f.options.DirectCatalog = commerce
 			orders := orderapp.NewOrderService(f.options)
+			preview, err := orders.PreviewOrder(f.input)
+			reason := commerce.SalesBlockReason(t.Context())
+			if scenario.salesEnabled {
+				if reason != "" || err != nil || preview == nil || len(preview.Items) != 1 || preview.Items[0].FulfillmentType != constants.FulfillmentTypeKafudaGPT {
+					t.Fatalf("enabled direct product preview: reason=%q, preview=%+v, err=%v", reason, preview, err)
+				}
+			} else if reason != "sales_disabled" || !errors.Is(err, orderapp.ErrProductNotAvailable) || preview != nil {
+				t.Fatalf("disabled direct product preview: reason=%q, preview=%+v, err=%v", reason, preview, err)
+			}
 			payments := paymentstore.New(f.db, "test-guest-credential-secret-with-32-bytes")
 			channels := paymentstore.NewChannelStore(f.db)
 			wallets := walletstore.New(f.db)
