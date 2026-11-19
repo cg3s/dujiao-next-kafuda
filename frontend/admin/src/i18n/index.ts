@@ -970,6 +970,7 @@ const messages = {
           reference: '核对参考号',
           upstreamId: '上游订单号',
           account: '脱敏账号',
+          cardCharged: '上游卡实扣',
           stages: {
             waiting_session: '待提交',
             checking: '检查中',
@@ -5641,6 +5642,7 @@ const messages = {
           reference: '核對參考編號',
           upstreamId: '上游訂單編號',
           account: '遮蔽帳號',
+          cardCharged: '上游卡實扣',
           stages: {
             waiting_session: '待提交',
             checking: '檢查中',
@@ -10312,6 +10314,7 @@ const messages = {
           reference: 'Reconciliation reference',
           upstreamId: 'Supplier order ID',
           account: 'Masked account',
+          cardCharged: 'Upstream card charge',
           stages: {
             waiting_session: 'Awaiting submission',
             checking: 'Checking',

@@ -42,6 +42,7 @@ import (
 	walletcontract "github.com/dujiao-next/internal/modules/wallet/contract"
 	"github.com/dujiao-next/internal/queue"
 	"github.com/dujiao-next/internal/shared/money"
+	"github.com/shopspring/decimal"
 )
 
 func newDirectStatusReader(c *container.Container) ordertransport.DirectStatusReader {
@@ -164,11 +165,16 @@ func newAdminDirectStatusReader(c *container.Container) ordertransport.AdminDire
 			return status, nil
 		}
 		info := &ordertransport.AdminDirectAttempt{ID: attempt.ID, Sequence: attempt.Sequence, Active: attempt.Status.Active()}
-		if attempt.Validate() == nil {
+		validAttempt := attempt.Validate() == nil
+		if validAttempt {
 			info.Reference = attempt.Reference
 		}
 		if attempt.UpstreamOrderID != nil && *attempt.UpstreamOrderID > 0 {
 			info.UpstreamOrderID = strconv.FormatUint(*attempt.UpstreamOrderID, 10)
+			if validAttempt && attempt.ChargedUSDCents != nil {
+				charge := money.FromDecimal(decimal.New(*attempt.ChargedUSDCents, -2))
+				info.CardChargedUSD = &charge
+			}
 		}
 		if runes := []rune(attempt.MaskedEmail); len(runes) == 8 && string(runes[1:]) == "***@***" {
 			info.MaskedEmail = attempt.MaskedEmail

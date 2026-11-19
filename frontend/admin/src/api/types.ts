@@ -159,7 +159,15 @@ export interface AdminOrder {
     stage: string
     updated_at: string
     reason?: string
-    attempt?: { id: number; sequence: number; active: boolean; reference?: string; upstream_order_id?: string; masked_email?: string }
+    attempt?: {
+      id: number
+      sequence: number
+      active: boolean
+      reference?: string
+      upstream_order_id?: string
+      masked_email?: string
+      card_charged_usd?: string
+    }
   }
   id: number
   order_no: string

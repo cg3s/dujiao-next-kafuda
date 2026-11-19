@@ -137,6 +137,20 @@ it.each([
   expect(Boolean(findButton('admin.orders.directReview.reconcile'))).toBe(canReconcile)
 })
 
+it.each([undefined, '0.00', '15.46'])('shows a reported card charge in USD (%s)', async (cardCharge) => {
+  const order = orderFixture(42, 'completed', 'completed')
+  order.currency = 'CNY'
+  order.direct_recharge!.attempt!.card_charged_usd = cardCharge
+  api.getOrder.mockResolvedValue(response(order))
+  const { context } = mountDialog()
+  context.order = order
+  context.open = true
+
+  await vi.waitFor(() => expect(host.textContent).toContain(order.order_no))
+  const chargeLabel = Array.from(host.querySelectorAll('dt')).find((label) => label.textContent === 'admin.orders.directReview.cardCharged')
+  expect(chargeLabel?.nextElementSibling?.textContent).toBe(cardCharge === undefined ? undefined : `${cardCharge} USD`)
+})
+
 it('ignores an earlier order detail when switching orders while the dialog is open', async () => {
   const previous = orderFixture(42)
   const current = orderFixture(84, 'refunded')

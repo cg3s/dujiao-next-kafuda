@@ -81,6 +81,7 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 	service := orderapp.NewOrderService(f.options)
 	records := kafudaapp.New(f.store)
 	ctx, now := context.Background(), time.Now().UTC()
+	const upstreamOrderID uint64 = 9007199254740993
 	var parentID, childID, manualDeliveryID, refundedID uint
 	for _, scenario := range []struct {
 		name          string
@@ -119,7 +120,7 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 				t.Fatal(err)
 			}
 			if err := f.db.Model(&kafudadomain.Attempt{}).Where("id = ?", reserved.Attempt.ID).Updates(map[string]any{
-				"status": kafudadomain.AttemptReview, "upstream_order_id": uint64(9007199254740993), "masked_email": "private@example.test", "quote_id": "private-quote",
+				"status": kafudadomain.AttemptReview, "upstream_order_id": upstreamOrderID, "masked_email": "private@example.test", "quote_id": "private-quote", "charged_usd_cents": 1546,
 			}).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -169,9 +170,42 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 	for _, id := range []uint{parentID, childID} {
 		raw := get(fmt.Sprintf("/admin/orders/%d", id)).Body.String()
 		if !strings.Contains(raw, `"status":"fulfilling"`) || !strings.Contains(raw, `"upstream_order_id":"9007199254740993"`) || !strings.Contains(raw, `"reason":"result_apply_failed"`) ||
-			!strings.Contains(raw, `"active":true`) || strings.Contains(raw, "private@example.test") || strings.Contains(raw, "private-quote") {
+			!strings.Contains(raw, `"active":true`) || !strings.Contains(raw, `"card_charged_usd":"15.46"`) ||
+			strings.Contains(raw, "private@example.test") || strings.Contains(raw, "private-quote") || strings.Contains(raw, `"charged_usd_cents"`) {
 			t.Fatalf("unexpected projection: %s", raw)
 		}
+	}
+	for _, scenario := range []struct {
+		name       string
+		upstreamID any
+		charge     any
+		want       string
+	}{
+		{name: "zero", upstreamID: upstreamOrderID, charge: 0, want: `"0.00"`},
+		{name: "unreported", upstreamID: upstreamOrderID},
+		{name: "negative", upstreamID: upstreamOrderID, charge: -25},
+		{name: "unidentified", charge: 1546},
+		{name: "invalid_id", upstreamID: 0, charge: 1546},
+	} {
+		t.Run("card_charge_"+scenario.name, func(t *testing.T) {
+			if err := f.db.Model(&kafudadomain.Attempt{}).Where("order_id = ?", childID).
+				Updates(map[string]any{"upstream_order_id": scenario.upstreamID, "charged_usd_cents": scenario.charge}).Error; err != nil {
+				t.Fatal(err)
+			}
+			raw := get(fmt.Sprintf("/admin/orders/%d", childID)).Body.Bytes()
+			var body struct {
+				Code int `json:"status_code"`
+				Data struct {
+					Direct struct {
+						Attempt map[string]json.RawMessage `json:"attempt"`
+					} `json:"direct_recharge"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &body); err != nil || body.Code != 0 || len(body.Data.Direct.Attempt) == 0 ||
+				string(body.Data.Direct.Attempt["card_charged_usd"]) != scenario.want {
+				t.Fatalf("unexpected card charge: %s, %v", raw, err)
+			}
+		})
 	}
 	if err := f.db.Model(&kafudadomain.Attempt{}).Where("order_id = ?", childID).Update("masked_email", "b***@***").Error; err != nil {
 		t.Fatal(err)
@@ -996,9 +1030,10 @@ func TestBuyerDirectStatusIsScopedAndReadOnly(t *testing.T) {
 	}
 	upstreamID := uint64(123)
 	renewalCancelled := false
+	cardCharge := int64(1546)
 	attempt := kafudadomain.Attempt{
 		OrderID: childID, Sequence: 1, Reference: "kgpt-renewal-test", Status: kafudadomain.AttemptCompleted,
-		UpstreamOrderID: &upstreamID, RenewalCancelled: &renewalCancelled,
+		UpstreamOrderID: &upstreamID, RenewalCancelled: &renewalCancelled, ChargedUSDCents: &cardCharge,
 		MaskedEmail: "m***@example.com",
 	}
 	if err := f.db.Create(&attempt).Error; err != nil {

@@ -20,6 +20,7 @@ import (
 
 	"github.com/dujiao-next/internal/platform/http/ginutil"
 	"github.com/dujiao-next/internal/platform/http/response"
+	"github.com/dujiao-next/internal/shared/money"
 
 	"github.com/gin-gonic/gin"
 )
@@ -169,12 +170,13 @@ type AdminDirectStatus struct {
 }
 
 type AdminDirectAttempt struct {
-	ID              uint   `json:"id"`
-	Sequence        uint   `json:"sequence"`
-	Active          bool   `json:"active"`
-	Reference       string `json:"reference,omitempty"`
-	UpstreamOrderID string `json:"upstream_order_id,omitempty"`
-	MaskedEmail     string `json:"masked_email,omitempty"`
+	ID              uint          `json:"id"`
+	Sequence        uint          `json:"sequence"`
+	Active          bool          `json:"active"`
+	Reference       string        `json:"reference,omitempty"`
+	UpstreamOrderID string        `json:"upstream_order_id,omitempty"`
+	MaskedEmail     string        `json:"masked_email,omitempty"`
+	CardChargedUSD  *money.Amount `json:"card_charged_usd,omitempty"`
 }
 
 type AdminDirectStatusReader func(context.Context, *orderdomain.Order) (*AdminDirectStatus, error)

@@ -877,6 +877,10 @@ onUnmounted(() => { detailSession++ })
                 <div v-if="selectedOrder.direct_recharge.attempt.reference"><dt class="text-muted-foreground">{{ t('admin.orders.directReview.reference') }}</dt><dd class="break-all font-mono">{{ selectedOrder.direct_recharge.attempt.reference }}</dd></div>
                 <div v-if="selectedOrder.direct_recharge.attempt.upstream_order_id"><dt class="text-muted-foreground">{{ t('admin.orders.directReview.upstreamId') }}</dt><dd class="break-all font-mono">{{ selectedOrder.direct_recharge.attempt.upstream_order_id }}</dd></div>
                 <div v-if="selectedOrder.direct_recharge.attempt.masked_email"><dt class="text-muted-foreground">{{ t('admin.orders.directReview.account') }}</dt><dd>{{ selectedOrder.direct_recharge.attempt.masked_email }}</dd></div>
+                <div v-if="selectedOrder.direct_recharge.attempt.card_charged_usd != null">
+                  <dt class="text-muted-foreground">{{ t('admin.orders.directReview.cardCharged') }}</dt>
+                  <dd class="font-mono">{{ selectedOrder.direct_recharge.attempt.card_charged_usd }} USD</dd>
+                </div>
               </template>
             </dl>
             <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-complete') && isOpenDirectOrder(selectedOrder) && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
