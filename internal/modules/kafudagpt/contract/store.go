@@ -30,6 +30,9 @@ type Store interface {
 	ClearCompletionEmail(context.Context, uint) error
 	DueAttempts(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
 	DueKnownOrderPolls(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
+	DueCardChargePolls(ctx context.Context, now, completedAfter, completedBefore time.Time, limit int) ([]kafudadomain.Attempt, error)
+	ClaimCardChargePoll(ctx context.Context, candidate kafudadomain.Attempt, leaseUntil time.Time) (bool, error)
+	SaveCardChargePoll(ctx context.Context, attemptID uint, leaseUntil time.Time, charged *int64, next *time.Time) (bool, error)
 	DueCheckingAttempts(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
 	DueUnidentifiedSubmissions(context.Context, time.Time, int) ([]kafudadomain.Attempt, error)
 	GetCatalog(context.Context, string) (*kafudadomain.Catalog, error)

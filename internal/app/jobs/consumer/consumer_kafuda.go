@@ -12,7 +12,9 @@ import (
 )
 
 const (
-	kafudaMaxRetryDelay = 15 * time.Minute
+	kafudaMaxRetryDelay       = 15 * time.Minute
+	kafudaPollBatchSize       = 10
+	kafudaCardChargeBatchSize = 2
 )
 
 func kafudaRetryDelay(attempt kafudadomain.Attempt, baseInterval time.Duration) time.Duration {
@@ -59,7 +61,7 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 	lookupCtx, cancel := context.WithTimeout(ctx, 55*time.Second)
 	defer cancel()
 	module := c.KafudaGPT
-	attempts, err := module.Store.DueKnownOrderPolls(lookupCtx, time.Now().UTC(), 10)
+	attempts, err := module.Store.DueKnownOrderPolls(lookupCtx, time.Now().UTC(), kafudaPollBatchSize)
 	if err != nil {
 		return err
 	}
@@ -85,7 +87,7 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 				failures = append(failures, err)
 			}
 			if errors.Is(err, kafudaapp.ErrKnownOrderRateLimited) {
-				break
+				return errors.Join(failures...)
 			}
 			continue
 		}
@@ -102,6 +104,31 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 			err = errors.Join(err, module.Records.RescheduleKnownOrderResult(ctx, attempt.ID, *attempt.NextPollAt, startedAt, retryFrom, retryFrom.Add(retryDelay), reviewAfter))
 		}
 		failures = append(failures, err)
+	}
+	if limit := min(kafudaCardChargeBatchSize, kafudaPollBatchSize-len(attempts)); limit > 0 {
+		failures = append(failures, c.pollKafudaCardCharges(ctx, lookupCtx, limit))
+	}
+	return errors.Join(failures...)
+}
+
+func (c *Consumer) pollKafudaCardCharges(ctx, lookupCtx context.Context, limit int) error {
+	module := c.KafudaGPT
+	attempts, err := module.Records.DueCardChargePolls(lookupCtx, time.Now().UTC(), limit)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, attempt := range attempts {
+		if err := lookupCtx.Err(); err != nil {
+			return errors.Join(append(failures, err)...)
+		}
+		err := module.Records.PollCardCharge(ctx, lookupCtx, module.Gateway, attempt, time.Now().UTC())
+		if err != nil && !errors.Is(err, kafudadomain.ErrConflict) && !errors.Is(err, kafudadomain.ErrNotFound) {
+			failures = append(failures, err)
+		}
+		if errors.Is(err, kafudaapp.ErrKnownOrderRateLimited) {
+			break
+		}
 	}
 	return errors.Join(failures...)
 }

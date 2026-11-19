@@ -70,14 +70,14 @@ func (s Snapshot) Validate() error {
 type Recharge struct {
 	OrderID                uint       `gorm:"primaryKey;autoIncrement:false" json:"-"`
 	Snapshot               Snapshot   `gorm:"serializer:json;type:json;not null" json:"-"`
-	Stage                  Stage      `gorm:"type:varchar(32);not null;index" json:"-"`
+	Stage                  Stage      `gorm:"type:varchar(32);not null;index;index:idx_kafuda_gpt_recharges_completed_at,priority:1,where:completed_at IS NOT NULL" json:"-"`
 	AttemptCount           uint       `gorm:"not null;default:0" json:"-"`
 	CurrentAttemptID       *uint      `json:"-"`
 	Version                uint64     `gorm:"not null;default:1" json:"-"`
 	ReasonCode             string     `gorm:"type:varchar(64);not null;default:''" json:"-"`
 	CreatedAt              time.Time  `json:"-"`
 	UpdatedAt              time.Time  `json:"-"`
-	CompletedAt            *time.Time `json:"-"`
+	CompletedAt            *time.Time `gorm:"index:idx_kafuda_gpt_recharges_completed_at,priority:2" json:"-"`
 	CompletionEmailPending bool       `gorm:"not null;default:false;index" json:"-"`
 	CompletionEmailRetryAt *time.Time `json:"-"`
 }
@@ -111,8 +111,10 @@ type Attempt struct {
 	ChargedUSDCents  *int64        `json:"-"`
 	RenewalCancelled *bool         `json:"-"`
 	NextPollAt       *time.Time    `gorm:"index" json:"-"`
-	CreatedAt        time.Time     `json:"-"`
-	UpdatedAt        time.Time     `json:"-"`
+	// NextCardChargePollAt schedules reconciliation of a completed attempt's missing card charge.
+	NextCardChargePollAt *time.Time `json:"-"`
+	CreatedAt            time.Time  `json:"-"`
+	UpdatedAt            time.Time  `json:"-"`
 }
 
 func (Attempt) TableName() string { return "kafuda_gpt_attempts" }

@@ -479,6 +479,12 @@ func TestAutoMigrateOwnsKafudaGPTSchema(t *testing.T) {
 	if !db.Migrator().HasIndex("kafuda_gpt_attempts", "idx_kafuda_gpt_active_order") {
 		t.Error("active-attempt uniqueness index missing")
 	}
+	if !db.Migrator().HasColumn("kafuda_gpt_attempts", "next_card_charge_poll_at") {
+		t.Error("late card charge poll schedule column missing")
+	}
+	if !db.Migrator().HasIndex("kafuda_gpt_recharges", "idx_kafuda_gpt_recharges_completed_at") {
+		t.Error("completed recharge scan index missing")
+	}
 	if !db.Migrator().HasColumn(&productdomain.ProductSKU{}, "DirectCostConfigured") {
 		t.Error("direct cost confirmation column missing")
 	}
