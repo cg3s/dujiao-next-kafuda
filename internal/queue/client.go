@@ -59,7 +59,7 @@ func (c *Client) Close() error {
 	return errors.Join(c.client.Close(), c.inspector.Close())
 }
 
-// KafudaWorkerReady uses the Redis queue's worker and scheduler heartbeats.
+// KafudaWorkerReady checks worker and scheduler heartbeats and the queue pause state.
 // A queue client alone cannot recover a paid order after the process restarts.
 func (c *Client) KafudaWorkerReady(ctx context.Context) bool {
 	if !c.Enabled() || ctx.Err() != nil {
@@ -89,7 +89,8 @@ func (c *Client) hasKafudaWorker() bool {
 		}
 		for _, entry := range entries {
 			if entry.Task.Type() == TaskKafudaRecoverChecks {
-				return true
+				info, err := c.inspector.GetQueueInfo(c.defaultQueue)
+				return err == nil && !info.Paused
 			}
 		}
 		return false

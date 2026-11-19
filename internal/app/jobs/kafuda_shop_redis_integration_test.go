@@ -33,6 +33,7 @@ import (
 	walletdomain "github.com/dujiao-next/internal/modules/wallet/domain"
 	"github.com/dujiao-next/internal/platform/database/gormdb"
 	"github.com/dujiao-next/internal/platform/http/response"
+	"github.com/dujiao-next/internal/queue"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
 	"github.com/gin-gonic/gin"
@@ -58,7 +59,7 @@ func TestRedisKafudaProductionShopStartsSellingAndFulfills(t *testing.T) {
 
 func testRedisKafudaProductionShop(t *testing.T, redisDB int, postgresDSN string) {
 	t.Helper()
-	redis, _ := kafudaRedisFixture(t, redisDB)
+	redis, inspector := kafudaRedisFixture(t, redisDB)
 	ctx := t.Context()
 	const secret = "kafuda-shop-fixture-secret-for-jwt"
 	const cardCode = "shop-test-card"
@@ -233,6 +234,17 @@ func testRedisKafudaProductionShop(t *testing.T, redisDB int, postgresDSN string
 	worker := startWorker()
 	assertAvailability(false)
 	request(http.MethodPost, orders+"/preview", items+"}", response.CodeOK, nil)
+	if err := inspector.PauseQueue(queue.DefaultQueue); err != nil {
+		t.Fatal(err)
+	}
+	awaitKafudaRedis(t, 10*time.Second, func() bool { return deps.KafudaGPT.Commerce.SalesBlockReason(ctx) == "worker_not_ready" })
+	assertAvailability(true)
+	request(http.MethodPost, orders+"/preview", items+"}", response.CodeBadRequest, nil)
+	if err := inspector.UnpauseQueue(queue.DefaultQueue); err != nil {
+		t.Fatal(err)
+	}
+	awaitKafudaRedis(t, 10*time.Second, func() bool { return deps.KafudaGPT.Commerce.SalesBlockReason(ctx) == "" })
+	assertAvailability(false)
 	var created struct {
 		OrderNo string `json:"order_no"`
 		Paid    bool   `json:"order_paid"`
