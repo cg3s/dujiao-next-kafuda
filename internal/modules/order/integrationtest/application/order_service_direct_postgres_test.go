@@ -98,6 +98,17 @@ func TestPostgresDirectSupplierPrivacyAndRefundBoundary(t *testing.T) {
 	testDirectSupplierPrivacyAndRefundBoundary(t, f)
 }
 
+func TestPostgresDirectSupplierRecovery(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	testDirectSupplierRecovery(t, func(t *testing.T) directCheckoutFixture {
+		db := openPostgresDirectRaceDB(t, dsn)
+		return seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-supplier-recovery", 0, 0))
+	})
+}
+
 func TestPostgresAdminDirectReviewFilterAndProjection(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 	if dsn == "" {

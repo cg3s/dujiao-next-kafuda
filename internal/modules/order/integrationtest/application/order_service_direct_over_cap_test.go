@@ -219,7 +219,7 @@ func testDirectSupplierPrivacyAndRefundBoundary(t *testing.T, f directCheckoutFi
 	const chargedCents = 923
 	const maskedEmail = "p***@***"
 	var lookups atomic.Int32
-	supplier := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	gateway := newDirectTLSGateway(t, supplierToken, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.RequestURI() != fmt.Sprintf("/api/v1/gpt/orders/%d", upstreamID) ||
 			r.Header.Get("Authorization") != "Bearer "+supplierToken {
 			t.Error("unexpected supplier lookup method, target or credential")
@@ -243,24 +243,7 @@ func testDirectSupplierPrivacyAndRefundBoundary(t *testing.T, f directCheckoutFi
 			"account_email": supplierEmail, "session": supplierSession, "api_token": supplierToken,
 			"failure_message": supplierError, "charged_usd_cents": chargedCents, "refund_usd_cents": supplierRefundCents,
 		}})
-	}))
-	t.Cleanup(supplier.Close)
-	// Keep production TLS verification and route only this exact loopback origin
-	// through the transport that trusts the fixture certificate. This test is serial.
-	originalTransport := http.DefaultTransport
-	supplierTransport := supplier.Client().Transport
-	supplierHost := strings.TrimPrefix(supplier.URL, "https://")
-	http.DefaultTransport = directTestRoundTripper(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Scheme == "https" && r.URL.Host == supplierHost {
-			return supplierTransport.RoundTrip(r)
-		}
-		return originalTransport.RoundTrip(r)
 	})
-	t.Cleanup(func() { http.DefaultTransport = originalTransport })
-	gateway, err := kafudaclient.New(supplier.URL, supplierToken)
-	if err != nil {
-		t.Fatal(err)
-	}
 	deps := stoppedDirectSalesContainer(t, f)
 	deps.KafudaGPT.Gateway = gateway
 	deps.UserStore = f.options.UserStore
@@ -362,6 +345,222 @@ func testDirectSupplierPrivacyAndRefundBoundary(t *testing.T, f directCheckoutFi
 	if err := f.db.First(&account, account.ID).Error; err != nil || !account.Balance.Equal(finalBalance) {
 		t.Fatalf("shop refund did not credit the local paid amount: %s, %v", account.Balance, err)
 	}
+}
+
+func TestDirectSupplierRecovery(t *testing.T) {
+	testDirectSupplierRecovery(t, newDirectCheckoutFixture)
+}
+
+func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) directCheckoutFixture) {
+	t.Helper()
+	for _, terminal := range []kafudadomain.AttemptStatus{kafudadomain.AttemptCompleted, kafudadomain.AttemptCancelled} {
+		t.Run(string(terminal), func(t *testing.T) {
+			f := newFixture(t)
+			if err := f.db.AutoMigrate(&kafudadomain.Attempt{}); err != nil {
+				t.Fatal(err)
+			}
+			ctx, orders := t.Context(), f.options.OrderStore
+			order, err := orderapp.NewOrderService(f.options).CreateOrder(f.input)
+			if err != nil || order == nil || len(order.Children) != 1 {
+				t.Fatalf("create direct checkout: %+v, %v", order, err)
+			}
+			childID, paidAt := order.Children[0].ID, time.Now().UTC().Truncate(time.Microsecond)
+			if err := f.db.Model(&orderdomain.Order{}).Where("id IN ?", []uint{order.ID, childID}).
+				Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": paidAt}).Error; err != nil {
+				t.Fatal(err)
+			}
+			reserve := func(now time.Time) (*kafudaapp.Reservation, error) {
+				return kafudaworkflow.ReserveBuyerAttempt(orders, ordercontract.TenantScope{}, order.OrderNo, order.UserID, now, now.Add(time.Minute))
+			}
+			reserved, err := reserve(paidAt)
+			if err != nil || reserved == nil || !reserved.Created {
+				t.Fatalf("reserve original attempt: %+v, %v", reserved, err)
+			}
+			attemptID, reference, snapshot := reserved.Attempt.ID, reserved.Attempt.Reference, reserved.Recharge.Snapshot
+			records := kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), orders)
+			quote := kafudacontract.Quote{QuoteID: "recovery-quote", Plan: snapshot.Plan, Status: "available", Kind: "new", ExpiresAt: paidAt.Add(time.Minute), PriceCents: 900,
+				AutoCard: &kafudacontract.AutoCard{ProductCode: snapshot.ProductCode, LoadCents: 100, TotalCents: 1000}}
+			if err := records.MarkSubmittingWithQuote(ctx, attemptID, quote, paidAt, paidAt.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			if err := records.MarkUnknown(ctx, attemptID, paidAt, paidAt.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			loadAttempt := func() *kafudadomain.Attempt {
+				t.Helper()
+				attempt, err := f.store.GetAttempt(ctx, attemptID)
+				if err != nil || attempt == nil || attempt.Reference != reference || attempt.QuoteID != quote.QuoteID ||
+					attempt.QuoteCosts == nil || attempt.QuoteCosts.TotalCents != quote.AutoCard.TotalCents {
+					t.Fatalf("lost original submission: %+v, %v", attempt, err)
+				}
+				return attempt
+			}
+			unknown := loadAttempt()
+			const upstreamID = uint64(9_007_199_254_740_993)
+			const merchantToken = "direct-recovery-fixture-token"
+			var lookups atomic.Int32
+			gateway := newDirectTLSGateway(t, merchantToken, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.RequestURI() != fmt.Sprintf("/api/v1/gpt/orders/%d", upstreamID) ||
+					r.Header.Get("Authorization") != "Bearer "+merchantToken {
+					t.Error("unexpected supplier request during recovery")
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				status := terminal
+				switch lookups.Add(1) {
+				case 1, 3:
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				case 2:
+					status = kafudadomain.AttemptProcessing
+				case 4:
+				default:
+					t.Error("unexpected supplier lookup after settlement")
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+					"id": upstreamID, "reference": reference, "product": snapshot.Product, "plan": snapshot.Plan, "country": snapshot.Country, "status": status,
+				}})
+			})
+			deps := stoppedDirectSalesContainer(t, f)
+			deps.KafudaGPT.Gateway = gateway
+			deps.UserStore = f.options.UserStore
+			router, supportToken, _ := newDirectSupportRouter(t, f, deps)
+			request := func(method, path, body string, wantCode int) []byte {
+				t.Helper()
+				req := httptest.NewRequestWithContext(ctx, method, directAdminRoutePrefix+path, strings.NewReader(body))
+				req.Header.Set("Authorization", "Bearer "+supportToken)
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				var envelope response.Response
+				if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil || envelope.StatusCode != wantCode {
+					t.Fatalf("%s %s returned code %d, want %d, decode error %v", method, path, envelope.StatusCode, wantCode, err)
+				}
+				return rec.Body.Bytes()
+			}
+			assertReviewList := func(want int) {
+				t.Helper()
+				body := request(http.MethodGet, "/orders?direct_review=true", "", response.CodeOK)
+				var page struct {
+					Data       []struct{ ID uint }
+					Pagination response.Pagination
+				}
+				if err := json.Unmarshal(body, &page); err != nil || page.Pagination.Total != int64(want) || len(page.Data) != want || (want == 1 && page.Data[0].ID != order.ID) {
+					t.Fatalf("review list should contain %d matching parents: %s, %v", want, body, err)
+				}
+			}
+			release := func(confirmed bool, wantCode int) {
+				t.Helper()
+				request(http.MethodPost, fmt.Sprintf("/orders/%d/direct-release", childID), fmt.Sprintf(`{"attempt_id":%d,"confirmed":%t}`, attemptID, confirmed), wantCode)
+			}
+			reconcilePath := fmt.Sprintf("/orders/%d/direct-reconcile", childID)
+			lookupBody := fmt.Sprintf(`{"attempt_id":%d,"upstream_order_id":"%d"}`, attemptID, upstreamID)
+			assertReviewList(1)
+			release(true, response.CodeBadRequest)
+			request(http.MethodPost, reconcilePath, lookupBody, response.CodeInternal)
+			if stored := loadAttempt(); !reflect.DeepEqual(stored, unknown) {
+				t.Fatalf("failed reconciliation changed the hold: %+v", stored)
+			}
+			request(http.MethodPost, reconcilePath, lookupBody, response.CodeOK)
+			request(http.MethodPost, reconcilePath, lookupBody, response.CodeBadRequest)
+			if stored := loadAttempt(); stored.Status != kafudadomain.AttemptProcessing || stored.ActiveOrderID == nil || *stored.ActiveOrderID != childID ||
+				stored.UpstreamOrderID == nil || *stored.UpstreamOrderID != upstreamID || stored.NextPollAt == nil || lookups.Load() != 2 {
+				t.Fatalf("numeric reconciliation did not retain the original hold and schedule: %+v, lookups=%d", stored, lookups.Load())
+			}
+			poll := func() (*kafudaapp.KnownOrderPoll, time.Time, error) {
+				t.Helper()
+				// Make the scheduled lookup due without sleeping, while keeping the
+				// real timestamps used by the support HTTP routes.
+				startedAt := time.Now().UTC().Truncate(time.Microsecond)
+				if err := f.db.Model(&kafudadomain.Attempt{}).Where("id = ?", attemptID).UpdateColumn("next_poll_at", startedAt).Error; err != nil {
+					t.Fatal(err)
+				}
+				result, err := records.PollKnownOrder(ctx, ctx, gateway, attemptID, startedAt, deps.Config.KafudaPollInterval(), 0)
+				return result, startedAt, err
+			}
+			if result, _, err := poll(); result != nil || !errors.Is(err, kafudaapp.ErrKnownOrderLookupFailed) {
+				t.Fatalf("expected retryable supplier lookup failure: %+v, %v", result, err)
+			}
+			stored := loadAttempt()
+			if stored.Status != kafudadomain.AttemptProcessing || stored.ActiveOrderID == nil || stored.NextPollAt == nil ||
+				!stored.NextPollAt.After(stored.UpdatedAt) || stored.KnownOrderPollLeaseUntil != nil {
+				t.Fatalf("failed numeric lookup did not retain and reschedule the hold: %+v", stored)
+			}
+			assertReviewList(1)
+			release(true, response.CodeBadRequest)
+			result, startedAt, err := poll()
+			if err != nil || result == nil || result.Status != string(terminal) || lookups.Load() != 4 {
+				t.Fatalf("confirmed terminal supplier lookup: %+v, lookups=%d, %v", result, lookups.Load(), err)
+			}
+			receivedAt, interval := time.Now().UTC(), deps.Config.KafudaPollInterval()
+			completed, err := kafudaworkflow.ApplyPolledResult(orders, childID, attemptID, *result, startedAt, receivedAt, interval, 0)
+			if err != nil || completed != (terminal == kafudadomain.AttemptCompleted) {
+				t.Fatalf("apply supplier result: completed=%t, %v", completed, err)
+			}
+			settled := loadAttempt()
+			if settled.Status != terminal || settled.ActiveOrderID != nil || settled.NextPollAt != nil || settled.UpstreamOrderID == nil || *settled.UpstreamOrderID != upstreamID {
+				t.Fatalf("original attempt did not settle: %+v", settled)
+			}
+			if completed {
+				assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusCompleted, paidAt)
+				release(true, response.CodeBadRequest)
+				if replay, err := kafudaworkflow.ApplyPolledResult(orders, childID, attemptID, *result, startedAt, receivedAt, interval, 0); err != nil || replay {
+					t.Fatalf("completion replay: completed=%t, %v", replay, err)
+				}
+			} else {
+				assertReviewList(1)
+				release(false, response.CodeBadRequest)
+				release(true, response.CodeOK)
+				release(true, response.CodeBadRequest)
+				retry, err := reserve(time.Now().UTC())
+				if err != nil || retry == nil || !retry.Created || retry.Attempt.Sequence != 2 || retry.Attempt.Reference == reference ||
+					!reflect.DeepEqual(retry.Recharge.Snapshot, snapshot) {
+					t.Fatalf("confirmed release did not allow a fresh attempt for the paid snapshot: %+v, %v", retry, err)
+				}
+				stale := *result
+				stale.Status = string(kafudadomain.AttemptCompleted)
+				if replay, err := kafudaworkflow.ApplyPolledResult(orders, childID, attemptID, stale, startedAt, receivedAt, interval, 0); replay || !errors.Is(err, kafudadomain.ErrConflict) {
+					t.Fatalf("old supplier result after replacement: completed=%t, %v", replay, err)
+				}
+				assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusFulfilling, paidAt)
+			}
+			assertReviewList(0)
+			if historical := loadAttempt(); !reflect.DeepEqual(historical, settled) {
+				t.Fatalf("replay or release changed terminal history: %+v", historical)
+			}
+			var wantDeliveries int64
+			if completed {
+				wantDeliveries = 1
+			}
+			var deliveries int64
+			if err := f.db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&deliveries).Error; err != nil || deliveries != wantDeliveries {
+				t.Fatalf("found %d deliveries, want %d: %v", deliveries, wantDeliveries, err)
+			}
+		})
+	}
+}
+
+func newDirectTLSGateway(t *testing.T, token string, handler http.HandlerFunc) *kafudaclient.Client {
+	t.Helper()
+	supplier := httptest.NewTLSServer(handler)
+	t.Cleanup(supplier.Close)
+	// Route only this loopback origin through the transport that trusts the
+	// fixture certificate. The caller must run serially.
+	originalTransport := http.DefaultTransport
+	supplierTransport := supplier.Client().Transport
+	supplierHost := strings.TrimPrefix(supplier.URL, "https://")
+	http.DefaultTransport = directTestRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Scheme == "https" && r.URL.Host == supplierHost {
+			return supplierTransport.RoundTrip(r)
+		}
+		return originalTransport.RoundTrip(r)
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	gateway, err := kafudaclient.New(supplier.URL, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gateway
 }
 
 type directTestRoundTripper func(*http.Request) (*http.Response, error)
