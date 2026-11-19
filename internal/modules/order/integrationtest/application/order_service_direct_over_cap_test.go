@@ -24,6 +24,7 @@ import (
 	admindomain "github.com/dujiao-next/internal/modules/identity/admin/domain"
 	adminstore "github.com/dujiao-next/internal/modules/identity/admin/infrastructure/gormstore"
 	adminauthapp "github.com/dujiao-next/internal/modules/identity/adminauth/application"
+	userauthapp "github.com/dujiao-next/internal/modules/identity/userauth/application"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
@@ -384,41 +385,67 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 				Updates(map[string]any{"status": constants.OrderStatusPaid, "paid_at": paidAt}).Error; err != nil {
 				t.Fatal(err)
 			}
-			reserve := func(now time.Time) (*kafudaapp.Reservation, error) {
-				return kafudaworkflow.ReserveBuyerAttempt(orders, ordercontract.TenantScope{}, order.OrderNo, order.UserID, now, now.Add(time.Minute))
+			initial, err := f.store.GetRecharge(ctx, childID)
+			if err != nil || initial == nil {
+				t.Fatalf("load paid order snapshot: %v", err)
 			}
-			reserved, err := reserve(paidAt)
-			if err != nil || reserved == nil || !reserved.Created {
-				t.Fatalf("reserve original attempt: %+v, %v", reserved, err)
-			}
-			attemptID, reference, snapshot := reserved.Attempt.ID, reserved.Attempt.Reference, reserved.Recharge.Snapshot
+			snapshot := initial.Snapshot
 			records := kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(f.store), orders)
-			quote := kafudacontract.Quote{QuoteID: "recovery-quote", Plan: snapshot.Plan, Status: "available", Kind: "new", ExpiresAt: paidAt.Add(time.Minute), PriceCents: 900,
-				AutoCard: &kafudacontract.AutoCard{ProductCode: snapshot.ProductCode, LoadCents: 100, TotalCents: 1000}}
-			if err := records.MarkSubmittingWithQuote(ctx, attemptID, quote, paidAt, paidAt.Add(time.Minute)); err != nil {
-				t.Fatal(err)
-			}
-			if err := records.MarkUnknown(ctx, attemptID, paidAt, paidAt.Add(time.Minute)); err != nil {
-				t.Fatal(err)
-			}
-			loadAttempt := func() *kafudadomain.Attempt {
-				t.Helper()
-				attempt, err := f.store.GetAttempt(ctx, attemptID)
-				if err != nil || attempt == nil || attempt.Reference != reference || attempt.QuoteID != quote.QuoteID ||
-					attempt.QuoteCosts == nil || attempt.QuoteCosts.TotalCents != quote.AutoCard.TotalCents {
-					t.Fatalf("lost original submission: %+v, %v", attempt, err)
-				}
-				return attempt
-			}
-			unknown := loadAttempt()
 			const upstreamID = uint64(9_007_199_254_740_993)
 			const merchantToken = "direct-recovery-fixture-token"
-			var lookups atomic.Int32
+			const buyerSession = "direct-recovery-fixture-session"
+			const originalQuoteID = "recovery-quote-1"
+			var checks, submissions, lookups atomic.Int32
+			var originalRequest, retryRequest atomic.Pointer[kafudacontract.CreateOrderRequest]
 			firstLookupStarted := make(chan struct{})
 			finishFirstLookup := make(chan struct{})
+			supplierOrder := func(id uint64, reference string, status kafudadomain.AttemptStatus) map[string]any {
+				return map[string]any{"id": id, "reference": reference, "product": snapshot.Product, "plan": snapshot.Plan, "country": snapshot.Country, "status": status}
+			}
 			gateway := newDirectTLSGateway(t, merchantToken, func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet || r.URL.RequestURI() != fmt.Sprintf("/api/v1/gpt/orders/%d", upstreamID) ||
-					r.Header.Get("Authorization") != "Bearer "+merchantToken {
+				if r.Header.Get("Authorization") != "Bearer "+merchantToken {
+					t.Error("missing supplier authentication")
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/gpt/check":
+					var input kafudacontract.CheckRequest
+					if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Session != buyerSession ||
+						input.Country != snapshot.Country || input.PayMode != snapshot.PayMode || input.ProductCode != snapshot.ProductCode {
+						t.Error("eligibility check did not use the buyer session and paid snapshot")
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					quote := kafudacontract.Quote{QuoteID: fmt.Sprintf("recovery-quote-%d", checks.Add(1)), Plan: snapshot.Plan,
+						Status: "available", Kind: "new", ExpiresAt: time.Now().Add(time.Minute), PriceCents: 900,
+						AutoCard: &kafudacontract.AutoCard{ProductCode: snapshot.ProductCode, LoadCents: 100, TotalCents: 1000}}
+					_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+						"check_id": "recovery-check", "country": snapshot.Country, "pay_mode": snapshot.PayMode, "region_lock": nil, "plans": []kafudacontract.Quote{quote},
+					}})
+					return
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/gpt/orders":
+					var input kafudacontract.CreateOrderRequest
+					decoder := json.NewDecoder(r.Body)
+					decoder.DisallowUnknownFields()
+					call := submissions.Add(1)
+					if err := decoder.Decode(&input); err != nil || input.QuoteID != fmt.Sprintf("recovery-quote-%d", call) ||
+						input.Reference == "" || r.Header.Get("Idempotency-Key") != input.Reference {
+						t.Error("unexpected supplier order request")
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					if call == 1 {
+						originalRequest.Store(&input)
+						w.WriteHeader(http.StatusBadGateway)
+						return
+					}
+					retryRequest.Store(&input)
+					_ = json.NewEncoder(w).Encode(map[string]any{"data": supplierOrder(upstreamID+1, input.Reference, kafudadomain.AttemptProcessing)})
+					return
+				}
+				original := originalRequest.Load()
+				if r.Method != http.MethodGet || r.URL.RequestURI() != fmt.Sprintf("/api/v1/gpt/orders/%d", upstreamID) || original == nil {
 					t.Error("unexpected supplier request during recovery")
 					w.WriteHeader(http.StatusBadRequest)
 					return
@@ -450,9 +477,7 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 				default:
 					t.Error("unexpected supplier lookup after settlement")
 				}
-				data := map[string]any{
-					"id": upstreamID, "reference": reference, "product": snapshot.Product, "plan": snapshot.Plan, "country": snapshot.Country, "status": status,
-				}
+				data := supplierOrder(upstreamID, original.Reference, status)
 				if debit != nil {
 					data["charged_usd_cents"] = *debit
 				}
@@ -460,13 +485,24 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			})
 			deps := stoppedDirectSalesContainer(t, f)
 			deps.KafudaGPT.Gateway = gateway
+			deps.KafudaGPT.Records = records
 			deps.UserStore = f.options.UserStore
 			operatorStore := &directSubmitStore{Store: orders}
 			deps.OrderStore = operatorStore
 			router, supportToken, _ := newDirectSupportRouter(t, f, deps)
-			send := func(method, path, body string) []byte {
-				req := httptest.NewRequestWithContext(ctx, method, directAdminRoutePrefix+path, strings.NewReader(body))
-				req.Header.Set("Authorization", "Bearer "+supportToken)
+			buyerSecret := rand.Text()
+			buyerAuth := userauthapp.NewService(&config.Config{UserJWT: config.JWTConfig{SecretKey: buyerSecret}}, f.options.UserStore, nil, nil, nil, nil, nil)
+			buyerToken, _, err := buyerAuth.GenerateUserJWT(&f.users[0], 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			buyerRoutes := router.Group("/api/v1", middleware.UserJWTAuthMiddleware(buyerSecret, f.options.UserStore))
+			userHandler := orderwiring.New(deps).User
+			orderhttp.RegisterUserReadRoutes(buyerRoutes, userHandler)
+			orderhttp.RegisterUserDirectAuthorizationRoute(buyerRoutes, userHandler)
+			send := func(method, path, body, token string) []byte {
+				req := httptest.NewRequestWithContext(ctx, method, path, strings.NewReader(body))
+				req.Header.Set("Authorization", "Bearer "+token)
 				req.Header.Set("Content-Type", "application/json")
 				rec := httptest.NewRecorder()
 				router.ServeHTTP(rec, req)
@@ -476,14 +512,58 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 				t.Helper()
 				var envelope response.Response
 				if err := json.Unmarshal(raw, &envelope); err != nil || envelope.StatusCode != wantCode {
-					t.Fatalf("admin request returned code %d, want %d, decode error %v: %s", envelope.StatusCode, wantCode, err, raw)
+					t.Fatalf("request returned code %d, want %d, decode error %v: %s", envelope.StatusCode, wantCode, err, raw)
 				}
 			}
 			request := func(method, path, body string, wantCode int) []byte {
 				t.Helper()
-				raw := send(method, path, body)
+				raw := send(method, directAdminRoutePrefix+path, body, supportToken)
 				assertCode(raw, wantCode)
 				return raw
+			}
+			buyerOrderPath := "/api/v1/orders/" + order.OrderNo
+			buyerRequest := func(method, operation, body string, wantCode int) []byte {
+				t.Helper()
+				raw := send(method, buyerOrderPath+operation, body, buyerToken)
+				assertCode(raw, wantCode)
+				return raw
+			}
+			submit := func(wantCode int) {
+				t.Helper()
+				buyerRequest(http.MethodPost, "/direct-authorize", fmt.Sprintf(`{"session":%q}`, buyerSession), wantCode)
+			}
+			assertBuyerStage := func(want kafudadomain.Stage) {
+				t.Helper()
+				raw := buyerRequest(http.MethodGet, "/direct-status", "", response.CodeOK)
+				var envelope struct{ Data orderhttp.DirectStatus }
+				if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Data.Stage != string(want) {
+					t.Fatalf("buyer sees %q, want %q: %v", envelope.Data.Stage, want, err)
+				}
+			}
+			submit(response.CodeInternal)
+			original := originalRequest.Load()
+			review, err := f.store.GetRecharge(ctx, childID)
+			if err != nil || original == nil || review == nil || review.CurrentAttemptID == nil || review.AttemptCount != 1 || !reflect.DeepEqual(review.Snapshot, snapshot) {
+				t.Fatalf("buyer submission did not retain the original paid attempt: %v", err)
+			}
+			attemptID, reference := *review.CurrentAttemptID, original.Reference
+			loadAttempt := func() *kafudadomain.Attempt {
+				t.Helper()
+				attempt, err := f.store.GetAttempt(ctx, attemptID)
+				if err != nil || attempt == nil || attempt.Reference != reference || attempt.QuoteID != originalQuoteID ||
+					attempt.QuoteCosts == nil || attempt.QuoteCosts.TotalCents != 1000 {
+					t.Fatalf("lost original submission: %+v, %v", attempt, err)
+				}
+				return attempt
+			}
+			unknown := loadAttempt()
+			if unknown.Status != kafudadomain.AttemptReview || unknown.ActiveOrderID == nil || *unknown.ActiveOrderID != childID || unknown.UpstreamOrderID != nil {
+				t.Fatalf("uncertain submission did not keep the original hold: %+v", unknown)
+			}
+			assertBuyerStage(kafudadomain.StageManualReview)
+			submit(response.CodeOK)
+			if checks.Load() != 1 || submissions.Load() != 1 {
+				t.Fatalf("buyer replay reached the supplier: checks=%d, submissions=%d", checks.Load(), submissions.Load())
 			}
 			assertReviewList := func(want int) {
 				t.Helper()
@@ -510,7 +590,9 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 				t.Fatal(err)
 			}
 			firstResponse := make(chan []byte, 1)
-			go func() { firstResponse <- send(http.MethodPost, reconcilePath, lookupBody) }()
+			go func() {
+				firstResponse <- send(http.MethodPost, directAdminRoutePrefix+reconcilePath, lookupBody, supportToken)
+			}()
 			unblockLookup := sync.OnceFunc(func() { close(finishFirstLookup) })
 			defer unblockLookup()
 			select {
@@ -521,7 +603,9 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 				t.Fatal("first reconciliation did not reach supplier")
 			}
 			duplicateResponse := make(chan []byte, 1)
-			go func() { duplicateResponse <- send(http.MethodPost, reconcilePath, lookupBody) }()
+			go func() {
+				duplicateResponse <- send(http.MethodPost, directAdminRoutePrefix+reconcilePath, lookupBody, supportToken)
+			}()
 			var duplicate []byte
 			select {
 			case duplicate = <-duplicateResponse:
@@ -578,7 +662,7 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 				stored.KnownOrderPollLeaseUntil != nil || !reflect.DeepEqual(stored.ChargedUSDCents, scenario.verifiedDebit) || lookups.Load() != 2 {
 				t.Fatalf("numeric reconciliation did not retain the original hold and schedule: %+v, lookups=%d", stored, lookups.Load())
 			}
-			review, err := f.store.GetRecharge(ctx, childID)
+			review, err = f.store.GetRecharge(ctx, childID)
 			if err != nil || review == nil || review.Stage != kafudadomain.StageManualReview || review.ReasonCode != wantReviewReason ||
 				review.CompletedAt != nil || review.CompletionEmailPending || !reflect.DeepEqual(review.Snapshot, snapshot) {
 				t.Fatalf("unexpected recharge after verification: %+v, %v", review, err)
@@ -629,6 +713,7 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 			if !reflect.DeepEqual(settled.ChargedUSDCents, wantDebit) {
 				t.Fatalf("known lookup lost the verified debit: %+v", settled)
 			}
+			wantSubmissions := int32(1)
 			if costHold {
 				assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusFulfilling, paidAt)
 				review, err := f.store.GetRecharge(ctx, childID)
@@ -638,19 +723,31 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 				release(true, response.CodeBadRequest)
 			} else if completed {
 				assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusCompleted, paidAt)
+				assertBuyerStage(kafudadomain.StageCompleted)
+				submit(response.CodeBadRequest)
 				release(true, response.CodeBadRequest)
 				if replay, err := kafudaworkflow.ApplyPolledResult(orders, childID, attemptID, *result, startedAt, receivedAt, interval, 0); err != nil || replay {
 					t.Fatalf("completion replay: completed=%t, %v", replay, err)
 				}
 			} else {
 				assertReviewList(1)
+				submit(response.CodeBadRequest)
 				release(false, response.CodeBadRequest)
 				release(true, response.CodeOK)
 				release(true, response.CodeBadRequest)
-				retry, err := reserve(time.Now().UTC())
-				if err != nil || retry == nil || !retry.Created || retry.Attempt.Sequence != 2 || retry.Attempt.Reference == reference ||
-					!reflect.DeepEqual(retry.Recharge.Snapshot, snapshot) {
-					t.Fatalf("confirmed release did not allow a fresh attempt for the paid snapshot: %+v, %v", retry, err)
+				assertBuyerStage(kafudadomain.StageWaiting)
+				submit(response.CodeOK)
+				wantSubmissions = 2
+				fresh, err := f.store.GetRecharge(ctx, childID)
+				if err != nil || fresh == nil || fresh.CurrentAttemptID == nil || *fresh.CurrentAttemptID == attemptID || fresh.AttemptCount != 2 ||
+					!reflect.DeepEqual(fresh.Snapshot, snapshot) {
+					t.Fatalf("confirmed release did not allow a fresh attempt for the paid snapshot: %+v, %v", fresh, err)
+				}
+				retry, err := f.store.GetAttempt(ctx, *fresh.CurrentAttemptID)
+				newRequest := retryRequest.Load()
+				if err != nil || retry == nil || newRequest == nil || retry.Reference == reference || retry.Reference != newRequest.Reference ||
+					retry.QuoteID != newRequest.QuoteID || retry.Status != kafudadomain.AttemptProcessing {
+					t.Fatalf("buyer retry did not submit a new quote and reference: %+v, %v", retry, err)
 				}
 				stale := *result
 				stale.Status = string(kafudadomain.AttemptCompleted)
@@ -658,6 +755,9 @@ func testDirectSupplierRecovery(t *testing.T, newFixture func(*testing.T) direct
 					t.Fatalf("old supplier result after replacement: completed=%t, %v", replay, err)
 				}
 				assertDirectShopOrderStatus(t, orders, order, constants.OrderStatusFulfilling, paidAt)
+			}
+			if checks.Load() != wantSubmissions || submissions.Load() != wantSubmissions {
+				t.Fatalf("unexpected supplier calls: checks=%d, submissions=%d, want %d each", checks.Load(), submissions.Load(), wantSubmissions)
 			}
 			if costHold {
 				assertReviewList(1)
