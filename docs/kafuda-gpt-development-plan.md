@@ -531,11 +531,15 @@
 
 本节是后续联调记录。K01–K10 的开发验收以第 5、7 节的本地回归与模拟演练为准。
 
-- [ ] 目录套餐与地区的确切对应结构，以及卡头的地区适用范围。
+- [x] 核对目录中套餐与付款地区的对应结构。
+  - `catalog.regions` 给出付款地区，套餐自己的 `plans[].regions` 给出可匹配的地区和估价。仓库真实目录样例覆盖 PH、CL、EG、JP、US 共 5 个地区、12 个套餐及 60 个组合。两种估价均大于零的有 32 个，`plus_half` 和 6 个 Codex 点数套餐在该样例中仅 PH 同时有两种正估价。组合按各套餐自己的地区记录生成。[Kafuda 公开 API 文档 §6.1、6.4](https://kafuda.com/docs/api) · [实际目录样例](gpt_catalog_data.json)
+- [ ] 使用现场商户和实际部署卡头，验证各目标付款地区的账号检查和报价。
+  - `auto_card_products[].issuing_area` 是发卡地区，买家检查中的 `country` 是订单付款地区。官方选卡页面将香港发行的卡头标为 ChatGPT 直充不可用，真实目录样例中两条香港卡头均带限制原因。卡头与各付款地区的完整匹配关系仍待商户用选定的 `product_code` 和 `country` 验证。[Kafuda 公开 API 文档 §6.3–6.5](https://kafuda.com/docs/api) · [官方选卡页面资源](https://kafuda.com/assets/index-hr8f-qvA.js)
 - [ ] 对照完整文档和联调结果，确认上游检查、报价及下单实际传递的字段。公开接口的 Session 示例用于核对供应商协议。
   - 复核 [Kafuda 公开 API 文档](https://kafuda.com/docs/api) §6.5–6.6。账号检查使用 `country`、`pay_mode`、`session`，自动开卡可指定 `product_code`；`auto_card` 下单发送 `quote_id` 和商城生成的 `reference`，`card_id` 只在 `own_card` 必填。已和当前客户端请求结构核对，真实商户授权及下单待联验。
 - [x] 买家授权首期使用买家主动提交的登录 Session，服务端仅同步转发给账号检查接口，后续创建订单不携带 Session。拒绝把 Session 写入数据库、任务、URL 或日志。
 - [ ] 核实买家 Session 的有效期；仍需实测按原 reference 查证未知订单的商户接口。
+  - 公开文档说明账号检查返回的 `quote_id` 有效约 9 分钟，并说明可提交含 `sessionToken` 的完整 JSON 或单独的 Session Token。买家 Session 的有效期及失效响应待联验。[Kafuda 公开 API 文档 §6.1–6.2](https://kafuda.com/docs/api)
 - [ ] API Token 权限、速率限制与错误结构。
   - 官方文档 §2–3、11 将目录和订单查询归入 `read`，检查账号、报价和下单归入 `gpt`。限流按出口 IP 共享，通用额度为每分钟 300 次，检查账号、报价和强制刷新另有更严格的限额。一次匿名目录请求返回 HTTP `401` 和 `error.code=unauthorized`，已验证错误结构的 `code` 和 `message` 字段。商户令牌权限和限流响应仍待联验。
 - [ ] 订单可返回的充值阶段、更新时间、终态语义，以及允许的轮询频率；确认可反馈的进度粒度及实际延迟。
