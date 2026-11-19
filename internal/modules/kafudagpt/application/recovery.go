@@ -69,25 +69,25 @@ func (s *Service) PollKnownOrder(ctx, lookupCtx context.Context, gateway kafudac
 		}
 	}
 	// Never return raw gateway errors, which may contain upstream payloads.
-	if reviewAfter <= 0 {
-		reviewAfter = DefaultPollReviewAfter
-	}
-	rescheduleErr := s.rescheduleKnownOrderPoll(ctx, attemptID, *attempt.NextPollAt, now, failedAt, retryAt, reviewAfter)
+	rescheduleErr := s.rescheduleKnownOrderPoll(ctx, attemptID, *attempt.NextPollAt, now, failedAt, retryAt, reviewAfter, "lookup_deadline_exceeded")
 	if rateLimited {
 		return nil, errors.Join(ErrKnownOrderLookupFailed, ErrKnownOrderRateLimited, rescheduleErr)
 	}
 	return nil, errors.Join(ErrKnownOrderLookupFailed, rescheduleErr)
 }
 
-// RescheduleKnownOrderPoll defers a failed numeric lookup. A worker that read
-// an older schedule cannot delay a lookup already rescheduled by another worker.
-func (s *Service) RescheduleKnownOrderPoll(ctx context.Context, attemptID uint, scheduledAt, now, nextPoll time.Time) error {
-	return s.rescheduleKnownOrderPoll(ctx, attemptID, scheduledAt, now, now, nextPoll, 0)
+// RescheduleKnownOrderResult retries a verified lookup whose local application
+// failed. After the review deadline, the attempt remains active for polling.
+func (s *Service) RescheduleKnownOrderResult(ctx context.Context, attemptID uint, scheduledAt, startedAt, now, nextPoll time.Time, reviewAfter time.Duration) error {
+	return s.rescheduleKnownOrderPoll(ctx, attemptID, scheduledAt, startedAt, now, nextPoll, reviewAfter, kafudadomain.ReasonResultApplyFailed)
 }
 
-func (s *Service) rescheduleKnownOrderPoll(ctx context.Context, attemptID uint, scheduledAt, startedAt, now, nextPoll time.Time, reviewAfter time.Duration) error {
+func (s *Service) rescheduleKnownOrderPoll(ctx context.Context, attemptID uint, scheduledAt, startedAt, now, nextPoll time.Time, reviewAfter time.Duration, reason string) error {
 	if scheduledAt.IsZero() || startedAt.Before(scheduledAt) || now.Before(startedAt) || !nextPoll.After(now) {
 		return kafudadomain.ErrInvalidTransition
+	}
+	if reviewAfter <= 0 {
+		reviewAfter = DefaultPollReviewAfter
 	}
 	return s.change(ctx, attemptID, func(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) error {
 		if !attempt.Status.Active() || attempt.Status == kafudadomain.AttemptChecking ||
@@ -98,9 +98,9 @@ func (s *Service) rescheduleKnownOrderPoll(ctx context.Context, attemptID uint, 
 			return kafudadomain.ErrConflict
 		}
 		attempt.NextPollAt, attempt.UpdatedAt = &nextPoll, now
-		if reviewAfter > 0 && now.Sub(attempt.CreatedAt) >= reviewAfter && record.Stage != kafudadomain.StageManualReview {
+		if now.Sub(attempt.CreatedAt) >= reviewAfter && record.Stage != kafudadomain.StageManualReview {
 			attempt.Status = kafudadomain.AttemptReview
-			record.Stage, record.ReasonCode = kafudadomain.StageManualReview, "lookup_deadline_exceeded"
+			record.Stage, record.ReasonCode = kafudadomain.StageManualReview, reason
 		}
 		record.UpdatedAt = now
 		return nil

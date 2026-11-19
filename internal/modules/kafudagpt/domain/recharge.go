@@ -27,6 +27,7 @@ const (
 	ReasonQuoteUnavailable  = "quote_unavailable"
 	ReasonQuotePolicy       = "quote_policy"
 	ReasonCostLimitExceeded = "cost_limit_exceeded"
+	ReasonResultApplyFailed = "result_apply_failed"
 )
 
 var (

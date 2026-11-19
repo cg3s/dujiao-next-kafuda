@@ -244,7 +244,7 @@ func TestKafudaRecoveryTaskRecoversChecksAndCompletesKnownOrder(t *testing.T) {
 
 func TestKafudaPollStopsCurrentBatchWhenUpstreamRateLimits(t *testing.T) {
 	gateway := &kafudaPollTestGateway{err: &kafudacontract.APIError{HTTPStatus: 429, RetryAfter: 5 * time.Minute}}
-	c, store, due := newKafudaPollBatch(t, gateway, 1, 2)
+	c, store, due, _ := newKafudaPollBatch(t, gateway, 1, 2)
 	ctx := t.Context()
 	if err := c.pollKnownKafudaOrders(ctx); !errors.Is(err, kafudaapp.ErrKnownOrderRateLimited) {
 		t.Fatalf("missing rate-limit classification: %v", err)
@@ -261,7 +261,7 @@ func TestKafudaPollStopsCurrentBatchWhenUpstreamRateLimits(t *testing.T) {
 func TestKafudaRecoveryTaskPersistsBackoffAfterLookupDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		gateway := &kafudaDeadlineTestGateway{}
-		c, store, _ := newKafudaPollBatch(t, gateway, 1, 2)
+		c, store, _, _ := newKafudaPollBatch(t, gateway, 1, 2)
 		c.Config = &config.Config{KafudaGPT: config.KafudaGPTConfig{PollReviewAfterSeconds: 60}}
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
@@ -303,7 +303,7 @@ func TestKafudaRecoveryTaskSchedulesFromSuccessfulLookupResponse(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const interval = 10 * time.Second
 		gateway := &kafudaPollTestGateway{delay: 25 * time.Second}
-		c, store, _ := newKafudaPollBatch(t, gateway, 1)
+		c, store, _, _ := newKafudaPollBatch(t, gateway, 1)
 		c.Config = &config.Config{KafudaGPT: config.KafudaGPTConfig{PollIntervalSeconds: int(interval / time.Second)}}
 		ctx := t.Context()
 		started := time.Now().UTC()
@@ -340,7 +340,91 @@ func TestKafudaRecoveryTaskSchedulesFromSuccessfulLookupResponse(t *testing.T) {
 	})
 }
 
-func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway, orderIDs ...uint) (*Consumer, *gormstore.Store, time.Time) {
+func TestKafudaRecoveryTaskEscalatesResultApplicationFailure(t *testing.T) {
+	for _, scenario := range []struct {
+		name          string
+		reviewSeconds int
+		reviewAfter   time.Duration
+	}{
+		{name: "configured", reviewSeconds: 3600 + 120, reviewAfter: time.Hour + 2*time.Minute},
+		{name: "default", reviewAfter: kafudaapp.DefaultPollReviewAfter},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const parentID, childID = 101, 1
+				gateway := &kafudaPollTestGateway{}
+				c, store, _, db := newKafudaPollBatch(t, gateway, childID)
+				c.Config = &config.Config{KafudaGPT: config.KafudaGPTConfig{PollReviewAfterSeconds: scenario.reviewSeconds}}
+				ctx := t.Context()
+				due, err := store.DueKnownOrderPolls(ctx, time.Now().UTC(), 10)
+				if err != nil || len(due) != 1 || due[0].UpstreamOrderID == nil {
+					t.Fatalf("expected one due attempt with an upstream ID, got %+v, %v", due, err)
+				}
+				initial := due[0]
+				gateway.result = kafudacontract.OrderResult{
+					ID: *initial.UpstreamOrderID, Reference: initial.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed",
+				}
+				trigger := fmt.Sprintf("CREATE TRIGGER reject_poll_completion BEFORE UPDATE ON orders WHEN OLD.id = %d AND NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'local completion failed'); END", parentID)
+				if err := db.Exec(trigger).Error; err != nil {
+					t.Fatal(err)
+				}
+				mux := asynq.NewServeMux()
+				c.Register(mux)
+				task := queue.NewKafudaRecoverChecksTask()
+
+				reviewAt := initial.CreatedAt.Add(scenario.reviewAfter)
+				time.Sleep(time.Until(reviewAt.Add(-2 * time.Minute)))
+				if err := mux.ProcessTask(ctx, task); err == nil {
+					t.Fatal("expected the first completion transaction to fail")
+				}
+				beforeReview, err := store.GetAttempt(ctx, initial.ID)
+				if err != nil || beforeReview == nil || beforeReview.Status != kafudadomain.AttemptProcessing ||
+					beforeReview.NextPollAt == nil || !beforeReview.NextPollAt.Equal(reviewAt) {
+					t.Fatalf("first failure should retry before escalating: %+v, %v", beforeReview, err)
+				}
+				assertDirectPollOrderStatus(t, c.OrderStore, parentID, childID, constants.OrderStatusPaid)
+
+				time.Sleep(time.Until(reviewAt))
+				if err := mux.ProcessTask(ctx, task); err == nil {
+					t.Fatal("expected the completion transaction to still fail")
+				}
+				record, err := store.GetRecharge(ctx, childID)
+				if err != nil || record == nil || record.Stage != kafudadomain.StageManualReview || record.ReasonCode != "result_apply_failed" ||
+					record.CompletedAt != nil || record.CompletionEmailPending {
+					t.Fatalf("result not escalated to manual review after the deadline: %+v, %v", record, err)
+				}
+				review, err := store.GetAttempt(ctx, initial.ID)
+				if err != nil || review == nil || review.Status != kafudadomain.AttemptReview || review.ActiveOrderID == nil || *review.ActiveOrderID != childID ||
+					review.NextPollAt == nil || !review.NextPollAt.Equal(reviewAt.Add(4*time.Minute)) ||
+					review.UpstreamOrderID == nil || *review.UpstreamOrderID != *initial.UpstreamOrderID ||
+					review.Reference != initial.Reference || kafudacontract.CanResolveManualAttempt(record, review) {
+					t.Fatalf("manual review lost the active attempt or permitted manual resolution: %+v, %v", review, err)
+				}
+				assertDirectPollOrderStatus(t, c.OrderStore, parentID, childID, constants.OrderStatusFulfilling)
+				var deliveries int64
+				if err := db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&deliveries).Error; err != nil || deliveries != 0 {
+					t.Fatalf("failed completion left fulfillment rows: %d, %v", deliveries, err)
+				}
+
+				if err := db.Exec("DROP TRIGGER reject_poll_completion").Error; err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(time.Until(*review.NextPollAt))
+				for range 2 {
+					if err := mux.ProcessTask(ctx, task); err != nil {
+						t.Fatal(err)
+					}
+				}
+				assertDirectPollOrderStatus(t, c.OrderStore, parentID, childID, constants.OrderStatusCompleted)
+				if err := db.Model(&fulfillmentdomain.Fulfillment{}).Where("order_id = ?", childID).Count(&deliveries).Error; err != nil || deliveries != 1 || len(gateway.ids) != 3 {
+					t.Fatalf("recovery did not fulfill exactly once: rows=%d lookups=%v, %v", deliveries, gateway.ids, err)
+				}
+			})
+		})
+	}
+}
+
+func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway, orderIDs ...uint) (*Consumer, *gormstore.Store, time.Time, *gorm.DB) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -394,7 +478,7 @@ func newKafudaPollBatch(t *testing.T, gateway kafudacontract.Gateway, orderIDs .
 		KafudaGPT:  module,
 		OrderStore: orders,
 	})
-	return c, store, due
+	return c, store, due, db
 }
 
 func seedPaidDirectPollOrder(t *testing.T, db *gorm.DB, parentID, childID uint, paidAt time.Time) (orderdomain.Order, orderdomain.Order) {

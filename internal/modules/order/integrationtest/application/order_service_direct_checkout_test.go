@@ -139,6 +139,9 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 			}
 		}
 		rechargeUpdates := map[string]any{"stage": scenario.stage, "reason_code": "outcome_unknown"}
+		if scenario.name == "manual_review" {
+			rechargeUpdates["reason_code"] = kafudadomain.ReasonResultApplyFailed
+		}
 		if scenario.completed {
 			rechargeUpdates["completed_at"] = now
 		}
@@ -165,7 +168,7 @@ func testAdminDirectReviewFilterAndProjection(t *testing.T, f directCheckoutFixt
 	}
 	for _, id := range []uint{parentID, childID} {
 		raw := get(fmt.Sprintf("/admin/orders/%d", id)).Body.String()
-		if !strings.Contains(raw, `"status":"fulfilling"`) || !strings.Contains(raw, `"upstream_order_id":"9007199254740993"`) || !strings.Contains(raw, `"reason":"outcome_unknown"`) ||
+		if !strings.Contains(raw, `"status":"fulfilling"`) || !strings.Contains(raw, `"upstream_order_id":"9007199254740993"`) || !strings.Contains(raw, `"reason":"result_apply_failed"`) ||
 			!strings.Contains(raw, `"active":true`) || strings.Contains(raw, "private@example.test") || strings.Contains(raw, "private-quote") {
 			t.Fatalf("unexpected projection: %s", raw)
 		}

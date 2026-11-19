@@ -96,11 +96,15 @@ func TestRecoveryDoesNotReleaseSubmittedOrUnknownAttempts(t *testing.T) {
 	}
 	review := polls[1]
 	due, retry := now.Add(time.Second), now.Add(2*time.Minute)
-	if err := service.RescheduleKnownOrderPoll(ctx, review.ID, due, due, retry); err != nil {
+	if err := service.RescheduleKnownOrderResult(ctx, review.ID, due, due, due, retry, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.RescheduleKnownOrderPoll(ctx, review.ID, due, due, retry.Add(time.Minute)); !errors.Is(err, kafudadomain.ErrConflict) {
+	if err := service.RescheduleKnownOrderResult(ctx, review.ID, due, due, due, retry.Add(time.Minute), time.Second); !errors.Is(err, kafudadomain.ErrConflict) {
 		t.Fatalf("duplicate lookup failure overwrote the new schedule: %v", err)
+	}
+	reviewRecord, err := store.GetRecharge(ctx, review.OrderID)
+	if err != nil || reviewRecord == nil || reviewRecord.Stage != kafudadomain.StageManualReview || reviewRecord.ReasonCode != "upstream_review" {
+		t.Fatalf("result application failure changed the existing review reason: %+v, %v", reviewRecord, err)
 	}
 	updated, err := store.GetAttempt(ctx, review.ID)
 	if err != nil || updated == nil || updated.Status != kafudadomain.AttemptReview || updated.ActiveOrderID == nil ||

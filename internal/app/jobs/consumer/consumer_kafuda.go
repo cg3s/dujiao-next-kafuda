@@ -97,9 +97,9 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 		if err == nil || errors.Is(err, kafudadomain.ErrConflict) || errors.Is(err, kafudadomain.ErrNotFound) {
 			continue
 		}
-		retryFrom := time.Now().UTC()
+		retryFrom := startedAt.Add(time.Since(lookupStarted))
 		if attempt.NextPollAt != nil {
-			err = errors.Join(err, module.Records.RescheduleKnownOrderPoll(ctx, attempt.ID, *attempt.NextPollAt, retryFrom, retryFrom.Add(retryDelay)))
+			err = errors.Join(err, module.Records.RescheduleKnownOrderResult(ctx, attempt.ID, *attempt.NextPollAt, startedAt, retryFrom, retryFrom.Add(retryDelay), reviewAfter))
 		}
 		failures = append(failures, err)
 	}
