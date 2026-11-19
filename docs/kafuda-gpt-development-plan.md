@@ -541,7 +541,8 @@
 - [ ] 回调的签名、重放防护、事件字段、样例和重试策略；不从现有片段推断，首期轮询不依赖回调开放。
 - [ ] 准备测试环境、部署侧商户配置、测试账号和费用额度。走通真实目录、后台复核、浏览、预览、正式支付、Session 检查、报价、下单和数字 ID 查单，记录实际进度延迟与售后结果。
 - [ ] 在部署环境核对目录刷新、Redis 调度、worker 恢复和 PostgreSQL 行锁；如获灰度授权，再核对单套餐、单地区的实际费用、开通结果、凭据清理与停售后旧单处理。
-  - 本地部署装配回归使用生产容器、商城路由、Redis 7.0.15 和模拟 HTTPS 上游。队列已启用但 worker 未运行时显示 `worker_not_ready`，保留已配置规格并拒绝预览。启动标准 worker 和调度器后，同一规格恢复可售，买家钱包付款并授权，定时按原数字单号查单，父子单同步完结且仅交付一次。使用隔离的新 Redis 实例，设置 `TEST_KAFUDA_REDIS_PORT` 后运行 `go test -tags integration ./internal/app/jobs -run '^TestRedisKafudaProductionShopStartsSellingAndFulfills$'`。
+  - 本地部署装配回归使用生产容器、正式迁移、商城路由、Redis 7.0.15 和模拟 HTTPS 上游，在 SQLite 和 PostgreSQL 16.15 通过。worker 未运行时保留已配置规格并拒绝预览，启动后恢复可售。买家钱包付款并授权后停止 worker，规格转为不可购买，原订单仍可查看充值中状态。新 worker 和调度器启动后，规格恢复可售，按原数字单号继续查单，父子单同步完结且仅交付一次。使用隔离的新 Redis 实例设置 `TEST_KAFUDA_REDIS_PORT`，并将 `TEST_POSTGRES_DSN` 指向允许创建隔离 schema 的测试库，运行 `go test -tags integration ./internal/app/jobs -run '^TestRedisKafudaProductionShopStartsSellingAndFulfills$'`。
+  - PostgreSQL 实库另复验下单与履约类型切换竞争同一商品锁、建单等待目录修订，以及查单租约到期后由新 worker 接管。部署测试站的配置与这些运行结果仍需现场核对。
 - [ ] 实测 `x-ratelimit-reset` 的时间语义。现有客户端按 Unix 时间戳解释，接口快照仅注明单位为秒。
 
 ## 7. 开发交付与验收

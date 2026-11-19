@@ -3,10 +3,13 @@
 package jobs
 
 import (
+	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -33,11 +36,29 @@ import (
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/shopspring/decimal"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 func TestRedisKafudaProductionShopStartsSellingAndFulfills(t *testing.T) {
-	redis, _ := kafudaRedisFixture(t, 13)
+	t.Run("sqlite", func(t *testing.T) {
+		testRedisKafudaProductionShop(t, 13, "")
+	})
+	t.Run("postgres", func(t *testing.T) {
+		dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+		if dsn == "" {
+			t.Skip("TEST_POSTGRES_DSN is empty")
+		}
+		testRedisKafudaProductionShop(t, 12, dsn)
+	})
+}
+
+func testRedisKafudaProductionShop(t *testing.T, redisDB int, postgresDSN string) {
+	t.Helper()
+	redis, _ := kafudaRedisFixture(t, redisDB)
 	ctx := t.Context()
 	const secret = "kafuda-shop-fixture-secret-for-jwt"
 	const cardCode = "shop-test-card"
@@ -110,19 +131,7 @@ func TestRedisKafudaProductionShopStartsSellingAndFulfills(t *testing.T) {
 	http.DefaultTransport = supplier.Client().Transport
 	t.Cleanup(func() { http.DefaultTransport = previousTransport })
 
-	previousDB := gormdb.DB
-	if err := gormdb.InitDB("sqlite", ":memory:", gormdb.DBPoolConfig{MaxOpenConns: 1, MaxIdleConns: 1}, gin.TestMode); err != nil {
-		t.Fatal(err)
-	}
-	db := gormdb.DB
-	pool, err := db.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = pool.Close()
-		gormdb.DB = previousDB
-	})
+	db := openKafudaProductionShopDB(t, postgresDSN)
 	if err := migrations.AutoMigrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -205,18 +214,23 @@ func TestRedisKafudaProductionShopStartsSellingAndFulfills(t *testing.T) {
 	assertAvailability(true)
 	request(http.MethodPost, orders+"/preview", items+"}", response.CodeBadRequest, nil)
 
-	worker, err := NewService(redis, jobconsumer.New(deps))
-	if err != nil {
-		t.Fatal(err)
+	startWorker := func() *Service {
+		t.Helper()
+		worker, err := NewService(redis, jobconsumer.New(deps))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = worker.Stop(context.Background()) })
+		if err := worker.scheduler.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := worker.server.Start(worker.mux); err != nil {
+			t.Fatal(err)
+		}
+		awaitKafudaRedis(t, 25*time.Second, func() bool { return deps.KafudaGPT.Commerce.SalesBlockReason(ctx) == "" })
+		return worker
 	}
-	t.Cleanup(func() { _ = worker.Stop(ctx) })
-	if err := worker.scheduler.Start(); err != nil {
-		t.Fatal(err)
-	}
-	if err := worker.server.Start(worker.mux); err != nil {
-		t.Fatal(err)
-	}
-	awaitKafudaRedis(t, 25*time.Second, func() bool { return deps.KafudaGPT.Commerce.SalesBlockReason(ctx) == "" })
+	worker := startWorker()
 	assertAvailability(false)
 	request(http.MethodPost, orders+"/preview", items+"}", response.CodeOK, nil)
 	var created struct {
@@ -238,7 +252,19 @@ func TestRedisKafudaProductionShopStartsSellingAndFulfills(t *testing.T) {
 	if status.Stage != string(kafudadomain.StageProcessing) {
 		t.Fatalf("authorized order stage = %q, want processing", status.Stage)
 	}
+	if err := worker.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	awaitKafudaRedis(t, 25*time.Second, func() bool { return deps.KafudaGPT.Commerce.SalesBlockReason(ctx) == "worker_not_ready" })
+	assertAvailability(true)
+	request(http.MethodPost, orders+"/preview", items+"}", response.CodeBadRequest, nil)
+	request(http.MethodGet, orderPath+"/direct-status", "", response.CodeOK, &status)
+	if status.Stage != string(kafudadomain.StageProcessing) {
+		t.Fatalf("worker shutdown changed the paid order's processing stage to %q", status.Stage)
+	}
 	complete.Store(true)
+	startWorker()
+	assertAvailability(false)
 	awaitKafudaRedis(t, 25*time.Second, func() bool {
 		request(http.MethodGet, orderPath+"/direct-status", "", response.CodeOK, &status)
 		return status.Stage == string(kafudadomain.StageCompleted)
@@ -253,4 +279,50 @@ func TestRedisKafudaProductionShopStartsSellingAndFulfills(t *testing.T) {
 		deliveries != 1 || submissions.Load() != 1 || lookups.Load() == 0 {
 		t.Fatalf("expected one submission and delivery via scheduled lookup, got submissions=%d lookups=%d deliveries=%d: %v", submissions.Load(), lookups.Load(), deliveries, err)
 	}
+}
+
+func openKafudaProductionShopDB(t *testing.T, postgresDSN string) *gorm.DB {
+	t.Helper()
+	previousDB := gormdb.DB
+	t.Cleanup(func() { gormdb.DB = previousDB })
+	if postgresDSN == "" {
+		if err := gormdb.InitDB("sqlite", ":memory:", gormdb.DBPoolConfig{MaxOpenConns: 1, MaxIdleConns: 1}, gin.TestMode); err != nil {
+			t.Fatal(err)
+		}
+		pool, err := gormdb.DB.DB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = pool.Close() })
+		return gormdb.DB
+	}
+
+	cfg, err := pgx.ParseConfig(postgresDSN)
+	if err != nil {
+		t.Fatal("invalid PostgreSQL test DSN")
+	}
+	admin := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() { _ = admin.Close() })
+	schema := pgx.Identifier{"kafuda_shop_" + strings.ToLower(rand.Text())}
+	if _, err := admin.ExecContext(t.Context(), "CREATE SCHEMA "+schema.Sanitize()); err != nil {
+		t.Fatalf("create PostgreSQL test schema: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := admin.ExecContext(ctx, "DROP SCHEMA "+schema.Sanitize()+" CASCADE"); err != nil {
+			t.Errorf("drop PostgreSQL test schema: %v", err)
+		}
+	})
+	scoped := cfg.Copy()
+	scoped.RuntimeParams["search_path"] = schema[0]
+	pool := stdlib.OpenDB(*scoped)
+	pool.SetMaxOpenConns(4)
+	t.Cleanup(func() { _ = pool.Close() })
+	db, err := gorm.Open(postgres.New(postgres.Config{Conn: pool}), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open PostgreSQL test schema: %v", err)
+	}
+	gormdb.DB = db
+	return db
 }
