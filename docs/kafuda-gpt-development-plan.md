@@ -532,13 +532,21 @@
 
 - [ ] 目录套餐与地区的确切对应结构，以及卡头的地区适用范围。
 - [ ] 对照完整文档和联调结果，确认上游检查、报价及下单实际传递的字段。公开接口的 Session 示例用于核对供应商协议。
+  - 复核 [Kafuda 公开 API 文档](https://kafuda.com/docs/api) §6.5–6.6。账号检查使用 `country`、`pay_mode`、`session`，自动开卡可指定 `product_code`；`auto_card` 下单发送 `quote_id` 和商城生成的 `reference`，`card_id` 只在 `own_card` 必填。已和当前客户端请求结构核对，真实商户授权及下单待联验。
 - [x] 买家授权首期使用买家主动提交的登录 Session，服务端仅同步转发给账号检查接口，后续创建订单不携带 Session。拒绝把 Session 写入数据库、任务、URL 或日志。
 - [ ] 核实买家 Session 的有效期；仍需实测按原 reference 查证未知订单的商户接口。
 - [ ] API Token 权限、速率限制与错误结构。
+  - 官方文档 §2–3、11 将目录和订单查询归入 `read`，检查账号、报价和下单归入 `gpt`。限流按出口 IP 共享，通用额度为每分钟 300 次，检查账号、报价和强制刷新另有更严格的限额。一次匿名目录请求返回 HTTP `401` 和 `error.code=unauthorized`，已验证错误结构的 `code` 和 `message` 字段。商户令牌权限和限流响应仍待联验。
 - [ ] 订单可返回的充值阶段、更新时间、终态语义，以及允许的轮询频率；确认可反馈的进度粒度及实际延迟。
+  - 官方文档 §6.7 的处理阶段为 `submitting`、`processing` 和 `needs_review`，终态为 `completed`、`failed` 和 `cancelled`，常规查单建议每 5–10 秒一次。订单创建响应样例含 `created_at`。查单的更新时间字段及实际延迟待商户联验。
 - [ ] `reference` 去重作用域和保留时长、未知订单查证方式及人工核对渠道。
+  - 官方文档 §3.2 说明 `Idempotency-Key` 根据账号和请求内容判定重放，§6.6 说明相同 `reference` 重下返回原单。两者为不同字段，`reference` 的精确检索入口和保留期限仍待商户实测，未知结果继续保留原尝试占位。
 - [ ] 报价里 `auto_card.total_cents` 的完整成本边界，以及失败、取消时开卡费和卡余额如何处理。
-- [ ] 回调的签名、重放防护、事件字段、样例和重试策略；不从现有片段推断，首期轮询不依赖回调开放。
+  - 官方文档 §6.3、6.5、6.7 确认 `total_cents` 为服务费、开卡费和新卡充值之和。付款完成后余款留在新卡，失败或取消会退服务费。失败和取消后的开卡费、卡余额及实际流水仍待核对。
+- [x] 已核对 [Kafuda 回调公开契约](https://kafuda.com/docs/api) §10 的签名、重放防护、事件样例和重试策略。首期采用轮询，真实投递验收随回调接入进行。
+  - 回调向公网 HTTPS 地址发送 JSON。以 `X-VCard-Signature` 中的 `t`、句点和原始请求体计算 HMAC-SHA256，常量时间校验 `v1`，时间偏差超过 5 分钟时拒绝，按事件 `id` 去重。
+  - 样例含 `id`、`type`、`created_at` 和 `data`。`gpt_order.completed` 携带数字订单号、套餐及服务费，`gpt_order.failed` 携带失败或取消状态及错误分类，`gpt_order.progress` 携带阶段。收到事件后按数字订单号查证最新状态。
+  - 10 秒内返回 2xx 确认投递。失败后按 10 秒、30 秒、2 分钟、10 分钟、30 分钟、2 小时、6 小时依次重试，随后停止。回调投递不跟随重定向。
 - [ ] 准备测试环境、部署侧商户配置、测试账号和费用额度。走通真实目录、后台复核、浏览、预览、正式支付、Session 检查、报价、下单和数字 ID 查单，记录实际进度延迟与售后结果。
 - [ ] 在部署环境核对目录刷新、Redis 调度、worker 恢复和 PostgreSQL 行锁；如获灰度授权，再核对单套餐、单地区的实际费用、开通结果、凭据清理与停售后旧单处理。
   - 本地部署装配回归使用生产容器、正式迁移、商城路由、Redis 7.0.15 和模拟 HTTPS 上游，在 SQLite 和 PostgreSQL 16.15 通过。worker 未运行时保留已配置规格并拒绝预览，启动后恢复可售。买家钱包付款并授权后停止 worker，规格转为不可购买，原订单仍可查看充值中状态。新 worker 和调度器启动后，规格恢复可售，按原数字单号继续查单，父子单同步完结且仅交付一次。使用隔离的新 Redis 实例设置 `TEST_KAFUDA_REDIS_PORT`，并将 `TEST_POSTGRES_DSN` 指向允许创建隔离 schema 的测试库，运行 `go test -tags integration ./internal/app/jobs -run '^TestRedisKafudaProductionShopStartsSellingAndFulfills$'`。
