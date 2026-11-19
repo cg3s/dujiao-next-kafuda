@@ -550,6 +550,7 @@
 - [ ] 准备测试环境、部署侧商户配置、测试账号和费用额度。走通真实目录、后台复核、浏览、预览、正式支付、Session 检查、报价、下单和数字 ID 查单，记录实际进度延迟与售后结果。
 - [ ] 在部署环境核对目录刷新、Redis 调度、worker 恢复和 PostgreSQL 行锁；如获灰度授权，再核对单套餐、单地区的实际费用、开通结果、凭据清理与停售后旧单处理。
   - 本地部署装配回归使用生产容器、正式迁移、商城路由、Redis 7.0.15 和模拟 HTTPS 上游，在 SQLite 和 PostgreSQL 16.15 通过。worker 未运行时保留已配置规格并拒绝预览，启动后恢复可售。买家钱包付款并授权后停止 worker，规格转为不可购买，原订单仍可查看充值中状态。新 worker 和调度器启动后，规格恢复可售，按原数字单号继续查单，父子单同步完结且仅交付一次。使用隔离的新 Redis 实例设置 `TEST_KAFUDA_REDIS_PORT`，并将 `TEST_POSTGRES_DSN` 指向允许创建隔离 schema 的测试库，运行 `go test -tags integration ./internal/app/jobs -run '^TestRedisKafudaProductionShopStartsSellingAndFulfills$'`。
+  - 本地发布演练从 `cbdf0e2e` 构建 Linux amd64 `release,fullstack` 二进制，实际启动 `-mode api` 和 `-mode worker` 两个进程，共用临时 SQLite 和真实 Redis。店面与自定义后台路径均正常加载。通过后台同步模拟 HTTPS 上游并配置单个规格，验证仅 API 进程运行时预览被拒绝，独立 worker 上线后恢复可售。买家用预置测试钱包余额付款并授权，模拟上游收到一次资格检查、一次下单和一次数字单号查询，父子单同步完结且只生成一份交付记录。停止 worker 后新购再次被拦截，原单仍可查看完成状态。
   - PostgreSQL 实库另复验下单与履约类型切换竞争同一商品锁、建单等待目录修订，以及查单租约到期后由新 worker 接管。部署测试站的配置与这些运行结果仍需现场核对。
   - 2026-11-19 只读复验部署测试站。`GET /health` 正常，公开配置上报 `app_version=v0.1.4`。直充商品 `chatgpt-01` 在店面列表和详情显示不可售，详情中的三个规格均已启用但不可购买。仓库的 `v0.1.4` 标签（`f29f21ff`）已接入 worker 就绪检查。后台目录的匿名读取返回业务码 `401`，当前阻断原因仍须由获授权的后台读取确认。
   - 后台目录补充 `catalog_stale`、`catalog_disabled` 和 `card_product_unavailable`，分别提示缓存缺失或过期、Kafuda 停用目录，以及部署选用的卡头缺失或受限。诊断使用当前响应的目录快照，复用购买校验的卡头判断，商品编辑页三语显示。HTTP 回归覆盖七种组合，包括 worker 未就绪时优先显示部署阻断。后台 85 项测试及生产构建通过，组件回归验证刷新后更新提示。
