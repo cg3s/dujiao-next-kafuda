@@ -42,9 +42,6 @@ func (s *Service) PrepareCheckedSubmission(ctx context.Context, attemptID, order
 			setCheckRejected(record, attempt, stage, reason, now)
 			return nil
 		}
-		if len(quote.QuoteID) > 128 {
-			return kafudadomain.ErrInvalidTransition
-		}
 		setSubmitting(record, attempt, quote.QuoteID, autoCardQuoteCosts(*quote, record.Snapshot), now, now.Add(lease))
 		request = kafudacontract.CreateOrderRequest{QuoteID: attempt.QuoteID, Reference: attempt.Reference}
 		expiresAt = quote.ExpiresAt
@@ -79,22 +76,30 @@ func SelectQuote(result kafudacontract.CheckResult, snapshot kafudadomain.Snapsh
 		return nil, ErrQuoteRegionLocked
 	}
 	var selected *kafudacontract.Quote
-	expired := false
+	expired, missingExpiry := false, false
 	for _, candidate := range result.Plans {
 		if candidate.Plan != snapshot.Plan || candidate.Status != "available" {
+			continue
+		}
+		if candidate.ExpiresAt.IsZero() {
+			missingExpiry = true
 			continue
 		}
 		if !candidate.ExpiresAt.After(now) {
 			expired = true
 			continue
 		}
-		if selected != nil || strings.TrimSpace(candidate.QuoteID) == "" || !allowedKind(candidate.Kind, snapshot.AllowedKinds) || autoCardQuoteCosts(candidate, snapshot) == nil {
+		if selected != nil || strings.TrimSpace(candidate.QuoteID) == "" || len(candidate.QuoteID) > 128 || strings.ContainsRune(candidate.QuoteID, '\x00') ||
+			!allowedKind(candidate.Kind, snapshot.AllowedKinds) || autoCardQuoteCosts(candidate, snapshot) == nil {
 			return nil, ErrQuotePolicy
 		}
 		quote := candidate
 		selected = &quote
 	}
 	if selected == nil {
+		if missingExpiry {
+			return nil, ErrQuotePolicy
+		}
 		if expired {
 			return nil, ErrQuoteExpired
 		}

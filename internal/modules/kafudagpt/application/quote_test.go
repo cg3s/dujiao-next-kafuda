@@ -3,6 +3,7 @@ package application
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,10 @@ func TestQuoteSelectionUsesPurchasedPlanAndFullUSDCost(t *testing.T) {
 		{"other_plan", func(q *kafudacontract.Quote) { q.Plan = "pro_5x" }, ErrQuoteUnavailable},
 		{"not_eligible", func(q *kafudacontract.Quote) { q.Status = "not_eligible" }, ErrQuoteUnavailable},
 		{"expires_now", func(q *kafudacontract.Quote) { q.ExpiresAt = now }, ErrQuoteExpired},
+		{"missing_expiry", func(q *kafudacontract.Quote) { q.ExpiresAt = time.Time{} }, ErrQuotePolicy},
 		{"blank_quote_id", func(q *kafudacontract.Quote) { q.QuoteID = " " }, ErrQuotePolicy},
+		{"oversized_quote_id", func(q *kafudacontract.Quote) { q.QuoteID = strings.Repeat("q", 129) }, ErrQuotePolicy},
+		{"quote_id_with_nul", func(q *kafudacontract.Quote) { q.QuoteID = "quo\x00bad" }, ErrQuotePolicy},
 		{"unexpected_upgrade", func(q *kafudacontract.Quote) { q.Kind = "upgrade" }, ErrQuotePolicy},
 		{"wrong_card", func(q *kafudacontract.Quote) { q.AutoCard.ProductCode = "OTHER" }, ErrQuotePolicy},
 		{"missing_costs", func(q *kafudacontract.Quote) { q.AutoCard = nil }, ErrQuotePolicy},
@@ -67,4 +71,14 @@ func TestQuoteSelectionUsesPurchasedPlanAndFullUSDCost(t *testing.T) {
 	if _, err := SelectQuote(result, snapshot, now); !errors.Is(err, ErrQuotePolicy) {
 		t.Fatalf("wrong country accepted: %v", err)
 	}
+	t.Run("eligible_quote_with_unusable_alternatives", func(t *testing.T) {
+		accepted, expired, missingExpiry := quote, quote, quote
+		accepted.QuoteID = strings.Repeat("q", 128)
+		expired.ExpiresAt = now
+		missingExpiry.ExpiresAt = time.Time{}
+		check := kafudacontract.CheckResult{Country: snapshot.Country, PayMode: snapshot.PayMode, Plans: []kafudacontract.Quote{expired, missingExpiry, accepted}}
+		if got, err := SelectQuote(check, snapshot, now); err != nil || got == nil || got.QuoteID != accepted.QuoteID {
+			t.Fatalf("eligible quote was not selected: %+v, %v", got, err)
+		}
+	})
 }

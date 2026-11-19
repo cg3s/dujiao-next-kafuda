@@ -724,6 +724,9 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 	}{
 		{"region_locked", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuoteRegionLocked},
 		{"quote_expired", kafudadomain.StageWaiting, false, kafudadomain.ReasonQuoteExpired},
+		{"quote_missing_expiry", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuotePolicy},
+		{"quote_id_too_long", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuotePolicy},
+		{"quote_id_contains_nul", kafudadomain.StageManualDelivery, false, kafudadomain.ReasonQuotePolicy},
 		{"upstream_quote_expired", kafudadomain.StageWaiting, true, kafudadomain.ReasonQuoteExpired},
 		{"upstream_quote_expired_after_recovery", kafudadomain.StageManualReview, true, "outcome_unknown"},
 		{"upstream_balance_insufficient", kafudadomain.StageManualDelivery, true, kafudadomain.ReasonMerchantBalanceInsufficient},
@@ -792,6 +795,12 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 			switch scenario.name {
 			case "quote_expired":
 				check.Plans[0].ExpiresAt = now
+			case "quote_missing_expiry":
+				check.Plans[0].ExpiresAt = time.Time{}
+			case "quote_id_too_long":
+				check.Plans[0].QuoteID = strings.Repeat("q", 129)
+			case "quote_id_contains_nul":
+				check.Plans[0].QuoteID = "quo\x00bad"
 			case "quote_unavailable":
 				check.Plans[0].Status = "not_eligible"
 			case "policy_rejected":
@@ -878,9 +887,9 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				if !errors.Is(err, kafudacontract.ErrMerchantBalanceInsufficient) {
 					t.Fatalf("expected merchant balance rejection, got %v", err)
 				}
-			case "changed_snapshot_country":
+			case "changed_snapshot_country", "quote_missing_expiry", "quote_id_too_long", "quote_id_contains_nul":
 				if !errors.Is(err, kafudaapp.ErrQuotePolicy) {
-					t.Fatalf("expected rejection of a quote for the wrong paid country, got %v", err)
+					t.Fatalf("expected policy rejection before dispatch, got %v", err)
 				}
 			case "changed_reservation_reference":
 				if !errors.Is(err, kafudadomain.ErrConflict) {
@@ -935,20 +944,21 @@ func testSubmitCheckedDirectQuote(t *testing.T, newFixture func(*testing.T) dire
 				wantStatus = constants.OrderStatusCompleted
 			}
 			assertDirectShopOrderStatus(t, f.options.OrderStore, order, wantStatus, now)
-			if scenario.wantReason == kafudadomain.ReasonQuoteExpired || scenario.wantReason == kafudadomain.ReasonMerchantBalanceInsufficient {
-				previous, err := f.store.GetAttempt(ctx, reservation.Attempt.ID)
+			if scenario.wantReason == kafudadomain.ReasonQuoteExpired || scenario.wantReason == kafudadomain.ReasonMerchantBalanceInsufficient ||
+				scenario.wantReason == kafudadomain.ReasonQuotePolicy {
+				previous := original
 				var wantQuoteID string
 				if scenario.wantCall {
 					wantQuoteID = "quote_checkout"
 				}
-				if err != nil || previous == nil || previous.Status != kafudadomain.AttemptFailed || previous.ActiveOrderID != nil ||
+				if previous.Status != kafudadomain.AttemptFailed || previous.ActiveOrderID != nil ||
 					previous.QuoteID != wantQuoteID || previous.NextPollAt != nil || previous.UpstreamOrderID != nil || previous.Reference != reservation.Attempt.Reference ||
 					record.CurrentAttemptID == nil || *record.CurrentAttemptID != previous.ID {
-					t.Fatalf("rejected quote left an active attempt or lost history: %+v, %v", previous, err)
+					t.Fatalf("rejected quote left an active attempt or lost history: %+v", previous)
 				}
-				if scenario.wantReason == kafudadomain.ReasonMerchantBalanceInsufficient {
+				if scenario.wantReason != kafudadomain.ReasonQuoteExpired {
 					if !kafudacontract.CanResolveManualAttempt(record, previous) {
-						t.Fatal("definitive merchant rejection did not open controlled after-sales")
+						t.Fatal("definitive quote rejection did not open controlled after-sales")
 					}
 					return
 				}
