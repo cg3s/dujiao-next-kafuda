@@ -67,7 +67,7 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 	}
 	var failures []error
 	interval := c.Config.KafudaPollInterval()
-	var reviewAfter time.Duration
+	reviewAfter := kafudaapp.DefaultPollReviewAfter
 	if c.Config != nil {
 		seconds := c.Config.KafudaGPT.PollReviewAfterSeconds
 		if seconds > 0 && int64(seconds) <= int64((1<<63-1)/time.Second) {
@@ -92,7 +92,7 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 			continue
 		}
 		receivedAt := startedAt.Add(time.Since(lookupStarted))
-		completed, err := kafudaworkflow.ApplyResult(c.OrderStore, attempt.OrderID, attempt.ID, *result, startedAt, receivedAt, interval)
+		completed, err := kafudaworkflow.ApplyPolledResult(c.OrderStore, attempt.OrderID, attempt.ID, *result, startedAt, receivedAt, interval, reviewAfter)
 		if completed {
 			kafudaworkflow.EnqueueCompletionEmail(ctx, c.OrderStore, module.Store, c.orderStatusQueue, c.SettingService, c.Config, attempt.OrderID)
 		}

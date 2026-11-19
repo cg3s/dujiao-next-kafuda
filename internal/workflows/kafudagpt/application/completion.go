@@ -73,11 +73,20 @@ func ConfirmUpstreamCompletionAndNotify(ctx context.Context, store ordercontract
 // ApplyResult records the supplier outcome and completes a paid direct order
 // atomically. A fresh completion flag is safe to use only after commit.
 func ApplyResult(store ordercontract.Store, childID, attemptID uint, result kafudacontract.OrderResult, startedAt, receivedAt time.Time, pollInterval time.Duration) (bool, error) {
+	return applyResult(store, childID, attemptID, result, startedAt, receivedAt, pollInterval, 0)
+}
+
+// ApplyPolledResult also flags a supplier attempt that remains in progress at the review deadline.
+func ApplyPolledResult(store ordercontract.Store, childID, attemptID uint, result kafudacontract.OrderResult, startedAt, receivedAt time.Time, pollInterval, reviewAfter time.Duration) (bool, error) {
+	return applyResult(store, childID, attemptID, result, startedAt, receivedAt, pollInterval, reviewAfter)
+}
+
+func applyResult(store ordercontract.Store, childID, attemptID uint, result kafudacontract.OrderResult, startedAt, receivedAt time.Time, pollInterval, reviewAfter time.Duration) (bool, error) {
 	var completed bool
 	err := withLockedDirectOrder(store, childID, func(tx ordercontract.Transaction, parent *orderdomain.Order) error {
 		var err error
 		recharges := tx.KafudaGPT()
-		completed, err = kafudaapp.RecordResultInTransaction(recharges, childID, attemptID, result, startedAt, receivedAt, receivedAt.Add(pollInterval))
+		completed, err = kafudaapp.RecordResultInTransaction(recharges, childID, attemptID, result, startedAt, receivedAt, receivedAt.Add(pollInterval), reviewAfter)
 		if err != nil {
 			return err
 		}

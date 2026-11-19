@@ -172,7 +172,7 @@ func TestRechargeCompletionCanShareCallerTransaction(t *testing.T) {
 	result := kafudacontract.OrderResult{ID: 101, Reference: attempt.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: "completed"}
 	orderWriteErr := errors.New("shop order update failed")
 	if err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
-		completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, now, time.Time{})
+		completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, now, time.Time{}, 0)
 		if err != nil || !completed {
 			t.Fatalf("expected fresh completion: %t, %v", completed, err)
 		}
@@ -190,7 +190,7 @@ func TestRechargeCompletionCanShareCallerTransaction(t *testing.T) {
 	}
 	for _, wantFresh := range []bool{true, false} {
 		if err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
-			completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, now, time.Time{})
+			completed, err := kafudaapp.RecordResultInTransaction(tx, 10, attempt.ID, result, now, now, time.Time{}, 0)
 			if err != nil || completed != wantFresh {
 				t.Fatalf("fresh completion = %t, %v; want %t", completed, err, wantFresh)
 			}
@@ -218,7 +218,7 @@ func TestStalePollCannotRegressScheduleAndLateCompletionStillConverges(t *testin
 		var completed bool
 		err := store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
 			var err error
-			completed, err = kafudaapp.RecordResultInTransaction(tx, 10, id, result, startedAt, receivedAt, next)
+			completed, err = kafudaapp.RecordResultInTransaction(tx, 10, id, result, startedAt, receivedAt, next, 0)
 			return err
 		})
 		return completed, err

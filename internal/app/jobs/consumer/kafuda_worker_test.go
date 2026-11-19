@@ -340,6 +340,122 @@ func TestKafudaRecoveryTaskSchedulesFromSuccessfulLookupResponse(t *testing.T) {
 	})
 }
 
+func TestKafudaRecoveryTaskReviewsOverdueInFlightOrders(t *testing.T) {
+	for _, scenario := range []struct {
+		name       string
+		inFlight   kafudadomain.AttemptStatus
+		atDeadline string
+	}{
+		{name: "processing", inFlight: kafudadomain.AttemptProcessing, atDeadline: "processing"},
+		{name: "submitting", inFlight: kafudadomain.AttemptSubmitting, atDeadline: "submitting"},
+		{name: "completed at deadline", inFlight: kafudadomain.AttemptProcessing, atDeadline: "completed"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const (
+					parentID, childID = 101, 1
+					interval          = 10 * time.Second
+					reviewAfter       = 2 * time.Hour
+				)
+				gateway := &kafudaPollTestGateway{}
+				c, store, _, db := newKafudaPollBatch(t, gateway, childID)
+				c.Config = &config.Config{KafudaGPT: config.KafudaGPTConfig{
+					PollIntervalSeconds: int(interval / time.Second), PollReviewAfterSeconds: int(reviewAfter / time.Second),
+				}}
+				if err := db.AutoMigrate(&userdomain.User{}); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Create(&userdomain.User{ID: 20, Email: "deadline@example.test", PasswordHash: "test"}).Error; err != nil {
+					t.Fatal(err)
+				}
+				emailQueue := &kafudaStatusEmailQueue{t: t, orders: c.OrderStore, orderID: parentID}
+				c.orderStatusQueue = emailQueue
+				ctx := t.Context()
+				due, err := store.DueKnownOrderPolls(ctx, time.Now().UTC(), 10)
+				if err != nil || len(due) != 1 || due[0].UpstreamOrderID == nil {
+					t.Fatalf("expected one due attempt with an upstream ID, got %+v, %v", due, err)
+				}
+				initial := due[0]
+				if scenario.inFlight == kafudadomain.AttemptSubmitting {
+					if err := db.Model(&initial).UpdateColumn("status", scenario.inFlight).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				gateway.result = kafudacontract.OrderResult{
+					ID: *initial.UpstreamOrderID, Reference: initial.Reference, Product: "gpt", Plan: "plus", Country: "PH", Status: string(scenario.inFlight),
+				}
+				mux := asynq.NewServeMux()
+				c.Register(mux)
+				task := queue.NewKafudaRecoverChecksTask()
+				poll := func() {
+					t.Helper()
+					if err := mux.ProcessTask(ctx, task); err != nil {
+						t.Fatal(err)
+					}
+				}
+				assertReviewQueue := func(want int64) {
+					t.Helper()
+					orders, total, err := c.OrderStore.ListAdmin(ordercontract.ListFilter{DirectReview: true, Page: 1, PageSize: 20})
+					if err != nil || total != want || len(orders) != int(want) || (want == 1 && orders[0].ID != parentID) {
+						t.Fatalf("review queue contains %d orders, want %d: %+v, %v", total, want, orders, err)
+					}
+				}
+				reviewAt := initial.CreatedAt.Add(reviewAfter)
+				time.Sleep(time.Until(reviewAt.Add(-interval - time.Second)))
+				poll()
+				assertDirectPollOrderStatus(t, c.OrderStore, parentID, childID, constants.OrderStatusPaid)
+				assertReviewQueue(0)
+
+				// The request starts before the deadline and its verified result arrives exactly at it.
+				time.Sleep(interval)
+				gateway.delay = time.Second
+				gateway.result.Status = scenario.atDeadline
+				poll()
+				if !time.Now().Equal(reviewAt) {
+					t.Fatalf("boundary poll finished at %v, want %v", time.Now(), reviewAt)
+				}
+				wantLookups := 2
+				if scenario.atDeadline != "completed" {
+					assertDirectPollOrderStatus(t, c.OrderStore, parentID, childID, constants.OrderStatusFulfilling)
+					assertReviewQueue(1)
+					record, err := store.GetRecharge(ctx, childID)
+					if err != nil || record == nil || record.Stage != kafudadomain.StageManualReview ||
+						record.ReasonCode != kafudadomain.ReasonProcessingDeadlineExceeded || record.CompletedAt != nil || emailQueue.calls != 0 {
+						t.Fatalf("expected an in-flight order in review without a completion notice: %+v, %v, notices=%d", record, err, emailQueue.calls)
+					}
+					attempt, err := store.GetAttempt(ctx, initial.ID)
+					if err != nil || attempt == nil || attempt.Status != scenario.inFlight || attempt.ActiveOrderID == nil || *attempt.ActiveOrderID != childID ||
+						attempt.Reference != initial.Reference || attempt.UpstreamOrderID == nil || *attempt.UpstreamOrderID != *initial.UpstreamOrderID ||
+						attempt.NextPollAt == nil || !attempt.NextPollAt.Equal(reviewAt.Add(interval)) || kafudacontract.CanResolveManualAttempt(record, attempt) {
+						t.Fatalf("manual review must retain the original attempt, keep polling, and block manual resolution: %+v, %v", attempt, err)
+					}
+					time.Sleep(interval)
+					gateway.delay = 0
+					poll()
+					assertReviewQueue(1)
+					record, err = store.GetRecharge(ctx, childID)
+					if err != nil || record == nil || record.Stage != kafudadomain.StageManualReview || record.ReasonCode != kafudadomain.ReasonProcessingDeadlineExceeded {
+						t.Fatalf("another nonterminal reply must retain manual review: %+v, %v", record, err)
+					}
+					time.Sleep(interval)
+					gateway.result.Status = "completed"
+					poll()
+					wantLookups += 2
+				}
+				poll() // Replaying the scanner cannot duplicate delivery or its notification.
+				assertDirectPollOrderStatus(t, c.OrderStore, parentID, childID, constants.OrderStatusCompleted)
+				assertReviewQueue(0)
+				var deliveries []fulfillmentdomain.Fulfillment
+				if err := db.Where("order_id = ?", childID).Find(&deliveries).Error; err != nil || len(deliveries) != 1 ||
+					deliveries[0].Type != constants.FulfillmentTypeKafudaGPT || deliveries[0].Payload != "" ||
+					len(gateway.ids) != wantLookups || emailQueue.calls != 1 {
+					t.Fatalf("expected one content-free direct delivery and one notice: deliveries=%+v lookups=%v notices=%d, %v", deliveries, gateway.ids, emailQueue.calls, err)
+				}
+			})
+		})
+	}
+}
+
 func TestKafudaRecoveryTaskEscalatesResultApplicationFailure(t *testing.T) {
 	for _, scenario := range []struct {
 		name          string

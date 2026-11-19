@@ -30,6 +30,7 @@ const (
 	ReasonQuotePolicy                 = "quote_policy"
 	ReasonCostLimitExceeded           = "cost_limit_exceeded"
 	ReasonResultApplyFailed           = "result_apply_failed"
+	ReasonProcessingDeadlineExceeded  = "processing_deadline_exceeded"
 	ReasonMerchantBalanceInsufficient = "merchant_balance_insufficient"
 )
 

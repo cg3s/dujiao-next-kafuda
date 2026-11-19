@@ -55,7 +55,7 @@ func TestReviewedAttemptAcceptsSubmittingWithoutClearingReview(t *testing.T) {
 			retryAt := receivedAt.Add(time.Minute)
 			apply := func(startedAt, received, retry time.Time) error {
 				return store.WithinTransaction(ctx, func(tx kafudacontract.Transaction) error {
-					completed, applyErr := kafudaapp.RecordResultInTransaction(tx, attempt.OrderID, attempt.ID, *got, startedAt, received, retry)
+					completed, applyErr := kafudaapp.RecordResultInTransaction(tx, attempt.OrderID, attempt.ID, *got, startedAt, received, retry, 0)
 					if completed {
 						t.Error("submitting result cannot complete the recharge")
 					}

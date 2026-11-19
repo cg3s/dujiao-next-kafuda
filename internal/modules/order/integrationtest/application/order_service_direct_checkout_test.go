@@ -1395,6 +1395,7 @@ func TestDirectManualOutcomeUpdatesParentAndChildAtomically(t *testing.T) {
 		{"unidentified_result", kafudadomain.StageManualReview},
 		{"needs_review", kafudadomain.StageManualReview},
 		{"failed", kafudadomain.StageManualDelivery},
+		{"cancelled", kafudadomain.StageManualDelivery},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDirectCheckoutFixture(t)
