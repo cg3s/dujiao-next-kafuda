@@ -1,4 +1,5 @@
 import { GOOGLE_REDIRECT_API_PATHS } from './googleRedirect.ts'
+import { buildMemberPaymentResumePath } from './paymentResumePolicy.ts'
 
 const PUBLIC_AUTH_ENDPOINTS = new Set([
   '/auth/login',
@@ -18,4 +19,13 @@ const PUBLIC_AUTH_ENDPOINTS = new Set([
 export const isPublicAuthEndpoint = (url: unknown): boolean => {
   const [path = ''] = String(url || '').split(/[?#]/, 1)
   return PUBLIC_AUTH_ENDPOINTS.has(path)
+}
+
+export const shouldClearExpiredUserAuth = (path: string, requestToken: string | null | undefined, storedToken: string | null): boolean =>
+  requestToken !== undefined && requestToken === storedToken && !isPublicAuthEndpoint(path)
+
+export const resolveAuthFailureLoginPath = (pathname: string, search: string): string | null => {
+  if (/^\/auth\/login\/?$/i.test(pathname)) return null
+  const resume = /^\/pay\/?$/i.test(pathname) ? buildMemberPaymentResumePath(search) : null
+  return resume ? `/auth/login?${new URLSearchParams({ redirect: resume })}` : '/auth/login'
 }

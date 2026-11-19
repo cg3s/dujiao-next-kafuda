@@ -172,8 +172,10 @@ test('intent refresh scheduler replaces stale timers and clears on lifecycle tea
 
 test('return paths remain internal and Google redirect 2FA resumes only with a live challenge', () => {
   assert.equal(normalizeGoogleRedirectReturnPath('/me/orders?tab=paid'), '/me/orders?tab=paid')
+  assert.equal(normalizeGoogleRedirectReturnPath('/pay?order_no=DJ20261119&stripe_return=1'), '/pay?order_no=DJ20261119&stripe_return=1')
   assert.equal(normalizeGoogleRedirectReturnPath('//evil.example'), '/me/orders')
   assert.equal(normalizeGoogleRedirectReturnPath('/\\evil.example'), '/me/orders')
+  assert.equal(normalizeGoogleRedirectReturnPath('/\t/evil.example'), '/me/orders')
   assert.equal(normalizeGoogleRedirectReturnPath('https://evil.example'), '/me/orders')
 
   assert.equal(shouldResumeGoogleRedirect2FA('1', 'challenge-token'), true)

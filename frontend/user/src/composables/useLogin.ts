@@ -17,6 +17,7 @@ import {
   createGoogleRedirectIntent,
   createGoogleRedirectPreparedIntent,
   getGoogleRedirectSessionStorage,
+  normalizeGoogleRedirectReturnPath,
   shouldResumeGoogleRedirect2FA,
   storeGoogleRedirectIntent,
   tryBuildGoogleRedirectCredentialCallbackURL,
@@ -145,8 +146,7 @@ export function useLogin() {
   }
 
   const redirectAfterLogin = () => {
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/me/orders'
-    return router.push(redirect)
+    return router.push(normalizeGoogleRedirectReturnPath(route.query.redirect))
   }
 
   const openTelegramMiniAppEntry = () => {
@@ -387,7 +387,7 @@ export function useLogin() {
     error.value = ''
     try {
       sessionStorage.removeItem('tg_oidc_intent')
-      const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+      const redirect = normalizeGoogleRedirectReturnPath(route.query.redirect, '')
       if (redirect) {
         sessionStorage.setItem('tg_oidc_redirect', redirect)
       } else {

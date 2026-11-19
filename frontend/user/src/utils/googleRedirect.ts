@@ -65,7 +65,7 @@ export const normalizeGoogleRedirectReturnPath = (
   fallback = DEFAULT_LOGIN_RETURN_PATH,
 ): string => {
   const path = typeof value === 'string' ? value.trim() : ''
-  if (!path.startsWith('/') || path.startsWith('//') || path.includes('\\')) {
+  if (!path.startsWith('/') || path.startsWith('//') || /[\u0000-\u001f\u007f\\]/.test(path)) {
     return fallback
   }
   return path

@@ -14,6 +14,9 @@ import {
   getCachedPaymentRestorePolicy,
   getPaymentResetPolicy,
   isCustomerSurchargePayment,
+  PAYMENT_RETURN_MARKERS,
+  readPaymentQueryFlag,
+  readPaymentQueryValue,
   resolvePaymentInteractionLabelKey,
   resolvePaymentLinkNavigationTarget,
   resolvePaymentPresentationMode,
@@ -68,43 +71,7 @@ export function usePayment() {
   const orderPaymentChannelsLoaded = ref(false)
   const orderPaymentChannelsRequestId = ref(0)
 
-  const routeQueryValueToString = (value: unknown): string => {
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        const text = String(item ?? '').trim()
-        if (text !== '') return text
-      }
-      return ''
-    }
-    return String(value ?? '').trim()
-  }
-
-  const readRouteQueryValue = (key: string): string => {
-    const normalizedKey = String(key || '').trim().toLowerCase()
-    if (normalizedKey === '') return ''
-
-    const query = route.query as Record<string, unknown>
-    const candidates = [key, normalizedKey, `amp;${key}`, `amp;${normalizedKey}`]
-    for (const candidate of candidates) {
-      const value = routeQueryValueToString(query[candidate])
-      if (value !== '') return value
-    }
-
-    for (const [rawKey, rawValue] of Object.entries(query)) {
-      const cleanedKey = String(rawKey || '').trim().toLowerCase().replace(/^(amp;)+/, '')
-      if (cleanedKey !== normalizedKey) continue
-      const value = routeQueryValueToString(rawValue)
-      if (value !== '') return value
-    }
-    return ''
-  }
-
-  const readRouteQueryFlag = (key: string): boolean => {
-    const value = readRouteQueryValue(key).toLowerCase()
-    return value === '1' || value === 'true' || value === 'yes'
-  }
-
-  const paymentReturnMarkers = ['epay_return', 'alipay_return', 'wechat_return', 'epusdt_return', 'bepusdt_return', 'tokenpay_return', 'okpay_return', 'pp_return', 'stripe_return']
+  const readRouteQueryValue = (key: string) => readPaymentQueryValue(route.query, key)
   const rechargeBizType = computed(() => readRouteQueryValue('biz_type').toLowerCase())
   const rechargeNoQuery = computed(() => {
     const rechargeNo = readRouteQueryValue('recharge_no')
@@ -114,13 +81,13 @@ export function usePayment() {
     return ''
   })
   const isRechargeReturn = computed(() => rechargeBizType.value === 'recharge' || /^WR/i.test(rechargeNoQuery.value))
-  const isGuest = computed(() => readRouteQueryFlag('guest'))
+  const isGuest = computed(() => readPaymentQueryFlag(route.query, 'guest'))
   const orderNoQuery = computed(() => {
     const orderNo = readRouteQueryValue('order_no')
     if (orderNo !== '') return orderNo
     return readRouteQueryValue('out_trade_no')
   })
-  const hasPaymentReturnMarker = computed(() => paymentReturnMarkers.some(marker => readRouteQueryValue(marker).toLowerCase() === '1'))
+  const hasPaymentReturnMarker = computed(() => PAYMENT_RETURN_MARKERS.some(marker => readRouteQueryValue(marker) === '1'))
   const paymentOrderContext = computed(() => `${isGuest.value ? 'guest' : 'member'}:${orderNoQuery.value}`)
   let returnedPaymentContext: string | null = null
   // 同步后会清理回跳参数，同一笔订单应继续在商城等待支付确认。
@@ -845,7 +812,7 @@ export function usePayment() {
     if (resolvedRechargeNo !== '') {
       query.recharge_no = resolvedRechargeNo
     }
-    for (const marker of paymentReturnMarkers) {
+    for (const marker of PAYMENT_RETURN_MARKERS) {
       const value = readRouteQueryValue(marker)
       if (value !== '') {
         query[marker] = value

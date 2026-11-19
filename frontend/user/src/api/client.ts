@@ -1,5 +1,5 @@
 import i18n from '../i18n'
-import { isPublicAuthEndpoint } from '../utils/authEndpoints'
+import { resolveAuthFailureLoginPath, shouldClearExpiredUserAuth } from '../utils/authEndpoints'
 
 export const t = (key: string, params?: Record<string, any>) =>
     (params ? i18n.global.t(key, params) : i18n.global.t(key)) as string
@@ -61,6 +61,7 @@ function createClient(injectAuth: boolean) {
     const baseURL = `${API_BASE_URL}${API_PREFIX}`
     // 与后端 http.Server WriteTimeout（60s）对齐
     const timeout = 60000
+    let loginRedirectPending = false
 
     async function request(method: string, path: string, bodyOrOptions?: any, options?: RequestOptions): Promise<{ data: any }> {
         let body: any = undefined
@@ -81,11 +82,21 @@ function createClient(injectAuth: boolean) {
             headers['X-Lang'] = locale
         }
 
-        if (injectAuth) {
-            const token = localStorage.getItem('user_token')
-            if (token && !headers['Authorization']) {
-                headers['Authorization'] = `Bearer ${token}`
+        const requestToken = injectAuth && !headers['Authorization'] ? localStorage.getItem('user_token') : undefined
+        if (requestToken) {
+            headers['Authorization'] = `Bearer ${requestToken}`
+        }
+
+        const expireUserAuth = (): boolean => {
+            if (requestToken === undefined || loginRedirectPending || !shouldClearExpiredUserAuth(path, requestToken, localStorage.getItem('user_token'))) return false
+            localStorage.removeItem('user_token')
+            localStorage.removeItem('user_profile')
+            const loginPath = resolveAuthFailureLoginPath(window.location.pathname, window.location.search)
+            if (loginPath) {
+                loginRedirectPending = true
+                window.location.replace(loginPath)
             }
+            return true
         }
 
         if (body !== undefined && !(body instanceof FormData)) {
@@ -136,13 +147,7 @@ function createClient(injectAuth: boolean) {
             if (!response.ok) {
                 const status = response.status
                 const message = getHttpErrorMessage(status)
-                if (status === 401) {
-                    if (injectAuth && !isPublicAuthEndpoint(path)) {
-                        localStorage.removeItem('user_token')
-                        localStorage.removeItem('user_profile')
-                        window.location.href = '/auth/login'
-                    }
-                }
+                if (status === 401) expireUserAuth()
                 console.error('HTTP Error:', message)
                 return Promise.reject(new Error(message))
             }
@@ -154,21 +159,14 @@ function createClient(injectAuth: boolean) {
         if (!response.ok) {
             const status = response.status
             const message = data?.msg || getHttpErrorMessage(status)
-            if (status === 401 && injectAuth && !isPublicAuthEndpoint(path)) {
-                localStorage.removeItem('user_token')
-                localStorage.removeItem('user_profile')
-                window.location.href = '/auth/login'
-            }
+            if (status === 401) expireUserAuth()
             console.error('HTTP Error:', message)
             return Promise.reject(new Error(message))
         }
 
         // Business error check
         if (typeof data.status_code !== 'undefined' && data.status_code !== 0) {
-            if (data.status_code === 401 && injectAuth && !isPublicAuthEndpoint(path)) {
-                localStorage.removeItem('user_token')
-                localStorage.removeItem('user_profile')
-                window.location.href = '/auth/login'
+            if (data.status_code === 401 && expireUserAuth()) {
                 return Promise.reject(new Error(t('common.api.unauthorized')))
             }
             const fallbackMessage = t('common.api.requestFailed')
