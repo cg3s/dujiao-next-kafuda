@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/dujiao-next/internal/app/container"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 
 	paymentapp "github.com/dujiao-next/internal/modules/payment/application"
@@ -151,8 +152,12 @@ func newAdminDirectStatusReader(c *container.Container) ordertransport.AdminDire
 		switch record.ReasonCode {
 		case "check_rejected", "session_invalid", "outcome_unknown", "upstream_review", "upstream_failed", "upstream_cancelled",
 			kafudadomain.ReasonQuoteRegionLocked, kafudadomain.ReasonQuoteExpired, kafudadomain.ReasonQuoteUnavailable, kafudadomain.ReasonQuotePolicy,
-			"cost_limit_exceeded", "lookup_deadline_exceeded", "check_interrupted", kafudadomain.ReasonResultApplyFailed, kafudadomain.ReasonMerchantBalanceInsufficient:
+			kafudadomain.ReasonCostLimitExceeded, "lookup_deadline_exceeded", "check_interrupted", kafudadomain.ReasonResultApplyFailed, kafudadomain.ReasonMerchantBalanceInsufficient:
 			status.Reason = record.ReasonCode
+		}
+		if record.ReasonCode == kafudadomain.ReasonCostLimitExceeded && record.Snapshot.MaxCostCents > 0 {
+			limit := usdFromCents(record.Snapshot.MaxCostCents)
+			status.CostLimitUSD = &limit
 		}
 		if record.CurrentAttemptID == nil {
 			return status, nil
@@ -188,8 +193,15 @@ func newAdminDirectStatusReader(c *container.Container) ordertransport.AdminDire
 			info.MaskedEmail = attempt.MaskedEmail
 		}
 		status.Attempt = info
+		status.CanConfirmUpstreamCompletion = child.Fulfillment == nil && order.Status == child.Status && order.UserID == child.UserID &&
+			isOpenPaidAdminDirectOrder(order) && isOpenPaidAdminDirectOrder(child) && kafudacontract.CanConfirmUpstreamCompletion(record, attempt)
 		return status, nil
 	}
+}
+
+func isOpenPaidAdminDirectOrder(order *orderdomain.Order) bool {
+	return order.ResellerID == nil && order.UserID != 0 && order.PaidAt != nil && order.RefundedAmount.IsZero() &&
+		(order.Status == constants.OrderStatusPaid || order.Status == constants.OrderStatusFulfilling)
 }
 
 func usdFromCents(cents int64) money.Amount {

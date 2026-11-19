@@ -13,6 +13,7 @@ func RegisterAdminRoutes(authorized gin.IRoutes, handler *AdminHandler) {
 	authorized.POST("/orders/:id/direct-complete", handler.AdminCompleteDirect)
 	authorized.POST("/orders/:id/direct-release", handler.AdminReleaseDirect)
 	authorized.POST("/orders/:id/direct-reconcile", handler.AdminReconcileDirect)
+	authorized.POST("/orders/:id/direct-confirm-upstream", handler.AdminConfirmDirectUpstream)
 }
 
 // RegisterAdminRefundRoutes 注册后台退款只读路由。

@@ -6,13 +6,15 @@ import OrderDetailDialog from './OrderDetailDialog.vue'
 const api = vi.hoisted(() => ({
   getOrder: vi.fn(),
   getProcurementOrders: vi.fn(),
+  confirmDirectUpstreamCompletion: vi.fn(),
   refundDirectOrderToWallet: vi.fn(),
   manualRefundDirectOrder: vi.fn(),
 }))
 const confirmAction = vi.hoisted(() => vi.fn())
+const hasPermission = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/admin', () => ({ adminAPI: api }))
-vi.mock('@/stores/auth', () => ({ useAdminAuthStore: () => ({ hasPermission: () => true }) }))
+vi.mock('@/stores/auth', () => ({ useAdminAuthStore: () => ({ hasPermission }) }))
 vi.mock('@/utils/confirm', () => ({ confirmAction }))
 vi.mock('vue-i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('vue-i18n')>()
@@ -64,6 +66,17 @@ const orderFixture = (id: number, status = 'fulfilling', stage = 'manual_deliver
   }
 }
 
+const upstreamCompletionFixture = (id: number, status = 'fulfilling', active = false): AdminOrder => {
+  const order = orderFixture(id, status, 'manual_review', active)
+  const recharge = order.direct_recharge!
+  recharge.reason = 'cost_limit_exceeded'
+  recharge.can_confirm_upstream_completion = true
+  recharge.cost_limit_usd = '12.50'
+  recharge.attempt!.upstream_order_id = '9007199254740993'
+  recharge.attempt!.card_charged_usd = '15.46'
+  return order
+}
+
 const response = <T>(data: T) => ({ data: { data } })
 
 const deferred = <T>() => {
@@ -79,6 +92,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   api.getProcurementOrders.mockResolvedValue({ data: { data: [] } })
   confirmAction.mockResolvedValue(true)
+  hasPermission.mockReturnValue(true)
   host = document.createElement('div')
   document.body.append(host)
 })
@@ -149,6 +163,85 @@ it.each([undefined, '0.00', '15.46'])('shows a reported card charge in USD (%s)'
   await vi.waitFor(() => expect(host.textContent).toContain(order.order_no))
   const chargeLabel = Array.from(host.querySelectorAll('dt')).find((label) => label.textContent === 'admin.orders.directReview.cardCharged')
   expect(chargeLabel?.nextElementSibling?.textContent).toBe(cardCharge === undefined ? undefined : `${cardCharge} USD`)
+})
+
+it('confirms upstream activation once and refreshes the completed order', async () => {
+  const order = upstreamCompletionFixture(42)
+  order.currency = 'CNY'
+  const completed = orderFixture(order.id, 'completed', 'completed')
+  const confirmation = deferred<boolean>()
+  const request = deferred<void>()
+  confirmAction.mockReturnValueOnce(confirmation.promise)
+  api.confirmDirectUpstreamCompletion.mockReturnValueOnce(request.promise)
+  api.getOrder.mockResolvedValueOnce(response(order)).mockResolvedValueOnce(response(completed))
+  const { context, onRefresh } = mountDialog()
+  context.order = order
+  context.open = true
+
+  const action = 'admin.orders.directReview.confirmUpstream'
+  await vi.waitFor(() => expect(findButton(action)).toBeDefined())
+  const amountLabels = Array.from(host.querySelectorAll('dt'))
+  expect(amountLabels.find((node) => node.textContent === 'admin.orders.directReview.cardCharged')?.nextElementSibling?.textContent).toBe('15.46 USD')
+  expect(amountLabels.find((node) => node.textContent === 'admin.orders.directReview.costLimit')?.nextElementSibling?.textContent).toBe('12.50 USD')
+  expect(findButton('admin.orders.directReview.complete')).toBeUndefined()
+  expect(findButton('admin.orders.directReview.release')).toBeUndefined()
+  expect(findButton('admin.orders.refundSubmit')).toBeUndefined()
+  findButton(action)!.click()
+  findButton(action)!.click()
+  expect(confirmAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ title: action, description: `${action}Prompt` }))
+  expect(api.confirmDirectUpstreamCompletion).not.toHaveBeenCalled()
+
+  confirmation.resolve(true)
+  await vi.waitFor(() => expect(api.confirmDirectUpstreamCompletion).toHaveBeenCalledExactlyOnceWith(order.direct_recharge!.child_id, order.direct_recharge!.attempt!.id))
+  expect(findButton(action)?.disabled).toBe(true)
+  request.resolve()
+  await vi.waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1))
+  expect(api.getOrder.mock.calls).toEqual([[order.id], [order.id]])
+  expect(findButton(action)).toBeUndefined()
+})
+
+it.each([
+  { situation: 'the backend did not flag the order', eligible: undefined },
+  { situation: 'the operator lacks permission', authorized: false, eligible: true },
+  { situation: 'the shop order is complete', status: 'completed', eligible: true },
+  { situation: 'the current attempt is still active', active: true, eligible: true },
+  { situation: 'the supplier ID is missing', missingUpstreamID: true, eligible: true },
+])('omits the upstream confirmation action when $situation', async ({ authorized = true, status, active, eligible, missingUpstreamID }) => {
+  const order = upstreamCompletionFixture(42, status, active)
+  const recharge = order.direct_recharge!
+  recharge.can_confirm_upstream_completion = eligible
+  if (missingUpstreamID) delete recharge.attempt!.upstream_order_id
+  hasPermission.mockImplementation((permission: string) => authorized || permission !== 'POST:/admin/orders/:id/direct-confirm-upstream')
+  api.getOrder.mockResolvedValue(response(order))
+  const { context } = mountDialog()
+  context.order = order
+  context.open = true
+
+  await vi.waitFor(() => expect(host.textContent).toContain(order.order_no))
+  expect(findButton('admin.orders.directReview.confirmUpstream')).toBeUndefined()
+})
+
+it('discards an upstream confirmation after reopening the same order', async () => {
+  const order = upstreamCompletionFixture(42)
+  const confirmation = deferred<boolean>()
+  confirmAction.mockReturnValueOnce(confirmation.promise)
+  api.getOrder.mockResolvedValue(response(order))
+  const { context } = mountDialog()
+  const action = 'admin.orders.directReview.confirmUpstream'
+  context.order = order
+  context.open = true
+  await vi.waitFor(() => expect(findButton(action)).toBeDefined())
+  findButton(action)!.click()
+
+  context.open = false
+  await nextTick()
+  context.open = true
+  await vi.waitFor(() => expect(findButton(action)?.disabled).toBe(false))
+  confirmation.resolve(true)
+  await settle()
+
+  expect(api.confirmDirectUpstreamCompletion).not.toHaveBeenCalled()
+  expect(findButton(action)?.disabled).toBe(false)
 })
 
 it.each([

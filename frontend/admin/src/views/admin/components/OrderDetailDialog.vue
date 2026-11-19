@@ -59,11 +59,20 @@ const captureOrderContext = (orderId: number) => {
 
 const auth = useAdminAuthStore()
 const isOpenDirectOrder = (order: AdminOrder) => order.status === 'paid' || order.status === 'fulfilling'
+const canConfirmUpstreamCompletion = (order: AdminOrder) => {
+  const recharge = order.direct_recharge
+  const attempt = recharge?.attempt
+  return Boolean(isOpenDirectOrder(order) && recharge?.can_confirm_upstream_completion && recharge.child_id > 0 &&
+    attempt && attempt.id > 0 && !attempt.active && attempt.upstream_order_id &&
+    auth.hasPermission('POST:/admin/orders/:id/direct-confirm-upstream'))
+}
 const directCompleting = ref(false)
-const handleDirectManualAction = async (action: 'complete' | 'release') => {
+const handleDirectManualAction = async (action: 'complete' | 'release' | 'confirmUpstream') => {
   const order = selectedOrder.value
   const recharge = order?.direct_recharge
-  if (!order || !isOpenDirectOrder(order) || recharge?.stage !== 'manual_delivery' || !recharge.attempt || recharge.attempt.active || directCompleting.value) return
+  const attempt = recharge?.attempt
+  if (!order || !isOpenDirectOrder(order) || !recharge || !attempt || attempt.active || directCompleting.value) return
+  if (action === 'confirmUpstream' ? !canConfirmUpstreamCompletion(order) : recharge.stage !== 'manual_delivery') return
   const isCurrent = captureOrderContext(order.id)
   if (!isCurrent()) return
   directCompleting.value = true
@@ -74,8 +83,14 @@ const handleDirectManualAction = async (action: 'complete' | 'release') => {
       variant: 'destructive',
     })
     if (!confirmed || !isCurrent()) return
-    const submit = action === 'release' ? adminAPI.releaseDirectOrder : adminAPI.completeDirectOrder
-    await submit(recharge.child_id, recharge.attempt.id)
+    if (action === 'confirmUpstream') {
+      const current = selectedOrder.value
+      if (!current || !canConfirmUpstreamCompletion(current) || current.direct_recharge?.attempt?.id !== attempt.id) return
+      await adminAPI.confirmDirectUpstreamCompletion(recharge.child_id, attempt.id)
+    } else {
+      const submit = action === 'release' ? adminAPI.releaseDirectOrder : adminAPI.completeDirectOrder
+      await submit(recharge.child_id, attempt.id)
+    }
     if (isCurrent()) await fetchOrderDetail(order.id)
     emit('refresh')
   } catch {
@@ -883,6 +898,10 @@ onUnmounted(() => { detailSession++ })
                   <dd class="font-mono">{{ selectedOrder.direct_recharge.attempt.card_charged_usd }} USD</dd>
                 </div>
               </template>
+              <div v-if="selectedOrder.direct_recharge.cost_limit_usd != null">
+                <dt class="text-muted-foreground">{{ t('admin.orders.directReview.costLimit') }}</dt>
+                <dd class="font-mono">{{ selectedOrder.direct_recharge.cost_limit_usd }} USD</dd>
+              </div>
             </dl>
             <DirectQuoteCosts v-if="selectedOrder.direct_recharge.attempt?.quote_costs"
               :costs="selectedOrder.direct_recharge.attempt.quote_costs" />
@@ -893,6 +912,10 @@ onUnmounted(() => { detailSession++ })
             <Button v-if="auth.hasPermission('POST:/admin/orders/:id/direct-release') && isOpenDirectOrder(selectedOrder) && selectedOrder.direct_recharge.stage === 'manual_delivery' && selectedOrder.direct_recharge.attempt && !selectedOrder.direct_recharge.attempt.active"
               class="mt-4 ms-2" size="sm" variant="outline" :disabled="directCompleting" @click="handleDirectManualAction('release')">
               {{ t('admin.orders.directReview.release') }}
+            </Button>
+            <Button v-if="canConfirmUpstreamCompletion(selectedOrder)" class="mt-4" size="sm"
+              :disabled="directCompleting" @click="handleDirectManualAction('confirmUpstream')">
+              {{ t('admin.orders.directReview.confirmUpstream') }}
             </Button>
             <form v-if="directReconciliation" class="mt-4 space-y-2" @submit.prevent="reconcileDirect">
               <label class="block text-sm font-medium" for="direct-reconcile-id">{{ t('admin.orders.directReview.upstreamId') }}</label>

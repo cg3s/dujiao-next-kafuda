@@ -105,6 +105,7 @@ type AdminHandler struct {
 	completeDirect  func(childID, attemptID, adminID uint, confirmed bool) error
 	releaseDirect   func(childID, attemptID, adminID uint, confirmed bool) error
 	reconcileDirect func(context.Context, uint, uint, uint, uint64) error
+	confirmUpstream func(childID, attemptID, adminID uint, confirmed bool) error
 }
 
 func NewAdminHandler(
@@ -119,6 +120,7 @@ func NewAdminHandler(
 	completeDirect func(childID, attemptID, adminID uint, confirmed bool) error,
 	releaseDirect func(childID, attemptID, adminID uint, confirmed bool) error,
 	reconcileDirect func(context.Context, uint, uint, uint, uint64) error,
+	confirmUpstream func(childID, attemptID, adminID uint, confirmed bool) error,
 ) *AdminHandler {
 	if orders == nil || users == nil || coupons == nil || promotions == nil || payments == nil || channels == nil || accounting == nil {
 		panic("order admin handler: required dependency is nil")
@@ -135,6 +137,7 @@ func NewAdminHandler(
 		completeDirect:  completeDirect,
 		releaseDirect:   releaseDirect,
 		reconcileDirect: reconcileDirect,
+		confirmUpstream: confirmUpstream,
 	}
 }
 
@@ -166,11 +169,13 @@ type AdminOrderDetail struct {
 }
 
 type AdminDirectStatus struct {
-	ChildID   uint                `json:"child_id"`
-	Stage     string              `json:"stage"`
-	UpdatedAt time.Time           `json:"updated_at"`
-	Reason    string              `json:"reason,omitempty"`
-	Attempt   *AdminDirectAttempt `json:"attempt,omitempty"`
+	ChildID                      uint                `json:"child_id"`
+	Stage                        string              `json:"stage"`
+	UpdatedAt                    time.Time           `json:"updated_at"`
+	Reason                       string              `json:"reason,omitempty"`
+	Attempt                      *AdminDirectAttempt `json:"attempt,omitempty"`
+	CanConfirmUpstreamCompletion bool                `json:"can_confirm_upstream_completion,omitempty"`
+	CostLimitUSD                 *money.Amount       `json:"cost_limit_usd,omitempty"`
 }
 
 type AdminDirectAttempt struct {
@@ -199,6 +204,10 @@ func (h *AdminHandler) AdminCompleteDirect(c *gin.Context) {
 
 func (h *AdminHandler) AdminReleaseDirect(c *gin.Context) {
 	h.applyDirectManualAction(c, h.releaseDirect)
+}
+
+func (h *AdminHandler) AdminConfirmDirectUpstream(c *gin.Context) {
+	h.applyDirectManualAction(c, h.confirmUpstream)
 }
 
 func (h *AdminHandler) AdminReconcileDirect(c *gin.Context) {

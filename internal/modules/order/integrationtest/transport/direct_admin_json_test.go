@@ -90,6 +90,7 @@ func TestDirectAdminActionJSONRoutes(t *testing.T) {
 			record(directAdminJSONCall{action: "reconcile", orderID: orderID, attemptID: attemptID, adminID: operatorID, upstreamID: upstreamID})
 			return nil
 		},
+		manualAction("confirm-upstream"),
 	)
 	refunds := &directAdminJSONRefundSpy{record: record}
 	router := gin.New()
@@ -140,6 +141,7 @@ func TestDirectAdminActionJSONRoutes(t *testing.T) {
 		{name: "reconcile", want: directAdminJSONCall{action: "reconcile", orderID: orderID, attemptID: 7, adminID: adminID, upstreamID: 9007199254740993}},
 		{name: "complete", want: directAdminJSONCall{action: "complete", orderID: orderID, attemptID: 7, adminID: adminID, confirmed: true}},
 		{name: "release", want: directAdminJSONCall{action: "release", orderID: orderID, attemptID: 7, adminID: adminID, confirmed: true}},
+		{name: "confirm-upstream", want: directAdminJSONCall{action: "confirm-upstream", orderID: orderID, attemptID: 7, adminID: adminID, confirmed: true}},
 		{name: "refund-to-wallet", want: directAdminJSONCall{action: "refund-to-wallet", orderID: orderID, attemptID: 7, amount: "12.34", remark: "checked"}},
 		{name: "manual-refund", want: directAdminJSONCall{action: "manual-refund", orderID: orderID, attemptID: 7, amount: "12.34", remark: "checked"}},
 	} {

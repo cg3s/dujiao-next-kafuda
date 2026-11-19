@@ -61,6 +61,14 @@ func New(c *container.Container) Handlers {
 				}
 				return nil
 			},
+			func(childID, attemptID, adminID uint, confirmed bool) error {
+				records := kafudaRecords(c)
+				if c.OrderStore == nil || records == nil {
+					return ordertransport.ErrOrderNotFound
+				}
+				return mapOrderTransportError(kafudaworkflow.ConfirmUpstreamCompletionAndNotify(context.Background(), c.OrderStore, records,
+					orderqueue.NewDirectCompletion(c.QueueClient), c.SettingService, c.Config, childID, attemptID, adminID, confirmed, time.Now().UTC()))
+			},
 		),
 		AdminRefund: NewAdminRefundHandler(c),
 		User: ordertransport.NewUserHandler(

@@ -33,6 +33,17 @@ func TestPostgresDirectAfterSalesCompetingResolutions(t *testing.T) {
 	})
 }
 
+func TestPostgresConfirmOverCapDirectCompletion(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is empty")
+	}
+	testConfirmOverCapDirectCompletion(t, func(t *testing.T) directCheckoutFixture {
+		db := openPostgresDirectRaceDB(t, dsn)
+		return seedDirectCheckoutFixture(t, seedCouponLimitRaceFixture(t, db, "direct-over-cap", 0, 0))
+	})
+}
+
 func TestPostgresDirectSubmitCheckedQuote(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_POSTGRES_DSN"))
 	if dsn == "" {

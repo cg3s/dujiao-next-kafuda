@@ -114,6 +114,7 @@ func BuiltinRoleSeeds() []RoleSeed {
 				{Object: "/admin/orders/:id/direct-complete", Action: "POST"},
 				{Object: "/admin/orders/:id/direct-release", Action: "POST"},
 				{Object: "/admin/orders/:id/direct-reconcile", Action: "POST"},
+				{Object: "/admin/orders/:id/direct-confirm-upstream", Action: "POST"},
 				{Object: "/admin/orders/:id/direct-refund-to-wallet", Action: "POST"},
 				{Object: "/admin/orders/:id/direct-manual-refund", Action: "POST"},
 				{Object: "/admin/order-refunds", Action: "GET"},

@@ -58,3 +58,15 @@ func CanResolveManualAttempt(record *kafudadomain.Recharge, attempt *kafudadomai
 		attempt.OrderID == record.OrderID && attempt.ActiveOrderID == nil &&
 		(attempt.Status == kafudadomain.AttemptFailed || attempt.Status == kafudadomain.AttemptCancelled)
 }
+
+// CanConfirmUpstreamCompletion identifies a supplier-delivered attempt whose
+// cost hold still needs operator review. The hold reason records an earlier
+// overage even if the last reported debit was lower.
+func CanConfirmUpstreamCompletion(record *kafudadomain.Recharge, attempt *kafudadomain.Attempt) bool {
+	return record != nil && record.Stage == kafudadomain.StageManualReview &&
+		record.ReasonCode == kafudadomain.ReasonCostLimitExceeded && record.CompletedAt == nil &&
+		record.Snapshot.MaxCostCents > 0 && record.CurrentAttemptID != nil &&
+		attempt != nil && attempt.ID > 0 && *record.CurrentAttemptID == attempt.ID &&
+		attempt.OrderID == record.OrderID && attempt.Status == kafudadomain.AttemptCompleted &&
+		attempt.UpstreamOrderID != nil && attempt.ChargedUSDCents != nil && attempt.Validate() == nil
+}

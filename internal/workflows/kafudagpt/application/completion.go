@@ -60,6 +60,16 @@ func CompleteManualAndNotify(ctx context.Context, store ordercontract.Store, rec
 	return nil
 }
 
+// ConfirmUpstreamCompletionAndNotify acknowledges a supplier delivery under a
+// cost hold and sends the completion notice after the shop order commits.
+func ConfirmUpstreamCompletionAndNotify(ctx context.Context, store ordercontract.Store, records kafudacontract.Store, queue ordercontract.Queue, settings *settingsapp.Service, cfg *config.Config, childID, attemptID, adminID uint, confirmed bool, now time.Time) error {
+	if err := ConfirmUpstreamCompletion(store, childID, attemptID, adminID, confirmed, now); err != nil {
+		return err
+	}
+	EnqueueCompletionEmail(ctx, store, records, queue, settings, cfg, childID)
+	return nil
+}
+
 // ApplyResult records the supplier outcome and completes a paid direct order
 // atomically. A fresh completion flag is safe to use only after commit.
 func ApplyResult(store ordercontract.Store, childID, attemptID uint, result kafudacontract.OrderResult, startedAt, receivedAt time.Time, pollInterval time.Duration) (bool, error) {
@@ -100,36 +110,57 @@ func ApplyResult(store ordercontract.Store, childID, attemptID uint, result kafu
 // CompleteManual records delivery already carried out by an authorized operator.
 // The caller must attest that the previous supplier attempt cannot deliver.
 func CompleteManual(store ordercontract.Store, childID, attemptID, adminID uint, confirmed bool, now time.Time) error {
-	return withConfirmedManualAttempt(store, childID, attemptID, adminID, confirmed, now, func(tx ordercontract.Transaction, parent *orderdomain.Order, record *kafudadomain.Recharge) error {
-		if err := tx.Fulfillments().Create(&fulfillmentdomain.Fulfillment{
-			OrderID: childID, Type: constants.FulfillmentTypeManual, Status: constants.FulfillmentStatusDelivered,
-			DeliveredBy: &adminID, DeliveredAt: &now, CreatedAt: now, UpdatedAt: now,
-		}); err != nil {
-			return err
-		}
-		record.Stage, record.ReasonCode, record.UpdatedAt, record.CompletedAt = kafudadomain.StageCompleted, "", now, &now
-		record.CompletionEmailPending = true
-		if err := tx.KafudaGPT().SaveRecharge(record); err != nil {
-			return err
-		}
-		return setOpenShopOrderStatus(tx.Orders(), parent, childID, constants.OrderStatusCompleted)
-	})
+	return withConfirmedDirectAttempt(store, childID, attemptID, adminID, confirmed, now, kafudacontract.CanResolveManualAttempt,
+		func(tx ordercontract.Transaction, parent *orderdomain.Order, record *kafudadomain.Recharge) error {
+			record.ReasonCode = ""
+			return recordConfirmedDirectDelivery(tx, parent, record, constants.FulfillmentTypeManual, adminID, now)
+		})
+}
+
+// ConfirmUpstreamCompletion records a verified supplier delivery that required
+// an operator to review a cost overage.
+func ConfirmUpstreamCompletion(store ordercontract.Store, childID, attemptID, adminID uint, confirmed bool, now time.Time) error {
+	err := withConfirmedDirectAttempt(store, childID, attemptID, adminID, confirmed, now, kafudacontract.CanConfirmUpstreamCompletion,
+		func(tx ordercontract.Transaction, parent *orderdomain.Order, record *kafudadomain.Recharge) error {
+			return recordConfirmedDirectDelivery(tx, parent, record, constants.FulfillmentTypeKafudaGPT, adminID, now)
+		})
+	if err == nil {
+		logger.Infow("kafuda_over_cap_completion_confirmed", "child_order_id", childID, "attempt_id", attemptID, "admin_id", adminID)
+	}
+	return err
+}
+
+func recordConfirmedDirectDelivery(tx ordercontract.Transaction, parent *orderdomain.Order, record *kafudadomain.Recharge, fulfillmentType string, adminID uint, now time.Time) error {
+	if err := tx.Fulfillments().Create(&fulfillmentdomain.Fulfillment{
+		OrderID: record.OrderID, Type: fulfillmentType, Status: constants.FulfillmentStatusDelivered,
+		DeliveredBy: &adminID, DeliveredAt: &now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		return err
+	}
+	record.Stage, record.UpdatedAt, record.CompletedAt = kafudadomain.StageCompleted, now, &now
+	record.CompletionEmailPending = true
+	if err := tx.KafudaGPT().SaveRecharge(record); err != nil {
+		return err
+	}
+	return setOpenShopOrderStatus(tx.Orders(), parent, record.OrderID, constants.OrderStatusCompleted)
 }
 
 // ReleaseManual returns an undelivered order to the buyer submission stage.
 // The terminal attempt and all financial information remain on record.
 func ReleaseManual(store ordercontract.Store, childID, attemptID, adminID uint, confirmed bool, now time.Time) error {
-	err := withConfirmedManualAttempt(store, childID, attemptID, adminID, confirmed, now, func(tx ordercontract.Transaction, _ *orderdomain.Order, record *kafudadomain.Recharge) error {
-		record.Stage, record.ReasonCode, record.UpdatedAt = kafudadomain.StageWaiting, "", now
-		return tx.KafudaGPT().SaveRecharge(record)
-	})
+	err := withConfirmedDirectAttempt(store, childID, attemptID, adminID, confirmed, now, kafudacontract.CanResolveManualAttempt,
+		func(tx ordercontract.Transaction, _ *orderdomain.Order, record *kafudadomain.Recharge) error {
+			record.Stage, record.ReasonCode, record.UpdatedAt = kafudadomain.StageWaiting, "", now
+			return tx.KafudaGPT().SaveRecharge(record)
+		})
 	if err == nil {
 		logger.Infow("kafuda_manual_takeover_released", "child_order_id", childID, "attempt_id", attemptID, "admin_id", adminID)
 	}
 	return err
 }
 
-func withConfirmedManualAttempt(store ordercontract.Store, childID, attemptID, adminID uint, confirmed bool, now time.Time,
+func withConfirmedDirectAttempt(store ordercontract.Store, childID, attemptID, adminID uint, confirmed bool, now time.Time,
+	eligible func(*kafudadomain.Recharge, *kafudadomain.Attempt) bool,
 	run func(ordercontract.Transaction, *orderdomain.Order, *kafudadomain.Recharge) error,
 ) error {
 	if childID == 0 || attemptID == 0 || adminID == 0 || !confirmed || now.IsZero() {
@@ -152,7 +183,7 @@ func withConfirmedManualAttempt(store ordercontract.Store, childID, attemptID, a
 		if err != nil {
 			return err
 		}
-		if !kafudacontract.CanResolveManualAttempt(record, attempt) ||
+		if !eligible(record, attempt) ||
 			now.Before(attempt.UpdatedAt) || now.Before(record.UpdatedAt) {
 			return orderapp.ErrOrderStatusInvalid
 		}

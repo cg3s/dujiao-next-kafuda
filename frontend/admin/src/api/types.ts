@@ -166,6 +166,8 @@ export interface AdminOrder {
     stage: string
     updated_at: string
     reason?: string
+    can_confirm_upstream_completion?: boolean
+    cost_limit_usd?: string
     attempt?: {
       id: number
       sequence: number

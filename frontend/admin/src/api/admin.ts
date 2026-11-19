@@ -438,6 +438,7 @@ export const adminAPI = {
   getOrders: (params?: Record<string, unknown>) => api.get('/admin/orders', { params }),
   getOrder: (id: number) => api.get(`/admin/orders/${id}`),
   completeDirectOrder: (childID: number, attemptID: number) => api.post(`/admin/orders/${childID}/direct-complete`, { attempt_id: attemptID, confirmed: true }),
+  confirmDirectUpstreamCompletion: (childID: number, attemptID: number) => api.post(`/admin/orders/${childID}/direct-confirm-upstream`, { attempt_id: attemptID, confirmed: true }),
   releaseDirectOrder: (childID: number, attemptID: number) => api.post(`/admin/orders/${childID}/direct-release`, { attempt_id: attemptID, confirmed: true }),
   reconcileDirectOrder: (childID: number, attemptID: number, upstreamOrderID: string) =>
     api.post(`/admin/orders/${childID}/direct-reconcile`, { attempt_id: attemptID, upstream_order_id: upstreamOrderID }),

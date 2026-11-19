@@ -227,7 +227,7 @@ func (g *kafudaCatalogAccessGateway) Catalog(context.Context) (json.RawMessage, 
 	return json.RawMessage(`{"enabled":true,"plans":[],"auto_card_products":[]}`), nil
 }
 
-func TestKafudaCatalogRoutesRequireOperationsPermission(t *testing.T) {
+func TestKafudaAdminRoutesEnforceScopedPermissions(t *testing.T) {
 	const jwtSecret = "kafuda-catalog-test-admin-jwt-secret"
 	gin.SetMode(gin.TestMode)
 	previousLogger := logger.L
@@ -331,6 +331,34 @@ func TestKafudaCatalogRoutesRequireOperationsPermission(t *testing.T) {
 	catalog, err := store.GetCatalog(t.Context(), "default")
 	if err != nil || catalog == nil || !catalog.Enabled {
 		t.Fatalf("authorized refresh did not persist the upstream response: %+v, %v", catalog, err)
+	}
+
+	confirmation := adminRoute{method: http.MethodPost, object: "/admin/orders/:id/direct-confirm-upstream"}
+	if !slices.Contains(discovered, confirmation) {
+		t.Fatal("RBAC coverage did not discover upstream confirmation")
+	}
+	for _, actor := range []struct {
+		name string
+		want int
+	}{
+		{name: "anonymous", want: response.CodeUnauthorized},
+		{name: "support", want: response.CodeBadRequest},
+		{name: "operations", want: response.CodeForbidden},
+	} {
+		t.Run("confirm_upstream/"+actor.name, func(t *testing.T) {
+			// A missing confirmation reaches the handler only for authorized staff.
+			request := httptest.NewRequest(confirmation.method, "/api/v1/admin/orders/101/direct-confirm-upstream", strings.NewReader(`{"attempt_id":1}`))
+			request.Header.Set("Content-Type", "application/json")
+			if bearer := tokens[actor.name]; bearer != "" {
+				request.Header.Set("Authorization", "Bearer "+bearer)
+			}
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			var body response.Response
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body.StatusCode != actor.want {
+				t.Fatalf("expected business status %d, got %s (%v)", actor.want, recorder.Body.String(), err)
+			}
+		})
 	}
 }
 
