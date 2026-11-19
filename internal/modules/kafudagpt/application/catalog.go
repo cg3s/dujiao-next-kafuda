@@ -3,7 +3,9 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -75,6 +77,13 @@ func (s *CatalogService) RefreshBeforeExpiry(ctx context.Context, interval time.
 		return nil
 	}
 	if _, err := s.Sync(ctx); err != nil {
+		var limit *kafudacontract.APIError
+		if errors.As(err, &limit) && limit != nil && limit.HTTPStatus == http.StatusTooManyRequests && limit.RetryAfter > 0 {
+			retryAt := time.Now().Add(limit.RetryAfter)
+			if retryAt.After(s.nextRefresh) {
+				s.nextRefresh = retryAt
+			}
+		}
 		return err
 	}
 	s.nextRefresh = now.Add(s.ttl - lead)

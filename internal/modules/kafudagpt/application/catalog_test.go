@@ -1,11 +1,15 @@
 package application
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 )
 
@@ -53,4 +57,69 @@ func TestInvalidCatalogCannotBeMistakenForConfirmedRemoval(t *testing.T) {
 	if err != nil || got.Enabled || len(got.Options) != 0 {
 		t.Fatalf("confirmed disabled catalog rejected: %+v, %v", got, err)
 	}
+}
+
+type refreshTestCatalogStore struct {
+	kafudacontract.Store
+	catalog *kafudadomain.Catalog
+}
+
+func (s *refreshTestCatalogStore) GetCatalog(context.Context, string) (*kafudadomain.Catalog, error) {
+	return s.catalog, nil
+}
+
+func (s *refreshTestCatalogStore) SaveCatalog(_ context.Context, catalog *kafudadomain.Catalog) error {
+	s.catalog = catalog
+	return nil
+}
+
+type rateLimitedCatalogGateway struct {
+	kafudacontract.Gateway
+	data      json.RawMessage
+	rateLimit *kafudacontract.APIError
+	calls     int
+}
+
+func (g *rateLimitedCatalogGateway) Catalog(context.Context) (json.RawMessage, error) {
+	g.calls++
+	if g.calls == 1 {
+		time.Sleep(5 * time.Second)
+		return nil, g.rateLimit
+	}
+	return g.data, nil
+}
+
+func TestScheduledCatalogRefreshHonorsRateLimit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		now := time.Now()
+		data := json.RawMessage(`{"enabled":true,"plans":[{"plan":"plus","label":"Plus","credit":false,"regions":[{"country":"PH","currency":"PHP","estimated_plan_usd_cents":1000,"estimated_local_minor":55000}]}],"auto_card_products":[{"product_code":"test-card","restriction_reason":null}]}`)
+		initial, err := ParseCatalog(data, "default", now.Add(-time.Hour), now.Add(110*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := &refreshTestCatalogStore{catalog: initial}
+		limit := &kafudacontract.APIError{HTTPStatus: http.StatusTooManyRequests, RetryAfter: 90 * time.Second}
+		gateway := &rateLimitedCatalogGateway{data: data, rateLimit: limit}
+		service := NewCatalogService(store, gateway, initial.Profile, time.Hour)
+		const interval = 10 * time.Second
+
+		if err := service.RefreshBeforeExpiry(ctx, interval); !errors.Is(err, limit) {
+			t.Fatalf("initial refresh error = %v, want a rate limit", err)
+		}
+		time.Sleep(limit.RetryAfter - time.Second)
+		if err := service.RefreshBeforeExpiry(ctx, interval); err != nil || gateway.calls != 1 {
+			t.Fatalf("refresh contacted the supplier before the retry window ended: calls=%d, error=%v", gateway.calls, err)
+		}
+		if store.catalog != initial || !store.catalog.Available("plus", "PH", time.Now()) {
+			t.Fatal("the last valid catalog should stay available during a brief rate limit")
+		}
+		time.Sleep(time.Second)
+		if err := service.RefreshBeforeExpiry(ctx, interval); err != nil || gateway.calls != 2 {
+			t.Fatalf("refresh did not retry after the wait: calls=%d, error=%v", gateway.calls, err)
+		}
+		if !store.catalog.ExpiresAt.After(initial.ExpiresAt) || !store.catalog.Available("plus", "PH", initial.ExpiresAt) {
+			t.Fatal("successful retry did not renew the catalog")
+		}
+	})
 }
