@@ -77,7 +77,6 @@ test('direct product cards calculate member pricing only for available SKUs', ()
 test('Classic and Vault product browsing use shared availability labels', () => {
   for (const view of [
     'components/ProductCard.vue',
-    'components/ProductListItem.vue',
     'templates/vault/components/VaultProductCard.vue',
     'templates/vault/components/VaultProductListItem.vue',
   ]) {

@@ -5,22 +5,21 @@ import (
 	"strings"
 	"time"
 
-	orderapp "github.com/dujiao-next/internal/modules/order/application"
+	"github.com/dujiao-next/internal/constants"
+	"github.com/dujiao-next/internal/shared/money"
+	"github.com/shopspring/decimal"
 
 	affiliatecontract "github.com/dujiao-next/internal/modules/affiliate/contract"
 	usercontract "github.com/dujiao-next/internal/modules/identity/user/contract"
 	userdomain "github.com/dujiao-next/internal/modules/identity/user/domain"
+	orderapp "github.com/dujiao-next/internal/modules/order/application"
 	ordercontract "github.com/dujiao-next/internal/modules/order/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
 	settingsapp "github.com/dujiao-next/internal/modules/settings/application"
+	settingscontract "github.com/dujiao-next/internal/modules/settings/contract"
 	walletapp "github.com/dujiao-next/internal/modules/wallet/application"
 	walletcontract "github.com/dujiao-next/internal/modules/wallet/contract"
-
-	"github.com/dujiao-next/internal/constants"
-	"github.com/dujiao-next/internal/shared/money"
-
-	"github.com/shopspring/decimal"
 )
 
 // AdminManualRefundInput 管理员手动退款输入（不处理钱包/支付渠道）
@@ -149,9 +148,9 @@ func (s *Service) RefundWindowExpired(order *orderdomain.Order) (bool, error) {
 	return settingsapp.IsOrderRefundWindowExpired(order.CreatedAt, order.PaidAt, cfg.MaxRefundDays, time.Now()), nil
 }
 
-func (s *Service) loadRefundConfig() (settingsapp.OrderRefundConfig, error) {
+func (s *Service) loadRefundConfig() (settingscontract.OrderRefundConfig, error) {
 	if s.settingService == nil {
-		return settingsapp.DefaultOrderRefundConfig(), nil
+		return settingscontract.DefaultOrderRefundConfig(), nil
 	}
 	return s.settingService.GetOrderRefundConfig()
 }
@@ -402,6 +401,9 @@ func (s *Service) AdminManualRefund(input AdminManualRefundInput) (*orderdomain.
 			if err := s.resellerAccounting.HandleRefundDeduct(tx.ResellerAccounting(), &order, record, refundedBefore); err != nil {
 				return err
 			}
+		}
+		if err := orders.ApplyOrderRefund(order.UserID, amount); err != nil {
+			return err
 		}
 		return nil
 	}); err != nil {

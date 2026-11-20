@@ -24,6 +24,7 @@ import (
 
 	"github.com/dujiao-next/internal/app/container"
 	"github.com/dujiao-next/internal/authz"
+	"github.com/dujiao-next/internal/bootstrap/database/migrations"
 	databasemigrations "github.com/dujiao-next/internal/bootstrap/database/migrations"
 	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/constants"
@@ -33,6 +34,7 @@ import (
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
 	productpresenter "github.com/dujiao-next/internal/modules/catalog/product/transport/presenter"
 	admindomain "github.com/dujiao-next/internal/modules/identity/admin/domain"
+	tokenapp "github.com/dujiao-next/internal/modules/identity/adminapitoken/application"
 	userdomain "github.com/dujiao-next/internal/modules/identity/user/domain"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
@@ -50,6 +52,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -117,6 +120,33 @@ func TestAllAdminRoutesCoveredByBuiltinRoles(t *testing.T) {
 		}
 		t.Fatalf("the following admin routes are not covered by any builtin role seed in authz.BuiltinRoleSeeds() — add them to the appropriate role in api/internal/authz/bootstrap.go:\n%s",
 			strings.Join(lines, "\n"))
+	}
+}
+
+func TestAdminAPITokenAllowlistMatchesRegisteredRoutes(t *testing.T) {
+	originalDB, originalLog := gormdb.DB, logger.L
+	t.Cleanup(func() { gormdb.DB, logger.L = originalDB, originalLog })
+	logger.L = zap.NewNop()
+	require.NoError(t, gormdb.InitDB("sqlite", ":memory:", gormdb.DBPoolConfig{MaxOpenConns: 1, MaxIdleConns: 1}, "release"))
+	db, err := gormdb.DB.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	require.NoError(t, migrations.AutoMigrate())
+
+	cfg := &config.Config{}
+	cfg.App.SecretKey = t.Name()
+	cfg.Web.AdminPath = "/admin"
+	c, err := container.NewContainer(cfg)
+	require.NoError(t, err)
+	engine := SetupRouter(cfg, c)
+	registered := make(map[string]bool)
+	for _, route := range engine.Routes() {
+		registered[route.Method+" "+route.Path] = true
+	}
+	for _, route := range tokenapp.AllowedRoutes() {
+		if !registered[route] {
+			t.Errorf("admin API token allowlist refers to unregistered route %s", route)
+		}
 	}
 }
 
