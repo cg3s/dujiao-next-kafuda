@@ -20,6 +20,8 @@ import (
 	wechatpayadapter "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/adapters/wechatpay"
 	paymentprovider "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/provider"
 	"github.com/dujiao-next/internal/platform/database/gormdb"
+	"github.com/dujiao-next/internal/plugin/directfulfillment"
+	_ "github.com/dujiao-next/internal/plugins/kafudagpt"
 	"github.com/dujiao-next/internal/queue"
 )
 
@@ -45,15 +47,21 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 	c := &Container{
 		Config:                  cfg,
 		QueueClient:             queueClient,
+		DirectPlugins:           make(map[string]any),
 		PaymentProviderRegistry: newPaymentProviderRegistry(),
 	}
 	if err := c.initRepositories(); err != nil {
 		return nil, err
 	}
-	var err error
-	c.KafudaGPT, err = kafudawiring.New(gormdb.DB, cfg.KafudaGPT, c.OrderStore, c.QueueClient.KafudaWorkerReady)
-	if err != nil {
-		return nil, err
+	for _, plugin := range directfulfillment.All() {
+		instance, err := plugin.Init(gormdb.DB, cfg, c.OrderStore, c.QueueClient)
+		if err != nil {
+			return nil, err
+		}
+		c.DirectPlugins[plugin.FulfillmentType()] = instance
+		if mod, ok := instance.(*kafudawiring.Module); ok {
+			c.KafudaGPT = mod
+		}
 	}
 	c.initServices()
 	return c, nil

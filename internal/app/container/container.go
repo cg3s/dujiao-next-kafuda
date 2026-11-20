@@ -86,9 +86,10 @@ import (
 
 // Container 声明应用运行期共享的依赖表面；具体构造过程按职责拆分在同包装配文件中。
 type Container struct {
-	KafudaGPT   *kafudawiring.Module
-	Config      *config.Config
-	QueueClient *queue.Client
+	KafudaGPT     *kafudawiring.Module
+	DirectPlugins map[string]any
+	Config        *config.Config
+	QueueClient   *queue.Client
 
 	// Repositories
 	AdminStore             admincontract.Store

@@ -1,6 +1,11 @@
 package authz
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/dujiao-next/internal/plugin/directfulfillment"
+	_ "github.com/dujiao-next/internal/plugins/kafudagpt"
+)
 
 // RoleSeed 预置角色定义
 type RoleSeed struct {
@@ -12,7 +17,7 @@ type RoleSeed struct {
 
 // BuiltinRoleSeeds 系统预置角色矩阵
 func BuiltinRoleSeeds() []RoleSeed {
-	return []RoleSeed{
+	seeds := []RoleSeed{
 		{
 			Role: "readonly_auditor",
 			Policies: []Policy{
@@ -41,8 +46,6 @@ func BuiltinRoleSeeds() []RoleSeed {
 			Inherits: []string{"readonly_auditor"},
 			Policies: []Policy{
 				{Object: "/admin/products", Action: "*"},
-				{Object: "/admin/kafuda-gpt/catalog", Action: "GET"},
-				{Object: "/admin/kafuda-gpt/catalog/sync", Action: "POST"},
 				{Object: "/admin/products/:id", Action: "*"},
 				{Object: "/admin/products/:id/wholesale-prices", Action: "PATCH"},
 				{Object: "/admin/categories", Action: "*"},
@@ -296,6 +299,22 @@ func BuiltinRoleSeeds() []RoleSeed {
 			Immutable: true,
 		},
 	}
+
+	seedIndex := make(map[string]int, len(seeds))
+	for i := range seeds {
+		seedIndex[seeds[i].Role] = i
+	}
+	for _, plugin := range directfulfillment.All() {
+		for _, rule := range plugin.RBACRules() {
+			if idx, ok := seedIndex[rule.Role]; ok {
+				seeds[idx].Policies = append(seeds[idx].Policies, Policy{
+					Object: rule.Object,
+					Action: rule.Action,
+				})
+			}
+		}
+	}
+	return seeds
 }
 
 // BootstrapBuiltinRoles 初始化预置角色与默认策略

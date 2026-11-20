@@ -21,7 +21,6 @@ import (
 	externalidentitydomain "github.com/dujiao-next/internal/modules/identity/externalidentity/domain"
 	invitecodedomain "github.com/dujiao-next/internal/modules/identity/invitecode/domain"
 	userdomain "github.com/dujiao-next/internal/modules/identity/user/domain"
-	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	memberleveldomain "github.com/dujiao-next/internal/modules/memberlevel/domain"
 	notificationdomain "github.com/dujiao-next/internal/modules/notification/domain"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
@@ -37,6 +36,8 @@ import (
 	broadcastdomain "github.com/dujiao-next/internal/modules/telegram/broadcast/domain"
 	walletdomain "github.com/dujiao-next/internal/modules/wallet/domain"
 	"github.com/dujiao-next/internal/platform/database/gormdb"
+	"github.com/dujiao-next/internal/plugin/directfulfillment"
+	_ "github.com/dujiao-next/internal/plugins/kafudagpt"
 
 	"gorm.io/gorm"
 )
@@ -89,9 +90,6 @@ func AutoMigrate() error {
 		&mappingdomain.Mapping{},
 		&mappingdomain.SKUMapping{},
 		&procurementdomain.Order{},
-		&kafudadomain.Catalog{},
-		&kafudadomain.Recharge{},
-		&kafudadomain.Attempt{},
 		&downstreamcallbackdomain.OrderRef{},
 		&reconciliationdomain.Job{},
 		&reconciliationdomain.Item{},
@@ -111,8 +109,15 @@ func AutoMigrate() error {
 	if err := backfillPendingOrderRiskIPs(db); err != nil {
 		return err
 	}
-	if err := backfillKafudaTerminalFailures(db); err != nil {
-		return err
+	for _, plugin := range directfulfillment.All() {
+		if models := plugin.AutoMigrateModels(); len(models) > 0 {
+			if err := db.AutoMigrate(models...); err != nil {
+				return err
+			}
+		}
+		if err := plugin.PostMigrate(db); err != nil {
+			return err
+		}
 	}
 	if err := resellerstore.Migrate(db); err != nil {
 		return err
@@ -156,20 +161,6 @@ func AutoMigrate() error {
 		}
 	}
 	return nil
-}
-
-// backfillKafudaTerminalFailures restores after-sales eligibility for over-cap
-// recharges that have a verified terminal failure on their current attempt.
-func backfillKafudaTerminalFailures(db *gorm.DB) error {
-	terminalAttempt := db.Model(&kafudadomain.Attempt{}).Select("1").
-		Where("kafuda_gpt_attempts.id = kafuda_gpt_recharges.current_attempt_id").
-		Where("kafuda_gpt_attempts.order_id = kafuda_gpt_recharges.order_id").
-		Where("status IN ?", []kafudadomain.AttemptStatus{kafudadomain.AttemptFailed, kafudadomain.AttemptCancelled}).
-		Where("upstream_order_id > 0 AND active_order_id IS NULL AND next_poll_at IS NULL")
-	return db.Model(&kafudadomain.Recharge{}).
-		Where("stage = ? AND reason_code = ? AND completed_at IS NULL", kafudadomain.StageManualReview, kafudadomain.ReasonCostLimitExceeded).
-		Where("EXISTS (?)", terminalAttempt).
-		UpdateColumns(map[string]any{"stage": kafudadomain.StageManualDelivery, "version": gorm.Expr("version + 1")}).Error
 }
 
 // backfillPendingOrderRiskIPs 只迁移仍可能占用库存的在途订单，避免启动时扫描全部历史订单。
