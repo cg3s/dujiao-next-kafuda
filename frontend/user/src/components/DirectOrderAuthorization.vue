@@ -3,27 +3,30 @@
     <h2 class="text-lg font-semibold">{{ t('directPurchase.authorization.title') }}</h2>
     <p class="mt-2 text-sm text-muted-foreground">{{ t('directPurchase.authorization.description') }}</p>
     <form class="mt-4 space-y-3" @submit.prevent="submit">
-      <label for="direct-order-session" class="block text-sm font-medium">
-        {{ t('directPurchase.authorization.sessionLabel') }}
-      </label>
-      <div class="flex gap-2">
-        <Input
-          id="direct-order-session"
-          v-model="session"
-          :type="showSession ? 'text' : 'password'"
-          autocomplete="off"
-          autocapitalize="off"
-          spellcheck="false"
-          :maxlength="16000"
-          required
-          :disabled="submitting"
-          :placeholder="t('directPurchase.authorization.sessionPlaceholder')"
-          class="min-w-0 flex-1"
-        />
-        <Button type="button" variant="outline" :disabled="submitting" @click="showSession = !showSession">
+      <div class="flex items-center justify-between gap-2">
+        <label for="direct-order-session" class="text-sm font-medium">
+          {{ t('directPurchase.authorization.sessionLabel') }}
+        </label>
+        <Button type="button" variant="outline" size="sm" aria-controls="direct-order-session"
+          :disabled="submitting" @click="showSession = !showSession">
           {{ t(showSession ? 'directPurchase.authorization.hide' : 'directPurchase.authorization.show') }}
         </Button>
       </div>
+      <Textarea
+        id="direct-order-session"
+        v-model="session"
+        rows="4"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        :maxlength="16000"
+        required
+        :disabled="submitting"
+        :placeholder="t('directPurchase.authorization.sessionPlaceholder')"
+        class="resize-y"
+        :class="{ 'session-masked': !showSession }"
+      />
       <p class="text-xs text-muted-foreground">{{ t('directPurchase.authorization.privacy') }}</p>
       <Button type="submit" :disabled="submitting || !session.trim()">
         {{ t(submitting ? 'directPurchase.authorization.submitting' : 'directPurchase.authorization.submit') }}
@@ -38,7 +41,7 @@ import { useI18n } from 'vue-i18n'
 import { userOrderAPI } from '../api'
 import { ApiRequestError } from '../api/client'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { toast } from '../composables/useToast'
 
 const props = defineProps<{ orderNo: string; available: boolean }>()
@@ -79,3 +82,20 @@ const submit = async () => {
   }
 }
 </script>
+
+<style scoped>
+.session-masked:not(:placeholder-shown) {
+  -webkit-text-security: disc;
+}
+
+@supports not (-webkit-text-security: disc) {
+  .session-masked:not(:placeholder-shown),
+  .session-masked::selection {
+    color: transparent;
+  }
+
+  .session-masked {
+    caret-color: var(--ui-text-primary);
+  }
+}
+</style>

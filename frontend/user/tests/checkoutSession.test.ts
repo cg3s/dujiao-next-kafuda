@@ -60,7 +60,8 @@ test('checkout and order detail keep settlement within the correct browser sessi
   await t.test('direct authorization rejects redirects and hides reflected HTTP errors', async (scenario) => {
     const { userOrderAPI } = await vite.ssrLoadModule('/src/api/order.ts')
     const { ApiRequestError } = await vite.ssrLoadModule('/src/api/client.ts')
-    const session = 'synthetic-session-not-for-logs'
+    const sessionToken = 'synthetic-session-not-for-logs'
+    const session = JSON.stringify({ sessionToken }, null, 2)
     const reported: unknown[][] = []
     scenario.mock.method(console, 'error', (...args: unknown[]) => reported.push(args))
     const localWrites = scenario.mock.method(localStorage, 'setItem')
@@ -77,11 +78,11 @@ test('checkout and order detail keep settlement within the correct browser sessi
     await assert.rejects(userOrderAPI.authorizeDirect('paid-fixture', session), (error: unknown) => {
       assert.ok(error instanceof ApiRequestError)
       assert.equal(error.status, 502)
-      assert.ok(!error.message.includes(session))
+      assert.ok(!error.message.includes(sessionToken))
       return true
     })
     assert.equal(request.mock.callCount(), 1)
-    assert.ok(!JSON.stringify(reported).includes(session))
+    assert.ok(!JSON.stringify(reported).includes(sessionToken))
     assert.equal(localWrites.mock.callCount(), 0)
     assert.equal(sessionWrites.mock.callCount(), 0)
   })
