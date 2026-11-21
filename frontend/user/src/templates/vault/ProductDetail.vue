@@ -135,9 +135,30 @@
           <!-- 规格 -->
           <div v-if="activeSkus.length" class="my-5">
             <div class="mb-2.5 text-[13px] font-bold uppercase tracking-[0.04em] text-muted-foreground">{{ t('productDetail.skuTitle') }}</div>
+            <div
+              v-if="directSkuRegions.length"
+              role="tablist"
+              :aria-label="t('directPurchase.skuRegions')"
+              class="mb-3 flex flex-wrap gap-1.5"
+            >
+              <button
+                v-for="region in directSkuRegions"
+                :key="region.value"
+                type="button"
+                role="tab"
+                :aria-selected="activeSkuRegion === region.value"
+                class="inline-flex min-h-[34px] items-center rounded-full border px-3 py-1 text-xs font-bold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                :class="activeSkuRegion === region.value
+                  ? 'border-primary bg-primary text-white'
+                  : 'border-hairline-strong bg-card text-muted-foreground hover:border-primary hover:text-primary'"
+                @click="selectSkuRegion(region.value)"
+              >
+                {{ region.label }}
+              </button>
+            </div>
             <div class="flex flex-wrap gap-2.5">
               <button
-                v-for="sku in activeSkus"
+                v-for="sku in visibleSkus"
                 :key="sku.id"
                 type="button"
                 class="flex min-w-[86px] flex-col items-start gap-0.5 rounded-sm border-2 px-4 py-2.5 text-sm font-semibold"
@@ -286,14 +307,14 @@ const {
   hasSkuPromotionPrice, getSkuPromotionSaveAmount,
   hasPromotionRules, getPromotionRules,
   formatPromotionRule, formatWholesaleTier, formatRelatedPostDate, normalizeSkuId,
-  loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, quantity, purchaseWarning,
-  activeSkus, selectedSku,
+  loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, activeSkuRegion, quantity, purchaseWarning,
+  activeSkus, directSkuRegions, visibleSkus, selectedSku,
   selectedSkuMemberPrice, hasMemberPrice,
   hasSelectedSkuWholesalePrice, selectedSkuWholesaleFinalIsMember, selectedSkuWholesaleFinalPrice,
   selectedSkuWholesaleRules,
   selectedSkuPromotionPrice, selectedSkuPromotionFinalIsMember, selectedSkuPromotionFinalPrice,
   showSelectedSkuMemberBadge,
-  isSkuPurchasable, skuDisplayText, skuStockText,
+  isSkuPurchasable, skuDisplayText, skuStockText, selectSkuRegion,
   quantityEffectiveLimit, quantityEffectiveMin, handleQuantityInput,
   requiresLogin, requiresSKUSelection, canPurchase, cannotPurchaseReason,
   categoryName, images,

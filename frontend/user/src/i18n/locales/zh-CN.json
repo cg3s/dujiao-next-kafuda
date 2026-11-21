@@ -1775,6 +1775,8 @@
     },
     "label": "GPT 直充",
     "sku": "套餐 {plan} · 地区 {country}",
+    "skuRegions": "规格地区",
+    "unknownRegion": "未指定地区",
     "available": "可购买",
     "unavailable": "暂不可购买",
     "notice": "每单限购一个规格，数量为 1。付款后可在订单详情查看直充进度。地区限制、现有订阅以及半价和点数资格以账号检查结果为准。",

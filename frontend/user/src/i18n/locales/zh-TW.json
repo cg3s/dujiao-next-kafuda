@@ -260,6 +260,8 @@
     },
     "label": "GPT 直充",
     "sku": "方案 {plan} · 地區 {country}",
+    "skuRegions": "規格地區",
+    "unknownRegion": "未指定地區",
     "available": "可購買",
     "unavailable": "暫不可購買",
     "notice": "每筆訂單限購一個規格，數量為 1。付款後可在訂單詳情查看直充進度。地區限制、現有訂閱以及半價和點數資格以帳號檢查結果為準。",

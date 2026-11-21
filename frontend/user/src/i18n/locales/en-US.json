@@ -260,6 +260,8 @@
     },
     "label": "GPT Direct Recharge",
     "sku": "Plan {plan} · Region {country}",
+    "skuRegions": "SKU regions",
+    "unknownRegion": "Unspecified region",
     "available": "Available",
     "unavailable": "Currently unavailable",
     "notice": "Choose one plan and region per order. After payment, track recharge progress from the order details. Region restrictions, existing subscriptions, and eligibility for half-price plans or credits are checked for your account.",

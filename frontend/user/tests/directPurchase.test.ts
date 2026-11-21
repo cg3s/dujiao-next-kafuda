@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { directCheckoutRestriction, GPT_DIRECT, isDirectSkuAvailable } from '../src/utils/directPurchase.ts'
+import {
+  buildDirectSkuRegions,
+  directCheckoutRestriction,
+  filterDirectSkusByRegion,
+  getDirectSkuRegion,
+  GPT_DIRECT,
+  isDirectSkuAvailable,
+  resolveDirectSkuIdForRegion,
+  UNKNOWN_DIRECT_SKU_REGION,
+} from '../src/utils/directPurchase.ts'
 import { resolveCardDisplayPrice } from '../src/utils/productPricing.ts'
 
 const availableSku = {
@@ -83,5 +92,61 @@ test('Classic and Vault product browsing use shared availability labels', () => 
     const source = readFileSync(new URL(`../src/${view}`, import.meta.url), 'utf8')
     assert.match(source, /getStockStatusLabel\(/, view)
     assert.doesNotMatch(source, /products\.stockStatus\.outOfStock/, view)
+  }
+})
+
+test('direct SKU regions normalize, deduplicate, and localize region labels', () => {
+  const skus = [
+    { ...availableSku, id: 1, spec_values: { plan: 'Plus', country: ' us ' } },
+    { ...availableSku, id: 2, spec_values: { plan: 'Pro', country: 'US' } },
+    { ...availableSku, id: 3, spec_values: { plan: 'Plus', country: 'jp' } },
+    { ...availableSku, id: 4, spec_values: { plan: 'Plus', country: 'GLOBAL' } },
+    { ...availableSku, id: 5, spec_values: { plan: 'Plus' } },
+  ]
+  assert.equal(getDirectSkuRegion(skus[0]), 'US')
+  assert.equal(getDirectSkuRegion(skus[4]), UNKNOWN_DIRECT_SKU_REGION)
+
+  const zhRegions = buildDirectSkuRegions(skus, 'zh-CN', '未指定地区')
+  assert.deepEqual(
+    zhRegions.map((item) => item.value),
+    ['US', 'JP', 'GLOBAL', UNKNOWN_DIRECT_SKU_REGION],
+  )
+  assert.equal(zhRegions[0]?.label, new Intl.DisplayNames(['zh-CN'], { type: 'region' }).of('US'))
+  assert.equal(zhRegions[1]?.label, new Intl.DisplayNames(['zh-CN'], { type: 'region' }).of('JP'))
+  assert.equal(zhRegions[2]?.label, 'GLOBAL')
+  assert.equal(zhRegions[3]?.label, '未指定地区')
+
+  assert.deepEqual(
+    filterDirectSkusByRegion(skus, 'US').map((sku) => sku.id),
+    [1, 2],
+  )
+})
+
+test('resolveDirectSkuIdForRegion prefers the first available SKU in the selected region', () => {
+  const skus = [
+    { ...availableSku, id: 10, stock_status: 'out_of_stock', spec_values: { plan: 'Plus', country: 'US' } },
+    { ...availableSku, id: 11, stock_status: 'in_stock', spec_values: { plan: 'Pro', country: 'US' } },
+    { ...availableSku, id: 12, stock_status: 'out_of_stock', spec_values: { plan: 'Plus', country: 'JP' } },
+  ]
+  const normalize = (id: unknown) => Number(id) || 0
+  assert.equal(resolveDirectSkuIdForRegion(skus, 'US', normalize), 11)
+  assert.equal(resolveDirectSkuIdForRegion(skus, 'JP', normalize), 12)
+  assert.equal(resolveDirectSkuIdForRegion(skus, 'GB', normalize), 0)
+})
+
+test('Classic and Vault product detail pages render direct SKU region tabs and visible SKUs', () => {
+  for (const view of [
+    'views/ProductDetail.vue',
+    'templates/vault/ProductDetail.vue',
+  ]) {
+    const source = readFileSync(new URL(`../src/${view}`, import.meta.url), 'utf8')
+    assert.match(source, /directSkuRegions\.length/, view)
+    assert.match(source, /selectSkuRegion\(region\.value\)/, view)
+    assert.match(source, /v-for="sku in visibleSkus"/, view)
+  }
+  for (const locale of ['zh-CN', 'zh-TW', 'en-US']) {
+    const data = JSON.parse(readFileSync(new URL(`../src/i18n/locales/${locale}.json`, import.meta.url), 'utf8'))
+    assert.ok(data.directPurchase.skuRegions, `${locale}: skuRegions`)
+    assert.ok(data.directPurchase.unknownRegion, `${locale}: unknownRegion`)
   }
 })

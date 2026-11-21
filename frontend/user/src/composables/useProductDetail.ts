@@ -10,7 +10,14 @@ import { useBuyNowStore } from '../stores/buyNow'
 import { useUserAuthStore } from '../stores/userAuth'
 import { useUserProfileStore } from '../stores/userProfile'
 import { debounceAsync } from '../utils/debounce'
-import { isDirectFulfillmentType, isDirectSkuAvailable } from '../utils/directPurchase'
+import {
+  buildDirectSkuRegions,
+  filterDirectSkusByRegion,
+  getDirectSkuRegion,
+  isDirectFulfillmentType,
+  isDirectSkuAvailable,
+  resolveDirectSkuIdForRegion,
+} from '../utils/directPurchase'
 import { buildSkuDisplayText, normalizeSkuId } from '../utils/sku'
 import { resolveSkuAvailableStock, resolveSkuStockDisplay, type PublicStockDisplay } from '../utils/publicStock'
 import { useLocalized, useProductLabels } from './useProduct'
@@ -70,6 +77,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
   }
   const currentImage = ref<string>('')
   const selectedSkuId = ref(0)
+  const activeSkuRegion = ref('')
   const quantity = ref(1)
   const purchaseWarning = ref('')
 
@@ -77,6 +85,17 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     const rows = Array.isArray(product.value?.skus) ? product.value.skus : []
     return rows.filter((sku: any) => Boolean(sku?.is_active))
   })
+
+  const directSkuRegions = computed(() => {
+    if (!isDirect.value) return []
+    return buildDirectSkuRegions(activeSkus.value, appStore.locale, t('directPurchase.unknownRegion'))
+  })
+
+  const visibleSkus = computed(() => (
+    directSkuRegions.value.length
+      ? filterDirectSkusByRegion(activeSkus.value, activeSkuRegion.value)
+      : activeSkus.value
+  ))
 
   const selectedSku = computed(() => {
     if (selectedSkuId.value <= 0) return null
@@ -383,8 +402,12 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
   })
 
   const skuDisplayText = (sku: any) => {
-    if (isDirect.value && sku?.spec_values?.plan && sku?.spec_values?.country) {
-      return t('directPurchase.sku', { plan: sku.spec_values.plan, country: sku.spec_values.country })
+    if (isDirect.value) {
+      const localized = getLocalizedText(sku?.spec_values)
+      if (localized) return localized
+      if (sku?.spec_values?.plan && sku?.spec_values?.country) {
+        return t('directPurchase.sku', { plan: sku.spec_values.plan, country: sku.spec_values.country })
+      }
     }
     return buildSkuDisplayText({
       skuCode: sku?.sku_code,
@@ -394,25 +417,56 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     })
   }
 
+  const syncActiveSkuRegion = () => {
+    const regions = directSkuRegions.value
+    if (regions.length === 0) {
+      activeSkuRegion.value = ''
+      return
+    }
+    if (selectedSku.value) {
+      const selectedRegion = getDirectSkuRegion(selectedSku.value)
+      if (regions.some(({ value }) => value === selectedRegion)) {
+        activeSkuRegion.value = selectedRegion
+        return
+      }
+    }
+    if (!regions.some(({ value }) => value === activeSkuRegion.value)) {
+      activeSkuRegion.value = regions[0]?.value ?? ''
+    }
+  }
+
+  const selectSkuRegion = (region: string) => {
+    if (!directSkuRegions.value.some(({ value }) => value === region)) return
+    activeSkuRegion.value = region
+    if (!selectedSku.value || getDirectSkuRegion(selectedSku.value) !== region) {
+      selectedSkuId.value = resolveDirectSkuIdForRegion(activeSkus.value, region, normalizeSkuId)
+    }
+  }
+
   const syncSelectedSku = () => {
     const rows = activeSkus.value
     if (rows.length === 0) {
       selectedSkuId.value = 0
+      syncActiveSkuRegion()
       return
     }
     if (rows.length === 1) {
       selectedSkuId.value = normalizeSkuId(rows[0]?.id)
+      syncActiveSkuRegion()
       return
     }
     if (rows.some((sku: any) => normalizeSkuId(sku?.id) === selectedSkuId.value)) {
+      syncActiveSkuRegion()
       return
     }
     const firstAvailable = rows.find((sku: any) => isSkuPurchasable(sku))
     if (firstAvailable) {
       selectedSkuId.value = normalizeSkuId(firstAvailable?.id)
+      syncActiveSkuRegion()
       return
     }
     selectedSkuId.value = normalizeSkuId(rows[0]?.id)
+    syncActiveSkuRegion()
   }
 
   const selectedCartQuantity = () => {
@@ -578,6 +632,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
       console.error('Failed to load product:', error)
       product.value = null
       selectedSkuId.value = 0
+      activeSkuRegion.value = ''
     } finally {
       loading.value = false
     }
@@ -687,6 +742,10 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     ensureMemberLevels()
   })
 
+  watch(directSkuRegions, () => {
+    syncActiveSkuRegion()
+  })
+
   watch(
     () => selectedSkuId.value,
     () => {
@@ -721,8 +780,8 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     formatPromotionRule, formatWholesaleTier, formatRelatedPostDate,
     normalizeSkuId,
     // 状态
-    loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, quantity, purchaseWarning,
-    activeSkus, selectedSku,
+    loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, activeSkuRegion, quantity, purchaseWarning,
+    activeSkus, directSkuRegions, visibleSkus, selectedSku,
     // 价格计算
     selectedSkuMemberPrice, hasMemberPrice,
     hasSelectedSkuWholesalePrice, selectedSkuWholesaleFinalIsMember, selectedSkuWholesaleFinalPrice,
@@ -730,7 +789,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     selectedSkuPromotionPrice, selectedSkuPromotionFinalIsMember, selectedSkuPromotionFinalPrice,
     showSelectedSkuMemberBadge,
     // SKU / 库存 / 数量
-    isSkuPurchasable, skuDisplayText, skuStockText, skuStockBadgeClass,
+    isSkuPurchasable, skuDisplayText, skuStockText, skuStockBadgeClass, selectSkuRegion,
     quantityEffectiveLimit, quantityEffectiveMin, handleQuantityInput,
     // 购买能力
     purchaseType, requiresLogin, requiresSKUSelection, canPurchase, cannotPurchaseReason,
