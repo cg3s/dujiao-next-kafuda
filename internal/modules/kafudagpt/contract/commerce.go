@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -49,7 +50,38 @@ type CommercePolicy interface {
 	PurchaseTerms(context.Context, string, string, uint64) (*PurchaseTerms, error)
 }
 
+func OptionKey(plan, country string) string {
+	return strings.TrimSpace(plan) + "\x00" + strings.TrimSpace(country)
+}
+
+func sanitizeSKUCodeSegment(raw string) string {
+	var b strings.Builder
+	lastSep := false
+	for _, r := range strings.ToUpper(strings.TrimSpace(raw)) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastSep = false
+		} else if !lastSep && b.Len() > 0 {
+			b.WriteByte('-')
+			lastSep = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
 func SKUCode(plan, country string) string {
+	parts := []string{"GPT"}
+	if p := sanitizeSKUCodeSegment(plan); p != "" {
+		parts = append(parts, p)
+	}
+	if c := sanitizeSKUCodeSegment(country); c != "" {
+		parts = append(parts, c)
+	}
+	if len(parts) > 1 {
+		if code := strings.Join(parts, "-"); len(code) <= 64 {
+			return code
+		}
+	}
 	sum := sha256.Sum256([]byte(plan + "\x00" + country))
 	return "KGPT_" + hex.EncodeToString(sum[:28])
 }

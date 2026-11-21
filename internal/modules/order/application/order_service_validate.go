@@ -323,8 +323,8 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 			UpdatedAt:                    now,
 		}
 		if direct {
-			// Only the plan/country belong in the buyer-facing SKU metadata.
-			orderItem.SKUSnapshotJSON["spec_values"] = jsonmap.JSON{"plan": sku.SpecValuesJSON["plan"], "country": sku.SpecValuesJSON["country"]}
+			// Only plan, country, and localized display names belong in buyer-facing SKU metadata.
+			orderItem.SKUSnapshotJSON["spec_values"] = sku.DirectPublicSpecValues()
 		}
 		orderItems = append(orderItems, orderItem)
 		plans = append(plans, childOrderPlan{
@@ -443,7 +443,7 @@ func (s *OrderService) resolveDirectPurchaseTerms(product *productdomain.Product
 func validateDirectCheckout(tx ordercontract.Transaction, plan childOrderPlan, product *productdomain.Product, sku *productdomain.ProductSKU) error {
 	terms := plan.DirectTerms
 	if terms == nil || plan.SKU == nil || product.IsMapped || !sku.DirectCostConfigured ||
-		sku.DirectCatalogRevision != plan.SKU.DirectCatalogRevision || !sku.PriceAmount.Equal(plan.Item.OriginalUnitPrice.Decimal) ||
+		sku.SKUCode != plan.SKU.SKUCode || sku.DirectCatalogRevision != plan.SKU.DirectCatalogRevision || !sku.PriceAmount.Equal(plan.Item.OriginalUnitPrice.Decimal) ||
 		!sku.CostPriceAmount.Equal(plan.Item.CostPrice.Decimal) || productdomain.ValidatePurchaseQuantity(product, 1) != nil {
 		return ErrProductNotAvailable
 	}

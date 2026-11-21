@@ -3,6 +3,7 @@ package productwrite
 import (
 	"context"
 	"sort"
+	"strings"
 
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
@@ -59,38 +60,129 @@ func (s *WriteService) directSKUOptions() ([]kafudacontract.SKUOption, error) {
 	return options, nil
 }
 
+var directSpecLocales = []string{"zh-CN", "zh-TW", "en-US"}
+
+func directOptionKeyFromSpec(spec map[string]interface{}) (string, bool) {
+	if spec == nil {
+		return "", false
+	}
+	plan, _ := spec["plan"].(string)
+	country, _ := spec["country"].(string)
+	plan = strings.TrimSpace(plan)
+	country = strings.TrimSpace(country)
+	if plan == "" || country == "" {
+		return "", false
+	}
+	return kafudacontract.OptionKey(plan, country), true
+}
+
+func buildDirectSpecValues(plan, country, defaultLabel string, oldSpec, inputSpec map[string]interface{}, hasOld bool) map[string]interface{} {
+	spec := map[string]interface{}{"plan": plan, "country": country}
+	source := oldSpec
+	if inputSpec != nil {
+		source = inputSpec
+	}
+	hasLocale := false
+	for _, lang := range directSpecLocales {
+		if text, ok := source[lang].(string); ok {
+			if trimmed := strings.TrimSpace(text); trimmed != "" {
+				spec[lang] = trimmed
+				hasLocale = true
+			}
+		}
+	}
+	if !hasLocale && !hasOld && inputSpec == nil {
+		if label := strings.TrimSpace(defaultLabel); label != "" {
+			for _, lang := range directSpecLocales {
+				spec[lang] = label
+			}
+		}
+	}
+	return spec
+}
+
 func prepareDirectSKUs(inputs []ProductSKUInput, existing map[uint]productdomain.ProductSKU, options []kafudacontract.SKUOption) ([]ProductSKUInput, error) {
+	oldByKey := make(map[string]productdomain.ProductSKU, len(existing))
 	oldByCode := make(map[string]productdomain.ProductSKU, len(existing))
 	for _, sku := range existing {
-		oldByCode[sku.SKUCode] = sku
+		if plan, country, valid := sku.DirectSelection(); valid {
+			oldByKey[kafudacontract.OptionKey(plan, country)] = sku
+		}
+		if code := strings.TrimSpace(sku.SKUCode); code != "" {
+			oldByCode[code] = sku
+		}
+	}
+	optionByDefaultCode := make(map[string]kafudacontract.SKUOption, len(options))
+	for _, option := range options {
+		if code := strings.TrimSpace(option.SKUCode); code != "" {
+			optionByDefaultCode[code] = option
+		}
 	}
 	provided := make(map[string]ProductSKUInput, len(inputs))
 	for _, input := range inputs {
-		if _, duplicate := provided[input.SKUCode]; duplicate {
-			return nil, productcontract.ErrProductSKUInvalid
-		}
+		trimmedCode := strings.TrimSpace(input.SKUCode)
+		specKey, hasSpecKey := directOptionKeyFromSpec(input.SpecValuesJSON)
+		var key string
 		if input.ID != 0 {
 			old, ok := existing[input.ID]
-			if !ok || old.SKUCode != input.SKUCode {
+			if !ok {
 				return nil, productcontract.ErrProductSKUInvalid
 			}
+			oldPlan, oldCountry, oldValid := old.DirectSelection()
+			if !oldValid {
+				return nil, productcontract.ErrProductSKUInvalid
+			}
+			oldKey := kafudacontract.OptionKey(oldPlan, oldCountry)
+			if hasSpecKey && specKey != oldKey {
+				return nil, productcontract.ErrProductSKUInvalid
+			}
+			key = oldKey
+		} else if hasSpecKey {
+			key = specKey
+		} else if opt, ok := optionByDefaultCode[trimmedCode]; ok {
+			key = kafudacontract.OptionKey(opt.Plan, opt.Country)
+		} else if old, ok := oldByCode[trimmedCode]; ok {
+			if oldPlan, oldCountry, oldValid := old.DirectSelection(); oldValid {
+				key = kafudacontract.OptionKey(oldPlan, oldCountry)
+			}
 		}
-		provided[input.SKUCode] = input
+		if key == "" {
+			return nil, productcontract.ErrProductSKUInvalid
+		}
+		if _, duplicate := provided[key]; duplicate {
+			return nil, productcontract.ErrProductSKUInvalid
+		}
+		provided[key] = input
 	}
 	result := make([]ProductSKUInput, 0, len(options)+len(existing))
 	seen := make(map[string]bool)
 	for _, option := range options {
-		seen[option.SKUCode] = true
+		key := kafudacontract.OptionKey(option.Plan, option.Country)
+		seen[key] = true
 		active := false
-		item := ProductSKUInput{SKUCode: option.SKUCode, PriceAmount: decimal.Zero, CostPriceAmount: decimal.Zero, IsActive: &active}
-		if old, ok := oldByCode[option.SKUCode]; ok {
+		defaultCode := strings.TrimSpace(option.SKUCode)
+		if defaultCode == "" {
+			defaultCode = kafudacontract.SKUCode(option.Plan, option.Country)
+		}
+		item := ProductSKUInput{SKUCode: defaultCode, PriceAmount: decimal.Zero, CostPriceAmount: decimal.Zero, IsActive: &active}
+		old, hasOld := oldByKey[key]
+		if !hasOld {
+			if legacyOld, ok := oldByCode[defaultCode]; ok {
+				old, hasOld = legacyOld, true
+			}
+		}
+		if hasOld {
 			active = old.IsActive && old.DirectCatalogRevision == option.CatalogRevision
-			item.ID, item.PriceAmount, item.CostPriceAmount = old.ID, old.PriceAmount.Decimal, old.CostPriceAmount.Decimal
+			item.ID, item.SKUCode, item.PriceAmount, item.CostPriceAmount = old.ID, old.SKUCode, old.PriceAmount.Decimal, old.CostPriceAmount.Decimal
 			item.CostPriceProvided, item.SortOrder = old.DirectCostConfigured, old.SortOrder
 		}
-		if input, ok := provided[option.SKUCode]; ok {
+		var inputSpec map[string]interface{}
+		if input, ok := provided[key]; ok {
 			if item.ID != 0 && input.ID != 0 && item.ID != input.ID {
 				return nil, productcontract.ErrProductSKUInvalid
+			}
+			if trimmedCode := strings.TrimSpace(input.SKUCode); trimmedCode != "" {
+				item.SKUCode = trimmedCode
 			}
 			if !input.KeepPriceAmount {
 				item.PriceAmount = input.PriceAmount
@@ -104,11 +196,12 @@ func prepareDirectSKUs(inputs []ProductSKUInput, existing map[uint]productdomain
 			if input.IsActive != nil {
 				active = *input.IsActive
 			}
+			inputSpec = input.SpecValuesJSON
 		}
 		if !option.Available {
 			active = false
 		}
-		if input, supplied := provided[option.SKUCode]; active && supplied {
+		if input, supplied := provided[key]; active && supplied {
 			if (option.CatalogRevision > 0 && input.DirectCatalogRevision == nil) ||
 				(input.DirectCatalogRevision != nil && *input.DirectCatalogRevision != option.CatalogRevision) {
 				return nil, productcontract.ErrProductSKUInvalid
@@ -119,21 +212,35 @@ func prepareDirectSKUs(inputs []ProductSKUInput, existing map[uint]productdomain
 		if active && !item.CostPriceProvided {
 			return nil, productcontract.ErrProductPriceInvalid
 		}
-		item.SpecValuesJSON = map[string]interface{}{"plan": option.Plan, "country": option.Country}
+		var oldSpec map[string]interface{}
+		if hasOld && old.SpecValuesJSON != nil {
+			oldSpec = map[string]interface{}(old.SpecValuesJSON)
+		}
+		item.SpecValuesJSON = buildDirectSpecValues(option.Plan, option.Country, option.Label, oldSpec, inputSpec, hasOld)
 		result = append(result, item)
 	}
 	// Disappeared entries stay attached to their historical IDs and prices.
-	for code, old := range oldByCode {
-		if seen[code] {
+	for key, old := range oldByKey {
+		if seen[key] {
 			continue
 		}
 		active := false
 		revision := old.DirectCatalogRevision
-		result = append(result, ProductSKUInput{ID: old.ID, SKUCode: code, SpecValuesJSON: old.SpecValuesJSON, PriceAmount: old.PriceAmount.Decimal, CostPriceAmount: old.CostPriceAmount.Decimal, CostPriceProvided: old.DirectCostConfigured, DirectCatalogRevision: &revision, IsActive: &active, SortOrder: old.SortOrder})
-		seen[code] = true
+		code := old.SKUCode
+		spec := map[string]interface{}(old.SpecValuesJSON)
+		if input, ok := provided[key]; ok {
+			if trimmedCode := strings.TrimSpace(input.SKUCode); trimmedCode != "" {
+				code = trimmedCode
+			}
+			if plan, country, valid := old.DirectSelection(); valid && input.SpecValuesJSON != nil {
+				spec = buildDirectSpecValues(plan, country, "", map[string]interface{}(old.SpecValuesJSON), input.SpecValuesJSON, true)
+			}
+		}
+		result = append(result, ProductSKUInput{ID: old.ID, SKUCode: code, SpecValuesJSON: spec, PriceAmount: old.PriceAmount.Decimal, CostPriceAmount: old.CostPriceAmount.Decimal, CostPriceProvided: old.DirectCostConfigured, DirectCatalogRevision: &revision, IsActive: &active, SortOrder: old.SortOrder})
+		seen[key] = true
 	}
-	for code := range provided {
-		if !seen[code] {
+	for key := range provided {
+		if !seen[key] {
 			return nil, productcontract.ErrProductSKUInvalid
 		}
 	}

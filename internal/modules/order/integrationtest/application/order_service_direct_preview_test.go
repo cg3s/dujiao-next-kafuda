@@ -130,7 +130,7 @@ func TestDirectOrderPreviewEnforcesStorefrontAndCatalogRules(t *testing.T) {
 			case "wrong_sku_owner":
 				fields["product_id"] = f.product.ID + 99
 			case "bad_code":
-				fields["sku_code"] = "client-code"
+				fields["sku_code"] = ""
 			case "bad_spec":
 				fields["spec_values_json"] = jsonmap.JSON{"plan": 42, "country": "PH"}
 			case "old_revision":

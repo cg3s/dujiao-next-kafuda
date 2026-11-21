@@ -1,9 +1,9 @@
 package productdomain
 
 import (
+	"strings"
 	"time"
 
-	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
 )
@@ -52,5 +52,25 @@ func (sku ProductSKU) DirectPriceValid() bool {
 func (sku ProductSKU) DirectSelection() (plan, country string, valid bool) {
 	plan, _ = sku.SpecValuesJSON["plan"].(string)
 	country, _ = sku.SpecValuesJSON["country"].(string)
-	return plan, country, plan != "" && country != "" && sku.SKUCode == kafudacontract.SKUCode(plan, country)
+	plan = strings.TrimSpace(plan)
+	country = strings.TrimSpace(country)
+	return plan, country, plan != "" && country != "" && strings.TrimSpace(sku.SKUCode) != ""
+}
+
+// DirectPublicSpecValues returns the buyer-safe spec_values for a direct SKU:
+// plan, country, and optional localized spec display names.
+func (sku ProductSKU) DirectPublicSpecValues() jsonmap.JSON {
+	plan, country, valid := sku.DirectSelection()
+	if !valid {
+		return nil
+	}
+	out := jsonmap.JSON{"plan": plan, "country": country}
+	for _, lang := range []string{"zh-CN", "zh-TW", "en-US"} {
+		if text, ok := sku.SpecValuesJSON[lang].(string); ok {
+			if trimmed := strings.TrimSpace(text); trimmed != "" {
+				out[lang] = trimmed
+			}
+		}
+	}
+	return out
 }

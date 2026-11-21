@@ -72,6 +72,7 @@ const catalogOptions: Array<{
   sku_code: string
   plan: string
   country: string
+  label?: string
   available: boolean
   catalog_revision: number
   estimated_cost_cny?: number
@@ -407,5 +408,52 @@ describe('ProductEditModal Direct SKU edits', () => {
     expect(payload.skus[0]).toMatchObject({ sku_code: 'KGPT_PH', price_amount: 110 })
     // New US SKU got preset cost from estimated_cost_cny (50.5) and +10% price (55.55).
     expect(payload.skus[1]).toMatchObject({ sku_code: 'KGPT_US', cost_price_amount: 50.5, price_amount: 55.55 })
+  })
+
+  it('populates editable direct SKU code and spec name from catalog defaults', async () => {
+    api.getProduct.mockResolvedValue(productResponse(1, 'PH'))
+    api.getKafudaCatalog.mockResolvedValue(catalogResponse([
+      { ...catalogOptions[0]!, sku_code: 'GPT-PLUS-PH', label: 'ChatGPT Plus (PH)' },
+      { ...catalogOptions[1]!, sku_code: '', plan: 'pro_monthly', country: 'US', label: 'ChatGPT Pro (US)' },
+    ]))
+    const context = mountModal()
+    context.productId = 1
+    context.open = true
+    await flushRequests()
+
+    const codeInput = host.querySelector<HTMLInputElement>('input[placeholder="admin.products.form.skuCodePlaceholder"]')
+    const specInput = host.querySelector<HTMLInputElement>('input[placeholder="admin.products.form.skuSpecPlaceholder"]')
+    expect(codeInput?.value).toBe('KGPT_PH')
+    expect(specInput?.value).toBe('ChatGPT Plus (PH)')
+
+    codeInput!.value = 'CUSTOM-GPT-PH'
+    codeInput!.dispatchEvent(new Event('input', { bubbles: true }))
+    specInput!.value = '菲律宾 Plus 月卡'
+    specInput!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const tabs = host.querySelectorAll('[role="tab"]')
+    tabs[1]!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+    await nextTick()
+    const usCodeInput = host.querySelector<HTMLInputElement>('input[placeholder="admin.products.form.skuCodePlaceholder"]')
+    const usSpecInput = host.querySelector<HTMLInputElement>('input[placeholder="admin.products.form.skuSpecPlaceholder"]')
+    expect(usCodeInput?.value).toBe('GPT-PRO-MONTHLY-US')
+    expect(usSpecInput?.value).toBe('ChatGPT Pro (US)')
+
+    usCodeInput!.value = 'CUSTOM-GPT-US'
+    usCodeInput!.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const payload = submitUpdate()
+    expect(payload.skus).toHaveLength(2)
+    expect(payload.skus[0]).toMatchObject({
+      id: 1,
+      sku_code: 'CUSTOM-GPT-PH',
+      spec_values: expect.objectContaining({ plan: 'plus', country: 'PH', 'zh-CN': '菲律宾 Plus 月卡' }),
+    })
+    expect(payload.skus[1]).toMatchObject({
+      sku_code: 'CUSTOM-GPT-US',
+      spec_values: expect.objectContaining({ plan: 'pro_monthly', country: 'US', 'zh-CN': 'ChatGPT Pro (US)' }),
+    })
   })
 })

@@ -118,9 +118,62 @@ type SKUFormItem = {
   sort_order: number
 }
 
-const originalDirectSKUs = new Map<string, Pick<SKUFormItem, 'price_amount' | 'cost_price_amount' | 'is_active' | 'sort_order' | 'direct_catalog_revision'>>()
+const originalDirectSKUs = new Map<string, Pick<SKUFormItem, 'sku_code' | 'spec_values' | 'price_amount' | 'cost_price_amount' | 'is_active' | 'sort_order' | 'direct_catalog_revision'>>()
 const directCostConfirmations = reactive(new Map<string, number>())
 let originalDirectProductActive: boolean | undefined
+
+const directSpecLocales = ['zh-CN', 'zh-TW', 'en-US'] as const
+
+const directSKUKey = (sku: { sku_code?: string; spec_values?: Record<string, string> }) => {
+  const plan = String(sku.spec_values?.plan || '').trim()
+  const country = String(sku.spec_values?.country || '').trim()
+  if (plan && country) return `${plan}\0${country}`
+  return String(sku.sku_code || '').trim()
+}
+
+const directOptionKey = (option: { sku_code?: string; plan?: string; country?: string }) => {
+  const plan = String(option.plan || '').trim()
+  const country = String(option.country || '').trim()
+  if (plan && country) return `${plan}\0${country}`
+  return String(option.sku_code || '').trim()
+}
+
+const defaultDirectSKUCode = (option: { sku_code?: string; plan?: string; country?: string }) => {
+  const fromAPI = String(option.sku_code || '').trim()
+  if (fromAPI) return fromAPI
+  const normalize = (val?: string) =>
+    String(val || '')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+  return ['GPT', normalize(option.plan), normalize(option.country)].filter(Boolean).join('-')
+}
+
+const hasLocalizedSpecText = (spec?: Record<string, string>) =>
+  directSpecLocales.some((code) => Boolean(String(spec?.[code] || '').trim()))
+
+const buildDirectSpecValues = (option: { plan: string; country: string; label?: string }, existingSpec?: Record<string, string>) => {
+  const spec: Record<string, string> = {
+    ...createEmptyLocaleText(),
+    plan: option.plan,
+    country: option.country,
+  }
+  const label = String(option.label || '').trim()
+  const hasExistingLocale = hasLocalizedSpecText(existingSpec)
+  for (const code of directSpecLocales) {
+    const existingText = String(existingSpec?.[code] || '').trim()
+    if (existingText) {
+      spec[code] = existingText
+    } else if (!hasExistingLocale && label) {
+      spec[code] = label
+    }
+  }
+  return spec
+}
+
+const directSKULocalesEqual = (a?: Record<string, string>, b?: Record<string, string>) =>
+  directSpecLocales.every((code) => String(a?.[code] || '').trim() === String(b?.[code] || '').trim())
 
 type ManualFormField = {
   key: string
@@ -529,22 +582,26 @@ type NormalizedSKU = ReturnType<typeof normalizeSKUsForSubmit>[number]
 const needsDirectCostConfirmation = (sku: SKUFormItem) => {
   const cost = sku.cost_price_amount
   if (sku.direct_cost_configured || cost === '' || cost < 0) return false
-  return originalDirectSKUs.get(sku.sku_code)?.cost_price_amount === cost && directCostConfirmations.get(sku.sku_code) !== cost
+  const key = directSKUKey(sku)
+  return originalDirectSKUs.get(key)?.cost_price_amount === cost && directCostConfirmations.get(key) !== cost
 }
 
 const confirmDirectCost = (sku: SKUFormItem) => {
-  if (sku.cost_price_amount !== '') directCostConfirmations.set(sku.sku_code, sku.cost_price_amount)
+  if (sku.cost_price_amount !== '') directCostConfirmations.set(directSKUKey(sku), sku.cost_price_amount)
 }
 
 const directSKUChanges = (skus: NormalizedSKU[]) => skus.flatMap<Partial<NormalizedSKU>>((sku) => {
-  const original = originalDirectSKUs.get(sku.sku_code)
+  const key = directSKUKey(sku)
+  const original = originalDirectSKUs.get(key)
   if (!original) return [sku]
+  const codeChanged = sku.sku_code !== original.sku_code
+  const specChanged = !directSKULocalesEqual(sku.spec_values, original.spec_values)
   const activeChanged = sku.is_active !== original.is_active
-  const costConfirmed = sku.cost_price_amount !== undefined && directCostConfirmations.get(sku.sku_code) === sku.cost_price_amount
+  const costConfirmed = sku.cost_price_amount !== undefined && directCostConfirmations.get(key) === sku.cost_price_amount
   const includeCost = costConfirmed || sku.cost_price_amount !== (original.cost_price_amount === '' ? undefined : original.cost_price_amount)
   const priceChanged = sku.price_amount !== original.price_amount
   const sortChanged = sku.sort_order !== original.sort_order
-  if (!activeChanged && !includeCost && !priceChanged && !sortChanged) return []
+  if (!codeChanged && !specChanged && !activeChanged && !includeCost && !priceChanged && !sortChanged) return []
   if (!sku.id) return [sku]
   return [{
     ...sku,
@@ -657,7 +714,7 @@ const populateForm = (product: AdminProduct) => {
   })
   if (product.fulfillment_type === 'kafuda_gpt_direct') {
     originalDirectProductActive = form.is_active
-    for (const sku of form.skus) originalDirectSKUs.set(sku.sku_code, { ...sku })
+    for (const sku of form.skus) originalDirectSKUs.set(directSKUKey(sku), { ...sku, spec_values: { ...sku.spec_values } })
   }
 }
 
@@ -713,7 +770,7 @@ const applyDirectMarkupToAllSKUs = () => {
   }
   const multiplier = 1 + markup / 100
   for (const sku of form.skus) {
-    const presetCost = directEstimatedCostCNY.value[sku.sku_code]
+    const presetCost = directEstimatedCostCNY.value[directSKUKey(sku)]
     let cost = sku.cost_price_amount === '' ? Number.NaN : Number(sku.cost_price_amount)
     if ((!Number.isFinite(cost) || cost <= 0) && typeof presetCost === 'number' && presetCost > 0) {
       cost = presetCost
@@ -736,28 +793,36 @@ const loadDirectCatalog = async (sync: boolean) => {
     if (!isCurrent()) return
     const catalog = response.data.data
     const options: DirectOption[] = Array.isArray(catalog.options) ? catalog.options : []
-    const old = new Map(form.skus.filter((item) => item.sku_code.startsWith('KGPT_')).map((item) => [item.sku_code, item]))
+    const old = new Map(
+      form.skus
+        .filter((item) => Boolean(item.spec_values.plan && item.spec_values.country))
+        .map((item) => [directSKUKey(item), item]),
+    )
     const available: Record<string, boolean> = {}
     const reviewRequired: Record<string, boolean> = {}
     const estimatedCosts: Record<string, number> = {}
     const merged: SKUFormItem[] = options.map((option) => {
-      available[option.sku_code] = option.available
+      const key = directOptionKey(option)
+      const defaultCode = defaultDirectSKUCode(option)
+      available[key] = option.available
       const presetCost = typeof option.estimated_cost_cny === 'number' && Number.isFinite(option.estimated_cost_cny) && option.estimated_cost_cny > 0
         ? roundCurrencyAmount(option.estimated_cost_cny)
         : undefined
       if (presetCost !== undefined) {
-        estimatedCosts[option.sku_code] = presetCost
+        estimatedCosts[key] = presetCost
       }
-      const existing = old.get(option.sku_code)
+      const existing = old.get(key)
       const revision = Number(option.catalog_revision || 0)
-      reviewRequired[option.sku_code] = Boolean(existing && existing.direct_catalog_revision !== revision)
-      old.delete(option.sku_code)
-      const defaults = createSKUFormItem({ sku_code: option.sku_code, is_active: false }, true)
+      reviewRequired[key] = Boolean(existing && existing.direct_catalog_revision !== revision)
+      old.delete(key)
+      const specValues = buildDirectSpecValues(option, existing?.spec_values)
+      const defaults = createSKUFormItem({ sku_code: defaultCode, spec_values: specValues, is_active: false }, true)
       if (originalDirectProductActive !== undefined) {
         // Advance the catalog view of the baseline without absorbing form edits.
-        const original = originalDirectSKUs.get(option.sku_code) ?? defaults
-        originalDirectSKUs.set(option.sku_code, {
+        const original = originalDirectSKUs.get(key) ?? defaults
+        originalDirectSKUs.set(key, {
           ...original,
+          spec_values: buildDirectSpecValues(option, original.spec_values),
           is_active: original.is_active && option.available && original.direct_catalog_revision === revision,
           direct_catalog_revision: revision,
         })
@@ -768,14 +833,15 @@ const loadDirectCatalog = async (sync: boolean) => {
       return {
         ...defaults,
         ...existing,
+        sku_code: existing?.sku_code || defaultCode,
         cost_price_amount: resolvedCost,
-        spec_values: { ...createEmptyLocaleText(), plan: option.plan, country: option.country },
+        spec_values: specValues,
         is_active: Boolean(existing?.is_active && option.available && existing.direct_catalog_revision === revision),
         direct_catalog_revision: revision,
       }
     })
     for (const item of old.values()) {
-      const original = originalDirectSKUs.get(item.sku_code)
+      const original = originalDirectSKUs.get(directSKUKey(item))
       if (original) original.is_active = false
       merged.push({ ...item, is_active: false })
     }
@@ -1253,18 +1319,18 @@ watch(
                   </div>
 
                   <div class="grid grid-cols-1 md:grid-cols-6 gap-3">
-                    <div v-if="!isDirect" class="md:col-span-1">
+                    <div class="md:col-span-1">
                       <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuCode') }}</label>
                       <Input v-model="sku.sku_code" :placeholder="t('admin.products.form.skuCodePlaceholder')" :disabled="editingIsMapped" />
                     </div>
                     <div :class="form.fulfillment_type === 'manual' ? 'md:col-span-1' : 'md:col-span-2'">
                       <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuSpec', { lang: getCurrentLangName() }) }}</label>
+                      <Input v-model="sku.spec_values[currentLang]" :placeholder="t('admin.products.form.skuSpecPlaceholder')" :disabled="editingIsMapped" />
                       <template v-if="isDirect">
-                        <p class="text-sm">{{ sku.spec_values.plan }} · {{ sku.spec_values.country }}</p>
-                        <p v-if="catalogStale !== null && !directAvailability[sku.sku_code]" class="text-xs text-amber-600">{{ t('kafuda.unavailable') }}</p>
-                        <p v-else-if="directReviewRequired[sku.sku_code]" class="text-xs text-amber-600">{{ t('kafuda.review') }}</p>
+                        <p class="mt-1 text-xs text-muted-foreground">{{ sku.spec_values.plan }} · {{ sku.spec_values.country }}</p>
+                        <p v-if="catalogStale !== null && !directAvailability[directSKUKey(sku)]" class="text-xs text-amber-600">{{ t('kafuda.unavailable') }}</p>
+                        <p v-else-if="directReviewRequired[directSKUKey(sku)]" class="text-xs text-amber-600">{{ t('kafuda.review') }}</p>
                       </template>
-                      <Input v-else v-model="sku.spec_values[currentLang]" :placeholder="t('admin.products.form.skuSpecPlaceholder')" :disabled="editingIsMapped" />
                     </div>
                     <div class="md:col-span-1">
                       <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuPrice') }}</label>
@@ -1294,7 +1360,7 @@ watch(
                       </div>
                       <div class="flex items-end">
                         <div class="inline-flex items-center gap-2">
-                          <Switch v-model="sku.is_active" :disabled="isDirect && (!directAvailability[sku.sku_code] || sku.price_amount <= 0)" />
+                          <Switch v-model="sku.is_active" :disabled="isDirect && (!directAvailability[directSKUKey(sku)] || sku.price_amount <= 0)" />
                           <Label class="text-sm text-muted-foreground">{{ t('admin.products.form.skuActive') }}</Label>
                         </div>
                       </div>

@@ -13,9 +13,9 @@ import (
 	"github.com/dujiao-next/internal/constants"
 	domaincatalog "github.com/dujiao-next/internal/modules/catalog"
 	categorypresenter "github.com/dujiao-next/internal/modules/catalog/category/transport/presenter"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	promotioncontract "github.com/dujiao-next/internal/modules/promotion/contract"
 	reseller "github.com/dujiao-next/internal/modules/reseller/contract"
-	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/money"
 )
 
@@ -207,10 +207,7 @@ func (h *PublicHandler) decoratePublicProduct(product *productdomain.Product, pr
 		sv := publicSKUView{ProductSKU: sku}
 		if direct {
 			sv.DirectAvailable = directAvailable[sku.ID]
-			sv.SpecValuesJSON = nil
-			if plan, country, valid := sku.DirectSelection(); valid {
-				sv.SpecValuesJSON = jsonmap.JSON{"plan": plan, "country": country}
-			}
+			sv.SpecValuesJSON = sku.DirectPublicSpecValues()
 			sv.ManualStockTotal = 0
 			sv.ManualStockSold = 0
 			sv.AutoStockAvailable = 0
@@ -272,18 +269,20 @@ func (v *publicProductView) applyDirectAvailability(revisions map[string]uint64)
 	available := make(map[uint]bool, len(v.Product.SKUs))
 	var displaySKUID uint
 	for _, sku := range v.Product.SKUs {
-		revision, listed := revisions[sku.SKUCode]
+		plan, country, valid := sku.DirectSelection()
+		if !valid {
+			continue
+		}
+		revision, listed := revisions[kafudacontract.SKUCode(plan, country)]
 		if !listed || revision != sku.DirectCatalogRevision || !sku.IsActive || sku.DeletedAt != nil || !sku.DirectPriceValid() {
 			continue
 		}
-		if _, _, valid := sku.DirectSelection(); valid {
-			available[sku.ID] = true
-			if v.IsSoldOut {
-				v.StockStatus = constants.ProductStockStatusInStock
-				v.IsSoldOut = false
-				v.Product.PriceAmount = sku.PriceAmount
-				displaySKUID = sku.ID
-			}
+		available[sku.ID] = true
+		if v.IsSoldOut {
+			v.StockStatus = constants.ProductStockStatusInStock
+			v.IsSoldOut = false
+			v.Product.PriceAmount = sku.PriceAmount
+			displaySKUID = sku.ID
 		}
 	}
 	return available, displaySKUID
