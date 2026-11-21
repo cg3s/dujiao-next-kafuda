@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/dujiao-next/internal/constants"
 	promotiondomain "github.com/dujiao-next/internal/modules/promotion/domain"
@@ -26,7 +27,10 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-const publicRelatedPostsLimit = 6
+const (
+	publicRelatedPostsLimit  = 6
+	directCatalogSyncTimeout = 5 * time.Second
+)
 
 // PublicProductQueries 是公开商品列表/详情所需的最小用例接口。
 type PublicProductQueries interface {
@@ -64,6 +68,7 @@ type RelatedPostReader interface {
 }
 
 type DirectAvailability interface {
+	SyncCatalog(context.Context) error
 	PurchasableSKURevisions(context.Context) (map[string]uint64, error)
 }
 
@@ -197,6 +202,7 @@ func (h *PublicHandler) GetProductBySlug(c *gin.Context) {
 		}
 	}
 
+	h.syncDirectCatalogOnVisit(c, tenant, product)
 	directRevisions := h.directSKURevisions(c.Request.Context(), tenant, temp)
 	decorated, derr := h.decoratePublicProductForTenant(product, h.promotions, tenant, resellerBatch, directRevisions)
 	if derr != nil {
@@ -213,6 +219,19 @@ func (h *PublicHandler) GetProductBySlug(c *gin.Context) {
 	}
 
 	response.Success(c, decorated)
+}
+
+func (h *PublicHandler) syncDirectCatalogOnVisit(c *gin.Context, tenant reseller.TenantContext, product *productdomain.Product) {
+	if h.direct == nil || product == nil || product.FulfillmentType != constants.FulfillmentTypeKafudaGPT ||
+		!tenant.IsMain || tenant.ResellerID != nil || tenant.Unavailable {
+		return
+	}
+	syncCtx, cancel := context.WithTimeout(c.Request.Context(), directCatalogSyncTimeout)
+	defer cancel()
+	if err := h.direct.SyncCatalog(syncCtx); err != nil {
+		// Never log raw upstream errors here; they may contain sensitive details.
+		ginutil.RequestLog(c).Warnw("kafuda_product_visit_catalog_sync_failed", "product_id", product.ID)
+	}
 }
 
 func (h *PublicHandler) directSKURevisions(ctx context.Context, tenant reseller.TenantContext, products []productdomain.Product) map[string]uint64 {

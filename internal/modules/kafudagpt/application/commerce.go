@@ -93,13 +93,14 @@ func (s *CommerceService) PurchaseTerms(ctx context.Context, plan, country strin
 }
 
 // SyncCatalog performs an on-demand upstream catalog sync when the supplier
-// gateway is configured, honoring rate-limit backoff and skipping concurrent
-// duplicate fetches.
+// gateway is configured, skipping if the cached catalog was synced within the
+// last hour, honoring rate-limit backoff, and skipping concurrent duplicate
+// fetches.
 func (s *CommerceService) SyncCatalog(ctx context.Context) error {
 	if s == nil || s.options.Catalog == nil {
 		return nil
 	}
-	_, err := s.options.Catalog.SyncOnDemand(ctx)
+	_, err := s.options.Catalog.SyncOnDemand(ctx, DefaultVisitCatalogSyncMinInterval)
 	return err
 }
 

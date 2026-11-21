@@ -137,16 +137,29 @@ func (s *CatalogService) RefreshOnInterval(ctx context.Context, interval time.Du
 	return synced, nil
 }
 
+const DefaultVisitCatalogSyncMinInterval = time.Hour
+
 // SyncOnDemand fetches the latest supplier catalog on demand (for example when
-// a buyer views a direct-recharge product), respecting upstream 429 Retry-After
-// backoff and skipping if another sync is already in progress.
-func (s *CatalogService) SyncOnDemand(ctx context.Context) (*kafudadomain.Catalog, error) {
+// a buyer views a direct-recharge product), skipping when the cached catalog
+// was synced less than minInterval ago, respecting upstream 429 Retry-After
+// backoff, and skipping if another sync is already in progress.
+func (s *CatalogService) SyncOnDemand(ctx context.Context, minInterval time.Duration) (*kafudadomain.Catalog, error) {
 	if s == nil || s.gateway == nil || s.profile == "" || s.ttl <= 0 || !s.refreshMu.TryLock() {
 		return nil, nil
 	}
 	defer s.refreshMu.Unlock()
-	if time.Now().Before(s.rateLimitUntil) {
+	now := time.Now()
+	if now.Before(s.rateLimitUntil) {
 		return nil, nil
+	}
+	if minInterval > 0 {
+		catalog, err := s.Cached(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if catalog != nil && !catalog.SyncedAt.IsZero() && now.Before(catalog.SyncedAt.Add(minInterval)) {
+			return nil, nil
+		}
 	}
 	synced, err := s.Sync(ctx)
 	if err != nil {

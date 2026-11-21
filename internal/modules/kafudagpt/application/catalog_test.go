@@ -212,34 +212,39 @@ func TestParseCatalogPreservesLocalMinorAndEstimateCostCNY(t *testing.T) {
 	}
 }
 
-func TestSyncOnDemandBypassesScheduledCooldownAndHonorsRateLimit(t *testing.T) {
+func TestSyncOnDemandSkipsWithinMinIntervalAndHonorsRateLimit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
 		data := json.RawMessage(`{"enabled":true,"plans":[{"plan":"plus","label":"Plus","credit":false,"regions":[{"country":"PH","currency":"PHP","estimated_plan_usd_cents":1000,"estimated_local_minor":55000}]}],"auto_card_products":[{"product_code":"test-card","restriction_reason":null}]}`)
 		store := &refreshTestCatalogStore{}
 		limit := &kafudacontract.APIError{HTTPStatus: http.StatusTooManyRequests, RetryAfter: 90 * time.Second}
 		gateway := &rateLimitedCatalogGateway{data: data, rateLimit: limit}
-		service := NewCatalogService(store, gateway, "default", time.Hour)
+		service := NewCatalogService(store, gateway, "default", 2*time.Hour)
 
-		// First on-demand sync hits 429 and sets rate-limit backoff.
-		if synced, err := service.SyncOnDemand(ctx); synced != nil || !errors.Is(err, limit) {
+		// Empty cache triggers immediate sync; first call hits 429 and sets rate-limit backoff.
+		if synced, err := service.SyncOnDemand(ctx, DefaultVisitCatalogSyncMinInterval); synced != nil || !errors.Is(err, limit) {
 			t.Fatalf("first SyncOnDemand = (%v, %v), want rate limit error", synced, err)
 		}
 		// During Retry-After window, on-demand sync must not contact upstream.
 		time.Sleep(limit.RetryAfter - time.Second)
-		if synced, err := service.SyncOnDemand(ctx); synced != nil || err != nil || gateway.calls != 1 {
+		if synced, err := service.SyncOnDemand(ctx, DefaultVisitCatalogSyncMinInterval); synced != nil || err != nil || gateway.calls != 1 {
 			t.Fatalf("SyncOnDemand contacted upstream during rate-limit backoff: synced=%v, err=%v, calls=%d", synced, err, gateway.calls)
 		}
-		// After Retry-After expires, scheduled refresh populates cache and sets nextRefresh far in future.
+		// After Retry-After expires, scheduled refresh populates cache.
 		time.Sleep(time.Second)
-		if synced, err := service.RefreshOnInterval(ctx, 10*time.Minute); synced == nil || err != nil || gateway.calls != 2 {
+		if synced, err := service.RefreshOnInterval(ctx, 2*time.Hour); synced == nil || err != nil || gateway.calls != 2 {
 			t.Fatalf("RefreshOnInterval after backoff = (%v, %v), calls=%d", synced, err, gateway.calls)
 		}
-		// Even while nextRefresh is still in the future, SyncOnDemand still syncs immediately.
+		// Within 1 hour of the last sync, SyncOnDemand must skip upstream fetch.
+		time.Sleep(DefaultVisitCatalogSyncMinInterval - time.Second)
+		if synced, err := service.SyncOnDemand(ctx, DefaultVisitCatalogSyncMinInterval); synced != nil || err != nil || gateway.calls != 2 {
+			t.Fatalf("SyncOnDemand did not skip within 1h of last sync: synced=%v, err=%v, calls=%d", synced, err, gateway.calls)
+		}
+		// Once 1 hour has elapsed since the last sync, SyncOnDemand syncs even if scheduled nextRefresh is still later.
 		time.Sleep(time.Second)
-		synced, err := service.SyncOnDemand(ctx)
+		synced, err := service.SyncOnDemand(ctx, DefaultVisitCatalogSyncMinInterval)
 		if err != nil || synced == nil || gateway.calls != 3 {
-			t.Fatalf("SyncOnDemand did not bypass scheduled interval: synced=%v, err=%v, calls=%d", synced, err, gateway.calls)
+			t.Fatalf("SyncOnDemand did not trigger after 1h elapsed: synced=%v, err=%v, calls=%d", synced, err, gateway.calls)
 		}
 	})
 }
@@ -265,7 +270,7 @@ func TestSyncOnDemandSkipsConcurrentCallsAndUnconfiguredGateway(t *testing.T) {
 
 	// Unconfigured gateway is a clean no-op.
 	unconfigured := NewCatalogService(&refreshTestCatalogStore{}, nil, "default", time.Hour)
-	if synced, err := unconfigured.SyncOnDemand(ctx); synced != nil || err != nil {
+	if synced, err := unconfigured.SyncOnDemand(ctx, DefaultVisitCatalogSyncMinInterval); synced != nil || err != nil {
 		t.Fatalf("unconfigured SyncOnDemand = (%v, %v), want (nil, nil)", synced, err)
 	}
 
@@ -279,13 +284,13 @@ func TestSyncOnDemandSkipsConcurrentCallsAndUnconfiguredGateway(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := service.SyncOnDemand(ctx)
+		_, err := service.SyncOnDemand(ctx, DefaultVisitCatalogSyncMinInterval)
 		done <- err
 	}()
 	<-gateway.started
 
 	// Concurrent SyncOnDemand skips instead of blocking or calling upstream twice.
-	if synced, err := service.SyncOnDemand(ctx); synced != nil || err != nil {
+	if synced, err := service.SyncOnDemand(ctx, DefaultVisitCatalogSyncMinInterval); synced != nil || err != nil {
 		t.Fatalf("concurrent SyncOnDemand = (%v, %v), want (nil, nil)", synced, err)
 	}
 	close(gateway.release)
