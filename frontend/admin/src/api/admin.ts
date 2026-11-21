@@ -341,9 +341,63 @@ export interface ComplianceAcknowledgePayload {
   segment3: string
 }
 
+export interface KafudaCardProduct {
+  product_code: string
+  name: string
+  restricted: boolean
+  gpt_recommended: boolean
+  open_fee_cents: number
+  min_amount_cents: number
+}
+
+export interface KafudaConfigData {
+  api_base_url: string
+  has_api_key: boolean
+  product_code: string
+  max_cost_cents: number
+  allowed_kinds: string[]
+  sales_enabled: boolean
+  reference_lookup_verified: boolean
+  catalog_ttl_seconds: number
+  catalog_refresh_interval_seconds: number
+  poll_review_after_seconds: number
+  poll_interval_seconds: number
+  config_source: 'database' | 'config_file' | 'error' | string
+  version: number
+  updated_at?: string
+  configured: boolean
+  gateway_config_invalid: boolean
+  worker_ready: boolean
+  sales_block_reason: string
+  catalog_enabled: boolean
+  catalog_stale: boolean
+  catalog_synced_at?: string
+  catalog_expires_at?: string
+  catalog_options_count: number
+  cards: KafudaCardProduct[]
+}
+
+export interface KafudaConfigUpdatePayload {
+  api_base_url?: string
+  api_key?: string
+  clear_api_key?: boolean
+  product_code?: string
+  max_cost_cents?: number
+  allowed_kinds?: string[]
+  sales_enabled?: boolean
+  reference_lookup_verified?: boolean
+  catalog_ttl_seconds?: number
+  catalog_refresh_interval_seconds?: number
+  poll_review_after_seconds?: number
+  poll_interval_seconds?: number
+}
+
 export const adminAPI = {
 	getKafudaCatalog: () => api.get('/admin/kafuda-gpt/catalog'),
 	syncKafudaCatalog: () => api.post('/admin/kafuda-gpt/catalog/sync', {}),
+  getKafudaConfig: () => api.get('/admin/kafuda-gpt/config'),
+  updateKafudaConfig: (data: KafudaConfigUpdatePayload) => api.put('/admin/kafuda-gpt/config', data),
+  testKafudaConfig: (data?: KafudaConfigUpdatePayload) => api.post('/admin/kafuda-gpt/config/test', data ?? {}),
   login: (data: AdminLoginRequest) => api.post('/admin/login', data),
   verify2FA: (data: Verify2FAPayload) => api.post('/admin/login/verify-2fa', data),
   // 合规声明

@@ -45,6 +45,12 @@ type Store interface {
 	SaveCatalog(context.Context, *kafudadomain.Catalog) error
 }
 
+// SettingStore persists encrypted merchant configuration for Kafuda GPT direct recharge.
+type SettingStore interface {
+	GetSetting(context.Context, string) (*kafudadomain.Setting, error)
+	SaveSetting(context.Context, *kafudadomain.Setting) error
+}
+
 // Transaction only exposes a transaction-bound adapter. Callers must not call
 // the outer Store or perform HTTP while this closure holds SQLite's connection.
 type Transaction interface {

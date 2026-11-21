@@ -328,6 +328,12 @@ const routes = [
         meta: { permission: 'GET:/admin/api-credentials' },
       },
       {
+        path: 'kafuda-gpt',
+        name: 'kafuda-gpt',
+        component: () => import('@/views/admin/KafudaDirect.vue'),
+        meta: { permission: 'GET:/admin/kafuda-gpt/config' },
+      },
+      {
         path: 'telegram-bot',
         name: 'telegram-bot',
         component: () => import('@/views/admin/TelegramBot.vue'),

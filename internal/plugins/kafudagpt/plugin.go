@@ -31,7 +31,7 @@ func (*Plugin) FulfillmentType() string {
 }
 
 func (*Plugin) Init(db *gorm.DB, cfg *config.Config, orders ordercontract.Store, queueClient *queue.Client) (any, error) {
-	return kafudawiring.New(db, cfg.KafudaGPT, orders, queueClient.KafudaWorkerReady)
+	return kafudawiring.NewWithSettings(db, cfg.KafudaGPT, cfg.App.SecretKey, orders, queueClient.KafudaWorkerReady)
 }
 
 func (*Plugin) RegisterAdminRoutes(authorized gin.IRoutes, instance any) {
@@ -43,11 +43,17 @@ func (*Plugin) RBACRules() []directfulfillment.RBACRule {
 	return []directfulfillment.RBACRule{
 		{Role: "operations", Object: "/admin/kafuda-gpt/catalog", Action: "GET"},
 		{Role: "operations", Object: "/admin/kafuda-gpt/catalog/sync", Action: "POST"},
+		{Role: "integration", Object: "/admin/kafuda-gpt/catalog", Action: "GET"},
+		{Role: "integration", Object: "/admin/kafuda-gpt/catalog/sync", Action: "POST"},
+		{Role: "integration", Object: "/admin/kafuda-gpt/config", Action: "GET"},
+		{Role: "integration", Object: "/admin/kafuda-gpt/config", Action: "PUT"},
+		{Role: "integration", Object: "/admin/kafuda-gpt/config/test", Action: "POST"},
 	}
 }
 
 func (*Plugin) AutoMigrateModels() []any {
 	return []any{
+		&kafudadomain.Setting{},
 		&kafudadomain.Catalog{},
 		&kafudadomain.Recharge{},
 		&kafudadomain.Attempt{},

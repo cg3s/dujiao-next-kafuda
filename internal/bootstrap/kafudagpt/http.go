@@ -6,8 +6,22 @@ func NewAdminHandler(module *Module) *kafudahttp.AdminHandler {
 	if module == nil {
 		return &kafudahttp.AdminHandler{}
 	}
+	configured, invalid := module.GatewayStatus()
 	handler := &kafudahttp.AdminHandler{
-		Catalog: module.Catalog, FXRates: module.FXRates, Configured: module.Gateway != nil, GatewayConfigInvalid: module.gatewayConfigInvalid,
+		Catalog:              module.Catalog,
+		Config:               module.Config,
+		FXRates:              module.FXRates,
+		Configured:           configured,
+		GatewayConfigInvalid: invalid,
+		IsConfigured: func() bool {
+			ok, _ := module.GatewayStatus()
+			return ok
+		},
+		IsGatewayConfigInvalid: func() bool {
+			_, bad := module.GatewayStatus()
+			return bad
+		},
+		WorkerReady: module.WorkerReady,
 	}
 	if module.Commerce != nil {
 		handler.SalesBlockReason = module.Commerce.CatalogSalesBlockReason

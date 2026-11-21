@@ -310,8 +310,8 @@ func TestKafudaAdminRoutesEnforceScopedPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tokens := make(map[string]string, 2)
-	for _, role := range []string{"support", "operations"} {
+	tokens := make(map[string]string, 3)
+	for _, role := range []string{"support", "operations", "integration"} {
 		admin := &admindomain.Admin{Username: role, PasswordHash: "test-hash"}
 		if err := deps.AdminStore.Create(admin); err != nil {
 			t.Fatal(err)
@@ -383,6 +383,55 @@ func TestKafudaAdminRoutesEnforceScopedPermissions(t *testing.T) {
 	catalog, err := store.GetCatalog(t.Context(), "default")
 	if err != nil || catalog == nil || !catalog.Enabled {
 		t.Fatalf("authorized refresh did not persist the upstream response: %+v, %v", catalog, err)
+	}
+
+	configRoutes := []struct {
+		route adminRoute
+		body  string
+	}{
+		{route: adminRoute{method: http.MethodGet, object: "/admin/kafuda-gpt/config"}},
+		{route: adminRoute{method: http.MethodPut, object: "/admin/kafuda-gpt/config"}, body: `{"sales_enabled":false}`},
+		{route: adminRoute{method: http.MethodPost, object: "/admin/kafuda-gpt/config/test"}, body: `{}`},
+	}
+	for _, item := range configRoutes {
+		if !slices.Contains(discovered, item.route) {
+			t.Errorf("RBAC coverage did not discover %s %s", item.route.method, item.route.object)
+		}
+	}
+	for _, actor := range []struct {
+		name     string
+		wantGet  int
+		wantPut  int
+		wantTest int
+	}{
+		{name: "anonymous", wantGet: response.CodeUnauthorized, wantPut: response.CodeUnauthorized, wantTest: response.CodeUnauthorized},
+		{name: "support", wantGet: response.CodeForbidden, wantPut: response.CodeForbidden, wantTest: response.CodeForbidden},
+		{name: "operations", wantGet: response.CodeForbidden, wantPut: response.CodeForbidden, wantTest: response.CodeForbidden},
+		{name: "integration", wantGet: response.CodeOK, wantPut: response.CodeOK, wantTest: response.CodeBadRequest},
+	} {
+		for _, item := range configRoutes {
+			t.Run("config/"+actor.name+"/"+item.route.method, func(t *testing.T) {
+				req := httptest.NewRequest(item.route.method, "/api/v1"+item.route.object, strings.NewReader(item.body))
+				if item.body != "" {
+					req.Header.Set("Content-Type", "application/json")
+				}
+				if bearer := tokens[actor.name]; bearer != "" {
+					req.Header.Set("Authorization", "Bearer "+bearer)
+				}
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+				var body response.Response
+				want := actor.wantGet
+				if item.route.method == http.MethodPut {
+					want = actor.wantPut
+				} else if item.route.method == http.MethodPost {
+					want = actor.wantTest
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.StatusCode != want {
+					t.Fatalf("expected business status %d, got %s (%v)", want, rec.Body.String(), err)
+				}
+			})
+		}
 	}
 
 	confirmation := adminRoute{method: http.MethodPost, object: "/admin/orders/:id/direct-confirm-upstream"}

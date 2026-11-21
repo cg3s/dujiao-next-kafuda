@@ -17,6 +17,7 @@ import (
 
 type CatalogService struct {
 	store          kafudacontract.Store
+	configMu       sync.RWMutex
 	gateway        kafudacontract.Gateway
 	profile        string
 	ttl            time.Duration
@@ -29,6 +30,29 @@ func NewCatalogService(store kafudacontract.Store, gateway kafudacontract.Gatewa
 	return &CatalogService{store: store, gateway: gateway, profile: profile, ttl: ttl}
 }
 
+// ApplyRuntime swaps the active upstream gateway and cache TTL in place.
+func (s *CatalogService) ApplyRuntime(gateway kafudacontract.Gateway, ttl time.Duration) {
+	if s == nil {
+		return
+	}
+	s.configMu.Lock()
+	s.gateway = gateway
+	s.ttl = ttl
+	s.configMu.Unlock()
+	if s.refreshMu.TryLock() {
+		s.nextRefresh = time.Time{}
+		s.rateLimitUntil = time.Time{}
+		s.refreshMu.Unlock()
+	}
+}
+
+func (s *CatalogService) runtime() (kafudacontract.Gateway, time.Duration) {
+	s.configMu.RLock()
+	gateway, ttl := s.gateway, s.ttl
+	s.configMu.RUnlock()
+	return gateway, ttl
+}
+
 func (s *CatalogService) Cached(ctx context.Context) (*kafudadomain.Catalog, error) {
 	catalog, err := s.store.GetCatalog(ctx, s.profile)
 	if err != nil {
@@ -38,17 +62,18 @@ func (s *CatalogService) Cached(ctx context.Context) (*kafudadomain.Catalog, err
 }
 
 func (s *CatalogService) Sync(ctx context.Context) (*kafudadomain.Catalog, error) {
-	if s.gateway == nil || s.profile == "" || s.ttl <= 0 {
+	gateway, ttl := s.runtime()
+	if gateway == nil || s.profile == "" || ttl <= 0 {
 		return nil, kafudadomain.ErrInvalidCatalog
 	}
 	// Timestamp the start, not the finish, so a slow older request cannot
 	// overwrite the result of a later concurrent sync.
 	started := time.Now().UTC()
-	data, err := s.gateway.Catalog(ctx)
+	data, err := gateway.Catalog(ctx)
 	if err != nil {
 		return nil, err
 	}
-	catalog, err := ParseCatalog(data, s.profile, started, started.Add(s.ttl))
+	catalog, err := ParseCatalog(data, s.profile, started, started.Add(ttl))
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +93,8 @@ func (s *CatalogService) RefreshBeforeExpiry(ctx context.Context, interval time.
 // RefreshBeforeExpiryResult refreshes the catalog when missing or approaching TTL
 // expiry, returning the newly synced catalog when an upstream sync occurred.
 func (s *CatalogService) RefreshBeforeExpiryResult(ctx context.Context, interval time.Duration) (*kafudadomain.Catalog, error) {
-	if s.ttl <= 0 || !s.refreshMu.TryLock() {
+	_, ttl := s.runtime()
+	if ttl <= 0 || !s.refreshMu.TryLock() {
 		return nil, nil
 	}
 	defer s.refreshMu.Unlock()
@@ -76,7 +102,7 @@ func (s *CatalogService) RefreshBeforeExpiryResult(ctx context.Context, interval
 	if now.Before(s.nextRefresh) {
 		return nil, nil
 	}
-	lead := min(s.ttl/2, max(interval*2, 2*time.Minute))
+	lead := min(ttl/2, max(interval*2, 2*time.Minute))
 	s.nextRefresh = now.Add(min(time.Minute, lead/2))
 	catalog, err := s.Cached(ctx)
 	if err != nil {
@@ -91,7 +117,7 @@ func (s *CatalogService) RefreshBeforeExpiryResult(ctx context.Context, interval
 		s.applyRateLimitBackoff(err)
 		return nil, err
 	}
-	s.nextRefresh = now.Add(s.ttl - lead)
+	s.nextRefresh = now.Add(ttl - lead)
 	return synced, nil
 }
 
@@ -99,7 +125,8 @@ func (s *CatalogService) RefreshBeforeExpiryResult(ctx context.Context, interval
 // upstream 429 Retry-After backoff and skipping redundant fetches when a recent
 // manual or scheduled sync already completed within the interval.
 func (s *CatalogService) RefreshOnInterval(ctx context.Context, interval time.Duration) (*kafudadomain.Catalog, error) {
-	if s.ttl <= 0 || interval <= 0 || !s.refreshMu.TryLock() {
+	_, ttl := s.runtime()
+	if ttl <= 0 || interval <= 0 || !s.refreshMu.TryLock() {
 		return nil, nil
 	}
 	defer s.refreshMu.Unlock()
@@ -113,7 +140,7 @@ func (s *CatalogService) RefreshOnInterval(ctx context.Context, interval time.Du
 	if err != nil {
 		return nil, err
 	}
-	lead := min(s.ttl/2, max(interval/2, time.Minute))
+	lead := min(ttl/2, max(interval/2, time.Minute))
 	if catalog != nil {
 		dueAt := catalog.SyncedAt.Add(interval)
 		if expiryDue := catalog.ExpiresAt.Add(-lead); expiryDue.Before(dueAt) {
@@ -130,7 +157,7 @@ func (s *CatalogService) RefreshOnInterval(ctx context.Context, interval time.Du
 		return nil, err
 	}
 	nextDue := now.Add(interval - jitter)
-	if expiryDue := now.Add(s.ttl - lead); expiryDue.Before(nextDue) {
+	if expiryDue := now.Add(ttl - lead); expiryDue.Before(nextDue) {
 		nextDue = expiryDue
 	}
 	s.nextRefresh = nextDue
@@ -144,7 +171,11 @@ const DefaultVisitCatalogSyncMinInterval = time.Hour
 // was synced less than minInterval ago, respecting upstream 429 Retry-After
 // backoff, and skipping if another sync is already in progress.
 func (s *CatalogService) SyncOnDemand(ctx context.Context, minInterval time.Duration) (*kafudadomain.Catalog, error) {
-	if s == nil || s.gateway == nil || s.profile == "" || s.ttl <= 0 || !s.refreshMu.TryLock() {
+	if s == nil {
+		return nil, nil
+	}
+	gateway, ttl := s.runtime()
+	if gateway == nil || s.profile == "" || ttl <= 0 || !s.refreshMu.TryLock() {
 		return nil, nil
 	}
 	defer s.refreshMu.Unlock()

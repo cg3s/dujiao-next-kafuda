@@ -47,6 +47,7 @@ import {
   BadgeDollarSign,
   Bell,
   ImageIcon,
+  Zap,
 } from 'lucide-vue-next'
 import { Menu } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
@@ -458,6 +459,12 @@ const navGroups = computed<NavGroup[]>(() => {
           to: '/api-credentials',
           icon: KeyRound,
           permission: 'GET:/admin/api-credentials',
+        },
+        {
+          label: t('admin.navItems.kafudaDirect'),
+          to: '/kafuda-gpt',
+          icon: Zap,
+          permission: 'GET:/admin/kafuda-gpt/config',
         },
       ],
     },

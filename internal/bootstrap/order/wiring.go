@@ -57,10 +57,14 @@ func New(c *container.Container) Handlers {
 				return mapOrderTransportError(kafudaworkflow.ReleaseManual(c.OrderStore, childID, attemptID, adminID, confirmed, time.Now().UTC()))
 			},
 			func(ctx context.Context, childID, attemptID, adminID uint, upstreamID uint64) error {
-				if c.OrderStore == nil || c.KafudaGPT == nil || c.KafudaGPT.Gateway == nil {
+				if c.OrderStore == nil || c.KafudaGPT == nil {
 					return ordertransport.ErrOrderNotFound
 				}
-				completed, err := kafudaworkflow.ReconcileUnknownOrder(ctx, c.OrderStore, c.KafudaGPT.Gateway, childID, attemptID, upstreamID, c.Config.KafudaPollInterval())
+				gw := c.KafudaGPT.CurrentGateway(ctx)
+				if gw == nil {
+					return ordertransport.ErrOrderNotFound
+				}
+				completed, err := kafudaworkflow.ReconcileUnknownOrder(ctx, c.OrderStore, gw, childID, attemptID, upstreamID, c.KafudaGPT.PollInterval(c.Config.KafudaPollInterval()))
 				if err != nil {
 					return mapOrderTransportError(err)
 				}
@@ -112,11 +116,12 @@ func newDirectAuthorizer(c *container.Container) ordertransport.DirectAuthorizer
 	}
 	module := c.KafudaGPT
 	return func(ctx context.Context, orderNo string, userID uint, session string) error {
-		if module.Gateway == nil {
+		gw := module.CurrentGateway(ctx)
+		if gw == nil {
 			return ordertransport.ErrDirectRetry
 		}
-		childID, completed, err := kafudaworkflow.SubmitBuyerSession(ctx, c.OrderStore, module.Records, module.Gateway,
-			orderNo, userID, session, c.Config.KafudaPollInterval())
+		childID, completed, err := kafudaworkflow.SubmitBuyerSession(ctx, c.OrderStore, module.Records, gw,
+			orderNo, userID, session, module.PollInterval(c.Config.KafudaPollInterval()))
 		if completed {
 			kafudaworkflow.EnqueueCompletionEmail(ctx, c.OrderStore, module.Store, orderqueue.NewDirectCompletion(c.QueueClient), c.SettingService, c.Config, childID)
 		}

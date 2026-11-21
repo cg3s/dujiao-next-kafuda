@@ -38,17 +38,23 @@ func (c *Consumer) handleKafudaRecoverChecks(ctx context.Context, _ *asynq.Task)
 			kafudaworkflow.EnqueueCompletionEmail(ctx, c.OrderStore, module.Store, c.orderStatusQueue, c.SettingService, c.Config, childID)
 		}
 	}
-	if module.Gateway == nil {
+	module.RefreshConfig(ctx)
+	if module.GatewayRef() == nil {
 		return recoveryErr
 	}
 	return errors.Join(recoveryErr, c.pollKnownKafudaOrders(ctx))
 }
 
 func (c *Consumer) handleKafudaRefreshCatalog(ctx context.Context, _ *asynq.Task) error {
-	if c == nil || c.Container == nil || c.KafudaGPT == nil || c.KafudaGPT.Gateway == nil || c.KafudaGPT.Catalog == nil {
+	if c == nil || c.Container == nil || c.KafudaGPT == nil || c.KafudaGPT.Catalog == nil {
 		return nil
 	}
-	interval := c.Config.KafudaCatalogRefreshInterval()
+	module := c.KafudaGPT
+	module.RefreshConfig(ctx)
+	if module.GatewayRef() == nil {
+		return nil
+	}
+	interval, fixed := module.CatalogRefreshSchedule(c.Config.KafudaCatalogRefreshInterval(), c.Config.KafudaCatalogFixedRefresh())
 	if interval == 0 {
 		return nil
 	}
@@ -59,11 +65,11 @@ func (c *Consumer) handleKafudaRefreshCatalog(ctx context.Context, _ *asynq.Task
 		catalog *kafudadomain.Catalog
 		err     error
 	)
-	if c.Config.KafudaCatalogFixedRefresh() {
+	if fixed {
 		mode = "fixed_interval"
-		catalog, err = c.KafudaGPT.Catalog.RefreshOnInterval(refreshCtx, interval)
+		catalog, err = module.Catalog.RefreshOnInterval(refreshCtx, interval)
 	} else {
-		catalog, err = c.KafudaGPT.Catalog.RefreshBeforeExpiryResult(refreshCtx, interval)
+		catalog, err = module.Catalog.RefreshBeforeExpiryResult(refreshCtx, interval)
 	}
 	if err != nil {
 		reason, status := classifyKafudaCatalogError(err)
@@ -131,26 +137,31 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 	lookupCtx, cancel := context.WithTimeout(ctx, 55*time.Second)
 	defer cancel()
 	module := c.KafudaGPT
+	gw := module.GatewayRef()
+	if gw == nil {
+		return nil
+	}
 	attempts, err := module.Store.DueKnownOrderPolls(lookupCtx, time.Now().UTC(), kafudaPollBatchSize)
 	if err != nil {
 		return err
 	}
 	var failures []error
-	interval := c.Config.KafudaPollInterval()
-	reviewAfter := kafudaapp.DefaultPollReviewAfter
+	interval := module.PollInterval(c.Config.KafudaPollInterval())
+	fallbackReviewAfter := kafudaapp.DefaultPollReviewAfter
 	if c.Config != nil {
 		seconds := c.Config.KafudaGPT.PollReviewAfterSeconds
 		if seconds > 0 && int64(seconds) <= int64((1<<63-1)/time.Second) {
-			reviewAfter = time.Duration(seconds) * time.Second
+			fallbackReviewAfter = time.Duration(seconds) * time.Second
 		}
 	}
+	reviewAfter := module.PollReviewAfter(fallbackReviewAfter)
 	for _, attempt := range attempts {
 		if err := lookupCtx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
 		lookupStarted := time.Now()
 		startedAt := lookupStarted.UTC()
-		result, err := module.Records.PollKnownOrder(ctx, lookupCtx, module.Gateway, attempt.ID, startedAt, interval, reviewAfter)
+		result, err := module.Records.PollKnownOrder(ctx, lookupCtx, gw, attempt.ID, startedAt, interval, reviewAfter)
 		if err != nil {
 			if !errors.Is(err, kafudadomain.ErrConflict) && !errors.Is(err, kafudadomain.ErrNotFound) {
 				failures = append(failures, err)
@@ -180,6 +191,10 @@ func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {
 
 func (c *Consumer) pollKafudaCardCharges(ctx, lookupCtx context.Context, limit int) error {
 	module := c.KafudaGPT
+	gw := module.GatewayRef()
+	if gw == nil {
+		return nil
+	}
 	attempts, err := module.Records.DueCardChargePolls(lookupCtx, time.Now().UTC(), limit)
 	if err != nil {
 		return err
@@ -189,7 +204,7 @@ func (c *Consumer) pollKafudaCardCharges(ctx, lookupCtx context.Context, limit i
 		if err := lookupCtx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
-		err := module.Records.PollCardCharge(ctx, lookupCtx, module.Gateway, attempt, time.Now().UTC())
+		err := module.Records.PollCardCharge(ctx, lookupCtx, gw, attempt, time.Now().UTC())
 		if err != nil && !errors.Is(err, kafudadomain.ErrConflict) && !errors.Is(err, kafudadomain.ErrNotFound) {
 			failures = append(failures, err)
 		}

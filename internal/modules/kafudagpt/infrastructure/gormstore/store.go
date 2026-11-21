@@ -16,6 +16,7 @@ import (
 type Store struct{ db *gorm.DB }
 
 var _ kafudacontract.Store = (*Store)(nil)
+var _ kafudacontract.SettingStore = (*Store)(nil)
 var _ kafudacontract.Transaction = (*Store)(nil)
 var _ kafudacontract.CheckoutRepository = (*Store)(nil)
 
@@ -241,6 +242,42 @@ func (s *Store) SaveCatalog(ctx context.Context, catalog *kafudadomain.Catalog) 
 		}
 		candidate.MergeAvailabilityHistory(previous)
 		return tx.Save(&candidate).Error
+	})
+}
+
+func (s *Store) GetSetting(ctx context.Context, profile string) (*kafudadomain.Setting, error) {
+	return first[kafudadomain.Setting](s.db.WithContext(ctx).Where("profile = ?", profile))
+}
+
+func (s *Store) SaveSetting(ctx context.Context, setting *kafudadomain.Setting) error {
+	if setting == nil || setting.Profile == "" {
+		return kafudadomain.ErrInvalidSnapshot
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		previous, err := first[kafudadomain.Setting](tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("profile = ?", setting.Profile))
+		if err != nil {
+			return err
+		}
+		record := *setting
+		if record.AllowedKinds == nil {
+			record.AllowedKinds = []string{}
+		}
+		if record.UpdatedAt.IsZero() {
+			record.UpdatedAt = time.Now().UTC()
+		}
+		if previous == nil {
+			record.Version = 1
+			if err := tx.Create(&record).Error; err != nil {
+				return err
+			}
+		} else {
+			record.Version = previous.Version + 1
+			if err := tx.Save(&record).Error; err != nil {
+				return err
+			}
+		}
+		*setting = record
+		return nil
 	})
 }
 

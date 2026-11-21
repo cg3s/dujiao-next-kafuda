@@ -47,7 +47,8 @@ bootstrap:
   default_admin_username: ""  # 首次初始化管理员用户名（可选）
   default_admin_password: ""  # 首次初始化管理员密码；留空则随机生成并在启动输出中显示一次
 
-# Kafuda GPT Direct：商户配置只放部署侧，API Key 可通过 KAFUDA_GPT_API_KEY 注入。
+# Kafuda GPT Direct：以下配置作为默认兜底值（API Key 可通过 KAFUDA_GPT_API_KEY 注入），
+# 也可在后台「对接管理 -> Kafuda 直充」中动态配置（数据库加密存储并覆盖此处默认值）。
 # 启用销售需完整商户配置、已确认的未知订单核对渠道和运行中的队列 worker。
 kafuda_gpt:
   api_base_url: https://kafuda.com

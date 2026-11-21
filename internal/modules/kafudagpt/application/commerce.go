@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
@@ -18,16 +19,43 @@ type CommerceOptions struct {
 	WorkerReady             func(context.Context) bool
 }
 
-type CommerceService struct{ options CommerceOptions }
+type CommerceService struct {
+	mu      sync.RWMutex
+	options CommerceOptions
+}
 
 func NewCommerceService(options CommerceOptions) *CommerceService {
+	options.AllowedKinds = append([]string(nil), options.AllowedKinds...)
 	return &CommerceService{options: options}
+}
+
+// UpdatePolicy updates dynamic merchant policy fields without replacing Catalog or WorkerReady.
+func (s *CommerceService) UpdatePolicy(salesEnabled, referenceLookupVerified bool, productCode string, maxCostCents int64, allowedKinds []string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.options.SalesEnabled = salesEnabled
+	s.options.ReferenceLookupVerified = referenceLookupVerified
+	s.options.ProductCode = productCode
+	s.options.MaxCostCents = maxCostCents
+	s.options.AllowedKinds = append([]string(nil), allowedKinds...)
+	s.mu.Unlock()
+}
+
+func (s *CommerceService) currentOptions() CommerceOptions {
+	s.mu.RLock()
+	opt := s.options
+	opt.AllowedKinds = append([]string(nil), s.options.AllowedKinds...)
+	s.mu.RUnlock()
+	return opt
 }
 
 // SKUOptions exposes the last known supplier availability for configuration.
 // PurchaseTerms separately enforces freshness before issuing purchase terms.
 func (s *CommerceService) SKUOptions(ctx context.Context) ([]kafudacontract.SKUOption, error) {
-	catalog, err := s.options.Catalog.Cached(ctx)
+	opt := s.currentOptions()
+	catalog, err := opt.Catalog.Cached(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -40,10 +68,11 @@ func (s *CommerceService) SKUOptions(ctx context.Context) ([]kafudacontract.SKUO
 // SKUOptionsForUpdate reads the last known options from the caller's locked
 // cache row. Product edits use it after taking the product lock.
 func (s *CommerceService) SKUOptionsForUpdate(reader kafudacontract.CatalogForUpdate) ([]kafudacontract.SKUOption, error) {
-	if reader == nil || s.options.Catalog == nil {
+	opt := s.currentOptions()
+	if reader == nil || opt.Catalog == nil {
 		return nil, kafudadomain.ErrInvalidCatalog
 	}
-	catalog, err := reader.GetCatalogForUpdate(s.options.Catalog.profile)
+	catalog, err := reader.GetCatalogForUpdate(opt.Catalog.profile)
 	if err != nil {
 		return nil, err
 	}
@@ -73,17 +102,17 @@ func CatalogSKUOptions(catalog *kafudadomain.Catalog) []kafudacontract.SKUOption
 }
 
 func (s *CommerceService) PurchaseTerms(ctx context.Context, plan, country string, reviewedRevision uint64) (*kafudacontract.PurchaseTerms, error) {
-	catalog, err := s.purchaseCatalog(ctx)
+	opt := s.currentOptions()
+	catalog, err := s.purchaseCatalogWith(ctx, opt)
 	if err != nil {
 		return nil, err
 	}
 	if catalog == nil || !catalog.Available(plan, country, time.Now()) || catalog.Revision(plan, country) != reviewedRevision {
 		return nil, ErrQuoteUnavailable
 	}
-	if !s.cardAllowed(catalog) {
+	if !cardAllowedWith(catalog, opt.ProductCode) {
 		return nil, ErrQuotePolicy
 	}
-	opt := s.options
 	for _, entry := range catalog.Options {
 		if entry.Plan == plan && entry.Country == country {
 			return &kafudacontract.PurchaseTerms{Plan: plan, Country: country, Product: entry.Product, PayMode: "auto_card", ProductCode: opt.ProductCode, PaymentProfile: catalog.Profile, MaxCostCents: opt.MaxCostCents, AllowedKinds: append([]string(nil), opt.AllowedKinds...)}, nil
@@ -97,20 +126,25 @@ func (s *CommerceService) PurchaseTerms(ctx context.Context, plan, country strin
 // last hour, honoring rate-limit backoff, and skipping concurrent duplicate
 // fetches.
 func (s *CommerceService) SyncCatalog(ctx context.Context) error {
-	if s == nil || s.options.Catalog == nil {
+	if s == nil {
 		return nil
 	}
-	_, err := s.options.Catalog.SyncOnDemand(ctx, DefaultVisitCatalogSyncMinInterval)
+	opt := s.currentOptions()
+	if opt.Catalog == nil {
+		return nil
+	}
+	_, err := opt.Catalog.SyncOnDemand(ctx, DefaultVisitCatalogSyncMinInterval)
 	return err
 }
 
 // PurchasableSKURevisions returns the currently sellable supplier options from one local snapshot.
 func (s *CommerceService) PurchasableSKURevisions(ctx context.Context) (map[string]uint64, error) {
-	catalog, err := s.purchaseCatalog(ctx)
+	opt := s.currentOptions()
+	catalog, err := s.purchaseCatalogWith(ctx, opt)
 	if err != nil {
 		return nil, err
 	}
-	if catalog == nil || !catalog.Enabled || !time.Now().Before(catalog.ExpiresAt) || !s.cardAllowed(catalog) {
+	if catalog == nil || !catalog.Enabled || !time.Now().Before(catalog.ExpiresAt) || !cardAllowedWith(catalog, opt.ProductCode) {
 		return nil, nil
 	}
 	revisions := make(map[string]uint64, len(catalog.Options))
@@ -124,7 +158,10 @@ func (s *CommerceService) PurchasableSKURevisions(ctx context.Context) (map[stri
 
 // SalesBlockReason identifies the first deployment prerequisite blocking new sales.
 func (s *CommerceService) SalesBlockReason(ctx context.Context) string {
-	opt := s.options
+	return salesBlockReasonWith(ctx, s.currentOptions())
+}
+
+func salesBlockReasonWith(ctx context.Context, opt CommerceOptions) string {
 	switch {
 	case !opt.SalesEnabled:
 		return "sales_disabled"
@@ -143,7 +180,8 @@ func (s *CommerceService) SalesBlockReason(ctx context.Context) string {
 
 // CatalogSalesBlockReason diagnoses the snapshot already read for the admin response.
 func (s *CommerceService) CatalogSalesBlockReason(ctx context.Context, catalog *kafudadomain.Catalog) string {
-	if reason := s.SalesBlockReason(ctx); reason != "" {
+	opt := s.currentOptions()
+	if reason := salesBlockReasonWith(ctx, opt); reason != "" {
 		return reason
 	}
 	switch {
@@ -151,23 +189,23 @@ func (s *CommerceService) CatalogSalesBlockReason(ctx context.Context, catalog *
 		return "catalog_stale"
 	case !catalog.Enabled:
 		return "catalog_disabled"
-	case !s.cardAllowed(catalog):
+	case !cardAllowedWith(catalog, opt.ProductCode):
 		return "card_product_unavailable"
 	default:
 		return ""
 	}
 }
 
-func (s *CommerceService) purchaseCatalog(ctx context.Context) (*kafudadomain.Catalog, error) {
-	if s.SalesBlockReason(ctx) != "" {
+func (s *CommerceService) purchaseCatalogWith(ctx context.Context, opt CommerceOptions) (*kafudadomain.Catalog, error) {
+	if salesBlockReasonWith(ctx, opt) != "" {
 		return nil, ErrQuoteUnavailable
 	}
-	return s.options.Catalog.Cached(ctx)
+	return opt.Catalog.Cached(ctx)
 }
 
-func (s *CommerceService) cardAllowed(catalog *kafudadomain.Catalog) bool {
+func cardAllowedWith(catalog *kafudadomain.Catalog, productCode string) bool {
 	for _, card := range catalog.Cards {
-		if card.ProductCode == s.options.ProductCode && !card.Restricted {
+		if card.ProductCode == productCode && !card.Restricted {
 			return true
 		}
 	}
