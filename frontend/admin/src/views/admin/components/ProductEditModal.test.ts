@@ -68,7 +68,14 @@ const productResponse = (id: number, country: string) => ({
   },
 })
 
-const catalogOptions = [
+const catalogOptions: Array<{
+  sku_code: string
+  plan: string
+  country: string
+  available: boolean
+  catalog_revision: number
+  estimated_cost_cny?: number
+}> = [
   { sku_code: 'KGPT_PH', plan: 'plus', country: 'PH', available: true, catalog_revision: 0 },
   { sku_code: 'KGPT_US', plan: 'plus', country: 'US', available: true, catalog_revision: 0 },
 ]
@@ -370,5 +377,35 @@ describe('ProductEditModal Direct SKU edits', () => {
     for (const field of ['price_amount', 'cost_price_amount', 'sort_order']) {
       expect(payload.skus[0]).not.toHaveProperty(field)
     }
+  })
+
+  it('presets direct cost prices from estimated_cost_cny and applies markup to all SKUs', async () => {
+    const product = productResponse(1, 'PH')
+    product.data.data.skus[0]!.cost_price_amount = 100
+    product.data.data.skus[0]!.direct_cost_configured = true
+    api.getProduct.mockResolvedValue(product)
+    api.getKafudaCatalog.mockResolvedValue(catalogResponse([
+      { ...catalogOptions[0]!, estimated_cost_cny: 120 },
+      { ...catalogOptions[1]!, estimated_cost_cny: 50.5 },
+    ]))
+    const context = mountModal()
+    context.productId = 1
+    context.open = true
+    await flushRequests()
+
+    const markupInput = host.querySelector<HTMLInputElement>('input[aria-label="kafuda.markupLabel"]')
+    expect(markupInput?.value).toBe('10')
+
+    const applyButton = [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'kafuda.applyMarkup')
+    expect(applyButton).toBeTruthy()
+    applyButton!.click()
+    await nextTick()
+
+    const payload = submitUpdate()
+    expect(payload.skus).toHaveLength(2)
+    // Existing PH SKU kept its configured cost (100) and got +10% price (110).
+    expect(payload.skus[0]).toMatchObject({ sku_code: 'KGPT_PH', price_amount: 110 })
+    // New US SKU got preset cost from estimated_cost_cny (50.5) and +10% price (55.55).
+    expect(payload.skus[1]).toMatchObject({ sku_code: 'KGPT_US', cost_price_amount: 50.5, price_amount: 55.55 })
   })
 })

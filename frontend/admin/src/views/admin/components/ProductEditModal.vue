@@ -45,9 +45,12 @@ const catalogStale = ref<boolean | null>(null)
 const catalogError = ref('')
 const catalogSyncedAt = ref('')
 const catalogSalesBlockReason = ref('')
+const catalogFXUnavailable = ref(false)
 const activeSKURegion = ref('')
 const directAvailability = ref<Record<string, boolean>>({})
 const directReviewRequired = ref<Record<string, boolean>>({})
+const directEstimatedCostCNY = ref<Record<string, number>>({})
+const directMarkupPercent = ref<number>(10)
 let catalogRequest = 0
 const newTag = ref('')
 const currentLang = ref('zh-CN')
@@ -563,9 +566,12 @@ const resetDirectCatalog = () => {
   catalogError.value = ''
   catalogSyncedAt.value = ''
   catalogSalesBlockReason.value = ''
+  catalogFXUnavailable.value = false
   activeSKURegion.value = ''
   directAvailability.value = {}
   directReviewRequired.value = {}
+  directEstimatedCostCNY.value = {}
+  directMarkupPercent.value = 10
   directCostConfirmations.clear()
 }
 
@@ -684,7 +690,40 @@ const visibleSKUs = computed(() => (
     : indexedSKUs.value
 ))
 
-type DirectOption = { sku_code: string; plan: string; country: string; label: string; available: boolean; catalog_revision: number }
+type DirectOption = {
+  sku_code: string
+  plan: string
+  country: string
+  label: string
+  available: boolean
+  catalog_revision: number
+  currency?: string
+  estimated_local_minor?: number | null
+  local_exponent?: number | null
+  estimated_cost_cny?: number | null
+}
+
+const roundCurrencyAmount = (value: number) => Math.round(value * 100) / 100
+
+const applyDirectMarkupToAllSKUs = () => {
+  const markup = Number(directMarkupPercent.value)
+  if (!Number.isFinite(markup) || markup < 0) {
+    notifyError(t('kafuda.markupInvalid'))
+    return
+  }
+  const multiplier = 1 + markup / 100
+  for (const sku of form.skus) {
+    const presetCost = directEstimatedCostCNY.value[sku.sku_code]
+    let cost = sku.cost_price_amount === '' ? Number.NaN : Number(sku.cost_price_amount)
+    if ((!Number.isFinite(cost) || cost <= 0) && typeof presetCost === 'number' && presetCost > 0) {
+      cost = presetCost
+      sku.cost_price_amount = presetCost
+    }
+    if (Number.isFinite(cost) && cost > 0) {
+      sku.price_amount = roundCurrencyAmount(cost * multiplier)
+    }
+  }
+}
 
 const loadDirectCatalog = async (sync: boolean) => {
   const request = ++catalogRequest
@@ -700,8 +739,15 @@ const loadDirectCatalog = async (sync: boolean) => {
     const old = new Map(form.skus.filter((item) => item.sku_code.startsWith('KGPT_')).map((item) => [item.sku_code, item]))
     const available: Record<string, boolean> = {}
     const reviewRequired: Record<string, boolean> = {}
+    const estimatedCosts: Record<string, number> = {}
     const merged: SKUFormItem[] = options.map((option) => {
       available[option.sku_code] = option.available
+      const presetCost = typeof option.estimated_cost_cny === 'number' && Number.isFinite(option.estimated_cost_cny) && option.estimated_cost_cny > 0
+        ? roundCurrencyAmount(option.estimated_cost_cny)
+        : undefined
+      if (presetCost !== undefined) {
+        estimatedCosts[option.sku_code] = presetCost
+      }
       const existing = old.get(option.sku_code)
       const revision = Number(option.catalog_revision || 0)
       reviewRequired[option.sku_code] = Boolean(existing && existing.direct_catalog_revision !== revision)
@@ -716,9 +762,13 @@ const loadDirectCatalog = async (sync: boolean) => {
           direct_catalog_revision: revision,
         })
       }
+      const resolvedCost = existing && existing.cost_price_amount !== ''
+        ? existing.cost_price_amount
+        : (presetCost ?? defaults.cost_price_amount)
       return {
         ...defaults,
         ...existing,
+        cost_price_amount: resolvedCost,
         spec_values: { ...createEmptyLocaleText(), plan: option.plan, country: option.country },
         is_active: Boolean(existing?.is_active && option.available && existing.direct_catalog_revision === revision),
         direct_catalog_revision: revision,
@@ -732,7 +782,9 @@ const loadDirectCatalog = async (sync: boolean) => {
     form.skus = merged
     directAvailability.value = available
     directReviewRequired.value = reviewRequired
+    directEstimatedCostCNY.value = estimatedCosts
     catalogStale.value = Boolean(catalog.stale)
+    catalogFXUnavailable.value = Boolean(catalog.fx_unavailable)
     catalogSalesBlockReason.value = String(catalog.sales_block_reason || '')
     catalogSyncedAt.value = catalog.synced_at ? new Date(catalog.synced_at).toLocaleString() : ''
   } catch (error) {
@@ -1140,13 +1192,29 @@ watch(
           </div>
 
           <div class="col-span-1 md:col-span-2 rounded-xl border border-border bg-muted/20 p-4 space-y-4">
-            <div class="flex items-center justify-between">
+            <div class="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 class="text-sm font-semibold text-foreground">{{ t('admin.products.form.skuTitle') }}</h3>
                 <p class="text-xs text-muted-foreground mt-1">{{ t('admin.products.form.skuTip') }}</p>
                 <p v-if="editingIsMapped" class="mt-1 text-xs text-indigo-600">{{ t('admin.products.mappedSkuLocked') }}</p>
               </div>
-              <Button v-if="isDirect" type="button" size="sm" variant="outline" :disabled="catalogBusy" @click="loadDirectCatalog(true)">{{ t('kafuda.sync') }}</Button>
+              <div v-if="isDirect" class="flex flex-wrap items-center gap-2">
+                <label class="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span>{{ t('kafuda.markupLabel') }}</span>
+                  <Input
+                    v-model.number="directMarkupPercent"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    class="h-8 w-20 text-xs"
+                    :aria-label="t('kafuda.markupLabel')"
+                  />
+                </label>
+                <Button type="button" size="sm" variant="outline" :disabled="!form.skus.length" @click="applyDirectMarkupToAllSKUs">
+                  {{ t('kafuda.applyMarkup') }}
+                </Button>
+                <Button type="button" size="sm" variant="outline" :disabled="catalogBusy" @click="loadDirectCatalog(true)">{{ t('kafuda.sync') }}</Button>
+              </div>
               <Button v-else-if="!editingIsMapped" type="button" size="sm" variant="outline" @click="addSKU">
                 {{ t('admin.products.form.skuAdd') }}
               </Button>
@@ -1154,6 +1222,7 @@ watch(
 
             <div v-if="isDirect" class="text-xs text-muted-foreground space-y-2">
               <p>{{ t('kafuda.tip') }}</p>
+              <p v-if="catalogFXUnavailable" class="text-amber-600">{{ t('kafuda.fxUnavailable') }}</p>
               <p v-if="catalogError" class="text-amber-600" role="alert">{{ catalogError }}</p>
               <Button v-if="catalogError && catalogStale === null" type="button" size="sm" variant="outline" :disabled="catalogBusy" @click="loadDirectCatalog(false)">
                 {{ t('kafuda.retryRead') }}

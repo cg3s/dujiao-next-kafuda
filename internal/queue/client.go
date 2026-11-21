@@ -109,6 +109,18 @@ func (c *Client) EnqueueKafudaRecoverChecks(ctx context.Context) error {
 	return err
 }
 
+// EnqueueKafudaRefreshCatalog triggers an initial catalog refresh when a worker starts.
+func (c *Client) EnqueueKafudaRefreshCatalog(ctx context.Context) error {
+	if !c.Enabled() {
+		return nil
+	}
+	_, err := c.client.EnqueueContext(ctx, NewKafudaRefreshCatalogTask(), asynq.Queue(c.defaultQueue), asynq.Unique(time.Minute))
+	if errors.Is(err, asynq.ErrDuplicateTask) {
+		return nil
+	}
+	return err
+}
+
 // EnqueueOrderStatusEmail 推送订单状态邮件任务
 func (c *Client) EnqueueOrderStatusEmail(payload OrderStatusEmailPayload, opts ...asynq.Option) error {
 	if !c.Enabled() {

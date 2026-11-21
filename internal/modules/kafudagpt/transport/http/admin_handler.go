@@ -20,6 +20,7 @@ type CatalogUseCase interface {
 
 type AdminHandler struct {
 	Catalog              CatalogUseCase
+	FXRates              kafudacontract.FXRateProvider
 	Configured           bool
 	GatewayConfigInvalid bool
 	SalesBlockReason     func(context.Context, *kafudadomain.Catalog) string
@@ -63,7 +64,28 @@ func (h *AdminHandler) catalog(c *gin.Context, sync bool) {
 		}
 	}
 	if catalog != nil {
-		data["options"] = kafudaapp.CatalogSKUOptions(catalog)
+		options := kafudaapp.CatalogSKUOptions(catalog)
+		if h.FXRates != nil && catalogNeedsFX(options) {
+			rates, updatedAt, fxErr := h.FXRates.RatesToCNY(c.Request.Context())
+			if fxErr != nil {
+				data["fx_unavailable"] = true
+				ginutil.RequestLog(c).Warnw("kafuda_catalog_fx_failed")
+			} else {
+				for i := range options {
+					if options[i].EstimatedLocalMinor == nil {
+						continue
+					}
+					if costCNY, ok := kafudaapp.EstimateCostCNY(options[i].Currency, *options[i].EstimatedLocalMinor, options[i].LocalExponent, rates); ok {
+						val := costCNY
+						options[i].EstimatedCostCNY = &val
+					}
+				}
+				if !updatedAt.IsZero() {
+					data["fx_updated_at"] = updatedAt
+				}
+			}
+		}
+		data["options"] = options
 		data["cards"] = catalog.Cards
 		data["enabled"] = catalog.Enabled
 		data["synced_at"] = catalog.SyncedAt
@@ -71,6 +93,15 @@ func (h *AdminHandler) catalog(c *gin.Context, sync bool) {
 		data["stale"] = !time.Now().Before(catalog.ExpiresAt)
 	}
 	response.Success(c, data)
+}
+
+func catalogNeedsFX(options []kafudacontract.SKUOption) bool {
+	for _, opt := range options {
+		if opt.EstimatedLocalMinor != nil && *opt.EstimatedLocalMinor > 0 && opt.Currency != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func respondCatalogFailure(c *gin.Context, err error) {

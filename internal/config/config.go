@@ -40,17 +40,18 @@ type Config struct {
 // KafudaGPTConfig is deployment-only merchant configuration. Closing sales does
 // not disable fulfillment or reconciliation for orders that have already paid.
 type KafudaGPTConfig struct {
-	APIBaseURL              string   `mapstructure:"api_base_url"`
-	APIKey                  string   `mapstructure:"api_key" json:"-"`
-	ProductCode             string   `mapstructure:"product_code"`
-	MaxCostCents            int64    `mapstructure:"max_cost_cents"`
-	AllowedKinds            []string `mapstructure:"allowed_kinds"`
-	SalesEnabled            bool     `mapstructure:"sales_enabled"`
-	ReferenceLookupVerified bool     `mapstructure:"reference_lookup_verified"`
-	CatalogTTLSeconds       int      `mapstructure:"catalog_ttl_seconds"`
-	PollReviewAfterSeconds  int      `mapstructure:"poll_review_after_seconds"`
-	PollIntervalSeconds     int      `mapstructure:"poll_interval_seconds"`
-	ReviewAfterSeconds      int      `mapstructure:"review_after_seconds"`
+	APIBaseURL                    string   `mapstructure:"api_base_url"`
+	APIKey                        string   `mapstructure:"api_key" json:"-"`
+	ProductCode                   string   `mapstructure:"product_code"`
+	MaxCostCents                  int64    `mapstructure:"max_cost_cents"`
+	AllowedKinds                  []string `mapstructure:"allowed_kinds"`
+	SalesEnabled                  bool     `mapstructure:"sales_enabled"`
+	ReferenceLookupVerified       bool     `mapstructure:"reference_lookup_verified"`
+	CatalogTTLSeconds             int      `mapstructure:"catalog_ttl_seconds"`
+	CatalogRefreshIntervalSeconds int      `mapstructure:"catalog_refresh_interval_seconds"`
+	PollReviewAfterSeconds        int      `mapstructure:"poll_review_after_seconds"`
+	PollIntervalSeconds           int      `mapstructure:"poll_interval_seconds"`
+	ReviewAfterSeconds            int      `mapstructure:"review_after_seconds"`
 }
 
 // KafudaPollInterval is the minimum delay between normal supplier lookups.
@@ -62,13 +63,27 @@ func (c *Config) KafudaPollInterval() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// KafudaCatalogRefreshInterval lets the worker check freshness independently of order polling.
+// KafudaCatalogRefreshInterval lets the worker refresh the supplier catalog
+// independently of order polling and sales_enabled.
+//   - CatalogRefreshIntervalSeconds < 0: disabled (returns 0)
+//   - CatalogRefreshIntervalSeconds > 0: fixed refresh interval (clamped to 5s–86400s)
+//   - CatalogRefreshIntervalSeconds == 0: auto-derived freshness check from CatalogTTLSeconds
 func (c *Config) KafudaCatalogRefreshInterval() time.Duration {
-	if c == nil || !c.KafudaGPT.SalesEnabled || c.KafudaGPT.CatalogTTLSeconds <= 0 {
+	if c == nil || c.KafudaGPT.CatalogTTLSeconds <= 0 || c.KafudaGPT.CatalogRefreshIntervalSeconds < 0 {
 		return 0
+	}
+	if c.KafudaGPT.CatalogRefreshIntervalSeconds > 0 {
+		seconds := max(5, min(86400, c.KafudaGPT.CatalogRefreshIntervalSeconds))
+		return time.Duration(seconds) * time.Second
 	}
 	seconds := max(1, min(60, c.KafudaGPT.CatalogTTLSeconds/4))
 	return time.Duration(seconds) * time.Second
+}
+
+// KafudaCatalogFixedRefresh reports whether catalog refresh runs on an explicit
+// fixed schedule rather than only refreshing before TTL expiry.
+func (c *Config) KafudaCatalogFixedRefresh() bool {
+	return c != nil && c.KafudaGPT.CatalogTTLSeconds > 0 && c.KafudaGPT.CatalogRefreshIntervalSeconds > 0
 }
 
 // AppConfig 应用级配置
@@ -481,6 +496,7 @@ func Load() *Config {
 	viper.SetDefault("kafuda_gpt.sales_enabled", false)
 	viper.SetDefault("kafuda_gpt.reference_lookup_verified", false)
 	viper.SetDefault("kafuda_gpt.catalog_ttl_seconds", 3600)
+	viper.SetDefault("kafuda_gpt.catalog_refresh_interval_seconds", 0)
 	viper.SetDefault("kafuda_gpt.poll_review_after_seconds", 86400)
 	viper.SetDefault("kafuda_gpt.poll_interval_seconds", 10)
 	viper.SetDefault("kafuda_gpt.review_after_seconds", 900)

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"time"
 )
 
 var (
@@ -13,13 +14,23 @@ var (
 )
 
 type SKUOption struct {
-	CatalogRevision uint64 `json:"catalog_revision"`
-	SKUCode         string `json:"sku_code"`
-	Plan            string `json:"plan"`
-	Country         string `json:"country"`
-	Label           string `json:"label"`
+	CatalogRevision     uint64   `json:"catalog_revision"`
+	SKUCode             string   `json:"sku_code"`
+	Plan                string   `json:"plan"`
+	Country             string   `json:"country"`
+	Label               string   `json:"label"`
+	Currency            string   `json:"currency,omitempty"`
+	EstimatedLocalMinor *int64   `json:"estimated_local_minor,omitempty"`
+	LocalExponent       *int     `json:"local_exponent,omitempty"`
+	EstimatedCostCNY    *float64 `json:"estimated_cost_cny,omitempty"`
 	// Available reflects supplier listing state. Purchasing also requires a fresh catalog.
 	Available bool `json:"available"`
+}
+
+// FXRateProvider supplies exchange rates converting foreign currencies to CNY
+// (each map value is CNY per 1 unit of the keyed ISO-4217 currency).
+type FXRateProvider interface {
+	RatesToCNY(ctx context.Context) (map[string]float64, time.Time, error)
 }
 
 type PurchaseTerms struct {

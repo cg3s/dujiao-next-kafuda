@@ -57,7 +57,17 @@ func (s *CommerceService) SKUOptionsForUpdate(reader kafudacontract.CatalogForUp
 func CatalogSKUOptions(catalog *kafudadomain.Catalog) []kafudacontract.SKUOption {
 	result := make([]kafudacontract.SKUOption, 0, len(catalog.Options))
 	for _, entry := range catalog.Options {
-		result = append(result, kafudacontract.SKUOption{SKUCode: kafudacontract.SKUCode(entry.Plan, entry.Country), Plan: entry.Plan, Country: entry.Country, Label: entry.Label, Available: catalog.Enabled && entry.Available, CatalogRevision: catalog.Revision(entry.Plan, entry.Country)})
+		result = append(result, kafudacontract.SKUOption{
+			SKUCode:             kafudacontract.SKUCode(entry.Plan, entry.Country),
+			Plan:                entry.Plan,
+			Country:             entry.Country,
+			Label:               entry.Label,
+			Currency:            entry.Currency,
+			EstimatedLocalMinor: entry.EstimatedLocalMinor,
+			LocalExponent:       entry.LocalExponent,
+			Available:           catalog.Enabled && entry.Available,
+			CatalogRevision:     catalog.Revision(entry.Plan, entry.Country),
+		})
 	}
 	return result
 }
@@ -80,6 +90,17 @@ func (s *CommerceService) PurchaseTerms(ctx context.Context, plan, country strin
 		}
 	}
 	return nil, ErrQuoteUnavailable
+}
+
+// SyncCatalog performs an on-demand upstream catalog sync when the supplier
+// gateway is configured, honoring rate-limit backoff and skipping concurrent
+// duplicate fetches.
+func (s *CommerceService) SyncCatalog(ctx context.Context) error {
+	if s == nil || s.options.Catalog == nil {
+		return nil
+	}
+	_, err := s.options.Catalog.SyncOnDemand(ctx)
+	return err
 }
 
 // PurchasableSKURevisions returns the currently sellable supplier options from one local snapshot.

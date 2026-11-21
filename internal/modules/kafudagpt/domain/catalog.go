@@ -9,13 +9,15 @@ import (
 // not a wire schema for the supplier's catalog endpoint. No Cartesian expansion
 // of independent plan and region lists is allowed.
 type CatalogOption struct {
-	Plan              string `json:"plan"`
-	Country           string `json:"country"`
-	Product           string `json:"product"`
-	Label             string `json:"label"`
-	Currency          string `json:"currency"`
-	EstimatedUSDCents *int64 `json:"estimated_usd_cents"`
-	Available         bool   `json:"available"`
+	Plan                string `json:"plan"`
+	Country             string `json:"country"`
+	Product             string `json:"product"`
+	Label               string `json:"label"`
+	Currency            string `json:"currency"`
+	EstimatedUSDCents   *int64 `json:"estimated_usd_cents"`
+	EstimatedLocalMinor *int64 `json:"estimated_local_minor,omitempty"`
+	LocalExponent       *int   `json:"local_exponent,omitempty"`
+	Available           bool   `json:"available"`
 }
 
 type CardProduct struct {

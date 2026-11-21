@@ -7,6 +7,7 @@ import (
 
 	"github.com/dujiao-next/internal/logger"
 	kafudaapp "github.com/dujiao-next/internal/modules/kafudagpt/application"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
 	"github.com/hibiken/asynq"
@@ -53,10 +54,77 @@ func (c *Consumer) handleKafudaRefreshCatalog(ctx context.Context, _ *asynq.Task
 	}
 	refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := c.KafudaGPT.Catalog.RefreshBeforeExpiry(refreshCtx, interval); err != nil {
-		logger.Warnw("kafuda_scheduled_catalog_refresh_failed")
+	mode := "before_expiry"
+	var (
+		catalog *kafudadomain.Catalog
+		err     error
+	)
+	if c.Config.KafudaCatalogFixedRefresh() {
+		mode = "fixed_interval"
+		catalog, err = c.KafudaGPT.Catalog.RefreshOnInterval(refreshCtx, interval)
+	} else {
+		catalog, err = c.KafudaGPT.Catalog.RefreshBeforeExpiryResult(refreshCtx, interval)
+	}
+	if err != nil {
+		reason, status := classifyKafudaCatalogError(err)
+		// Never log upstream bodies, error codes, URLs, or raw database errors.
+		logger.Warnw("kafuda_scheduled_catalog_refresh_failed",
+			"mode", mode,
+			"reason", reason,
+			"upstream_http_status", status,
+		)
+		return nil
+	}
+	if catalog != nil {
+		logger.Infow("kafuda_scheduled_catalog_refresh_ok",
+			"mode", mode,
+			"interval", interval.String(),
+			"enabled", catalog.Enabled,
+			"options_count", len(catalog.Options),
+			"cards_count", len(catalog.Cards),
+			"synced_at", catalog.SyncedAt,
+			"expires_at", catalog.ExpiresAt,
+		)
 	}
 	return nil
+}
+
+func classifyKafudaCatalogError(err error) (string, int) {
+	reason := "catalog_failed"
+	status := 0
+	var upstream *kafudacontract.APIError
+	switch {
+	case errors.As(err, &upstream):
+		status = upstream.HTTPStatus
+		if status < 100 || status > 599 {
+			status = 0
+		}
+		switch {
+		case status == 401:
+			reason = "auth_failed"
+		case status == 403:
+			reason = "forbidden"
+		case status == 404:
+			reason = "endpoint_missing"
+		case status == 429:
+			reason = "rate_limited"
+		case status >= 300 && status < 400:
+			reason = "redirect"
+		case status >= 500:
+			reason = "upstream_unavailable"
+		case upstream.Code == "invalid_response":
+			reason = "invalid_response"
+		case status == 0:
+			reason = "network_failed"
+		}
+	case errors.Is(err, kafudadomain.ErrInvalidCatalog):
+		reason = "invalid_response"
+	case errors.Is(err, kafudacontract.ErrCatalogReadFailed):
+		reason = "cache_read_failed"
+	case errors.Is(err, kafudacontract.ErrCatalogWriteFailed):
+		reason = "cache_write_failed"
+	}
+	return reason, status
 }
 
 func (c *Consumer) pollKnownKafudaOrders(ctx context.Context) error {

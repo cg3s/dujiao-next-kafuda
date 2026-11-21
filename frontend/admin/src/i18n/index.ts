@@ -29,6 +29,10 @@ const messages = {
       neverSynced: '尚未同步',
       failed: '直充目录加载失败，请稍后重试',
       retryRead: '重试读取直充目录',
+      markupLabel: '溢价比例 (%)',
+      applyMarkup: '一键设置全部 SKU 价格',
+      markupInvalid: '溢价比例必须为大于或等于 0 的数字',
+      fxUnavailable: '实时人民币汇率获取失败，暂未自动预设成本价，请手动填写或稍后重试。',
     },
     adminApiTokens: {
       "rotate": "轮换",
@@ -4816,6 +4820,10 @@ const messages = {
       neverSynced: '尚未同步',
       failed: '直充目錄載入失敗，請稍後重試',
       retryRead: '重試讀取直充目錄',
+      markupLabel: '溢價比例 (%)',
+      applyMarkup: '一鍵設定全部 SKU 價格',
+      markupInvalid: '溢價比例必須為大於或等於 0 的數字',
+      fxUnavailable: '即時人民幣匯率取得失敗，暫未自動預設成本價，請手動填寫或稍後重試。',
     },
     adminApiTokens: {
       "rotate": "輪替",
@@ -9603,6 +9611,10 @@ const messages = {
       neverSynced: 'Not synced yet',
       failed: 'Could not load recharge plans. Please try again later.',
       retryRead: 'Retry loading the catalog',
+      markupLabel: 'Markup (%)',
+      applyMarkup: 'Apply to All SKU Prices',
+      markupInvalid: 'Markup percentage must be a number greater than or equal to 0',
+      fxUnavailable: 'Live CNY exchange rates are unavailable; preset cost prices could not be calculated automatically.',
     },
     adminApiTokens: {
       "rotate": "Rotate",

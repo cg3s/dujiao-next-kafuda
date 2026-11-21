@@ -27,6 +27,7 @@ type Module struct {
 	Records              *kafudaapp.Service
 	Catalog              *kafudaapp.CatalogService
 	Gateway              kafudacontract.Gateway
+	FXRates              kafudacontract.FXRateProvider
 	Commerce             *kafudaapp.CommerceService
 	gatewayConfigInvalid bool
 }
@@ -52,6 +53,7 @@ func New(db *gorm.DB, cfg config.KafudaGPTConfig, orders ordercontract.Store, wo
 		Store:   store,
 		Records: kafudaworkflow.WithShopOrderTransitions(kafudaapp.New(store), orders),
 		Gateway: gateway,
+		FXRates: kafuda.NewFXClient("", nil),
 		Catalog: catalog,
 		Commerce: kafudaapp.NewCommerceService(kafudaapp.CommerceOptions{
 			Catalog:                 catalog,

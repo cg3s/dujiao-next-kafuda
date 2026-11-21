@@ -63,15 +63,19 @@ func registerPeriodicTasks(scheduler *asynq.Scheduler, consumer *jobconsumer.Con
 			logger.Infow("scheduler_register_kafuda_recover_checks_ok", "entry_id", entryID)
 		}
 	}
-	if consumer.Container != nil && consumer.KafudaGPT != nil && consumer.KafudaGPT.Gateway != nil && consumer.KafudaGPT.Catalog != nil {
-		if interval := consumer.Config.KafudaCatalogRefreshInterval(); interval > 0 {
-			task := queue.NewKafudaRefreshCatalogTask()
-			entryID, err := scheduler.Register("@every "+interval.String(), task, asynq.Queue(queue.DefaultQueue), asynq.Unique(time.Minute))
-			if err != nil {
-				logger.Warnw("scheduler_register_kafuda_refresh_catalog_failed", "error", err)
-			} else {
-				logger.Infow("scheduler_register_kafuda_refresh_catalog_ok", "entry_id", entryID)
-			}
+	if kafudaCatalogRefreshConfigured(consumer) {
+		interval := consumer.Config.KafudaCatalogRefreshInterval()
+		mode := "before_expiry"
+		if consumer.Config.KafudaCatalogFixedRefresh() {
+			mode = "fixed_interval"
+		}
+		task := queue.NewKafudaRefreshCatalogTask()
+		uniqueTTL := min(interval, time.Minute)
+		entryID, err := scheduler.Register("@every "+interval.String(), task, asynq.Queue(queue.DefaultQueue), asynq.Unique(uniqueTTL))
+		if err != nil {
+			logger.Warnw("scheduler_register_kafuda_refresh_catalog_failed", "error", err, "interval", interval.String(), "mode", mode)
+		} else {
+			logger.Infow("scheduler_register_kafuda_refresh_catalog_ok", "entry_id", entryID, "interval", interval.String(), "mode", mode)
 		}
 	}
 	if consumer.AffiliateService != nil {
@@ -143,6 +147,15 @@ func kafudaRecoveryConfigured(consumer *jobconsumer.Consumer) bool {
 	return consumer != nil && consumer.Container != nil && consumer.KafudaGPT != nil && consumer.KafudaGPT.Records != nil
 }
 
+func kafudaCatalogRefreshConfigured(consumer *jobconsumer.Consumer) bool {
+	return consumer != nil &&
+		consumer.Container != nil &&
+		consumer.KafudaGPT != nil &&
+		consumer.KafudaGPT.Gateway != nil &&
+		consumer.KafudaGPT.Catalog != nil &&
+		consumer.Config.KafudaCatalogRefreshInterval() > 0
+}
+
 // Name 服务名称
 func (s *Service) Name() string {
 	if s == nil || s.name == "" {
@@ -168,14 +181,23 @@ func (s *Service) startScheduler(ctx context.Context) {
 		logger.Warnw("scheduler_start_failed", "error", err)
 		return
 	}
-	if !kafudaRecoveryConfigured(s.consumer) {
+	recoverConfigured := kafudaRecoveryConfigured(s.consumer)
+	refreshConfigured := kafudaCatalogRefreshConfigured(s.consumer)
+	if !recoverConfigured && !refreshConfigured {
 		return
 	}
-	// Recover existing work at startup and create the default queue before the first periodic tick.
+	// Recover existing work and warm the catalog cache at startup before the first periodic tick.
 	enqueueCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	if err := s.consumer.QueueClient.EnqueueKafudaRecoverChecks(enqueueCtx); err != nil {
-		logger.Warnw("scheduler_enqueue_kafuda_recover_checks_failed", "error", err)
+	if recoverConfigured {
+		if err := s.consumer.QueueClient.EnqueueKafudaRecoverChecks(enqueueCtx); err != nil {
+			logger.Warnw("scheduler_enqueue_kafuda_recover_checks_failed", "error", err)
+		}
+	}
+	if refreshConfigured {
+		if err := s.consumer.QueueClient.EnqueueKafudaRefreshCatalog(enqueueCtx); err != nil {
+			logger.Warnw("scheduler_enqueue_kafuda_refresh_catalog_failed", "error", err)
+		}
 	}
 }
 
