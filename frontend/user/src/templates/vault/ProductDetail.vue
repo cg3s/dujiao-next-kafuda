@@ -161,7 +161,7 @@
                 v-for="sku in visibleSkus"
                 :key="sku.id"
                 type="button"
-                class="flex min-w-[86px] flex-col items-start gap-0.5 rounded-sm border-2 px-4 py-2.5 text-sm font-semibold"
+                class="relative flex min-h-[44px] min-w-[86px] items-center rounded-sm border-2 px-4 py-2.5 text-sm font-semibold"
                 :class="[
                   normalizeSkuId(sku.id) === selectedSkuId ? 'border-primary bg-primary/10 text-primary' : 'border-hairline-strong bg-card text-foreground',
                   !isSkuPurchasable(sku) ? 'cursor-not-allowed opacity-[0.42]' : '',
@@ -169,8 +169,13 @@
                 :disabled="!isSkuPurchasable(sku)"
                 @click="selectedSkuId = normalizeSkuId(sku.id)"
               >
-                {{ skuDisplayText(sku) }}
-                <span class="text-xs font-semibold" :class="normalizeSkuId(sku.id) === selectedSkuId ? 'text-primary' : 'text-muted-foreground'">{{ skuStockText(sku) }}</span>
+                <span>{{ skuDisplayText(sku) }}</span>
+                <span
+                  v-if="isLowestPriceSku(sku)"
+                  class="pointer-events-none absolute -top-2 right-1.5 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-sm dark:bg-emerald-500"
+                >
+                  {{ t('directPurchase.lowestPriceTag') }}
+                </span>
               </button>
             </div>
             <p v-if="requiresSKUSelection" class="mt-2 text-[13px] text-warning">{{ t('productDetail.skuRequired') }}</p>
@@ -314,7 +319,7 @@ const {
   selectedSkuWholesaleRules,
   selectedSkuPromotionPrice, selectedSkuPromotionFinalIsMember, selectedSkuPromotionFinalPrice,
   showSelectedSkuMemberBadge,
-  isSkuPurchasable, skuDisplayText, skuStockText, selectSkuRegion,
+  isSkuPurchasable, isLowestPriceSku, skuDisplayText, selectSkuRegion,
   quantityEffectiveLimit, quantityEffectiveMin, handleQuantityInput,
   requiresLogin, requiresSKUSelection, canPurchase, cannotPurchaseReason,
   categoryName, images,

@@ -5,6 +5,7 @@ import {
   buildDirectSkuRegions,
   directCheckoutRestriction,
   filterDirectSkusByRegion,
+  findLowestPriceDirectSkuIds,
   getDirectSkuRegion,
   GPT_DIRECT,
   isDirectSkuAvailable,
@@ -12,6 +13,7 @@ import {
   UNKNOWN_DIRECT_SKU_REGION,
 } from '../src/utils/directPurchase.ts'
 import { resolveCardDisplayPrice } from '../src/utils/productPricing.ts'
+import { buildSkuDisplayText, formatSkuSpecValues, resolveLocalizedSpecName } from '../src/utils/sku.ts'
 
 const availableSku = {
   id: 7,
@@ -134,7 +136,7 @@ test('resolveDirectSkuIdForRegion prefers the first available SKU in the selecte
   assert.equal(resolveDirectSkuIdForRegion(skus, 'GB', normalize), 0)
 })
 
-test('Classic and Vault product detail pages render direct SKU region tabs and visible SKUs', () => {
+test('Classic and Vault product detail pages render direct SKU region tabs, verbatim spec names, and lowest-price badge', () => {
   for (const view of [
     'views/ProductDetail.vue',
     'templates/vault/ProductDetail.vue',
@@ -143,10 +145,47 @@ test('Classic and Vault product detail pages render direct SKU region tabs and v
     assert.match(source, /directSkuRegions\.length/, view)
     assert.match(source, /selectSkuRegion\(region\.value\)/, view)
     assert.match(source, /v-for="sku in visibleSkus"/, view)
+    assert.match(source, /isLowestPriceSku\(sku\)/, view)
+    assert.match(source, /directPurchase\.lowestPriceTag/, view)
+    assert.doesNotMatch(source, /skuStockText\(sku\)/, view)
   }
   for (const locale of ['zh-CN', 'zh-TW', 'en-US']) {
     const data = JSON.parse(readFileSync(new URL(`../src/i18n/locales/${locale}.json`, import.meta.url), 'utf8'))
     assert.ok(data.directPurchase.skuRegions, `${locale}: skuRegions`)
     assert.ok(data.directPurchase.unknownRegion, `${locale}: unknownRegion`)
+    assert.ok(data.directPurchase.lowestPriceTag, `${locale}: lowestPriceTag`)
   }
+})
+
+test('localized SKU spec names are extracted verbatim even when mixed with direct metadata', () => {
+  const spec = { plan: 'plus', country: 'PH', 'zh-CN': 'Plus 月付', 'zh-TW': 'Plus 月付(繁)', 'en-US': 'Plus Monthly' }
+  assert.equal(resolveLocalizedSpecName(spec, 'zh-CN'), 'Plus 月付')
+  assert.equal(resolveLocalizedSpecName(spec, 'zh-TW'), 'Plus 月付(繁)')
+  assert.equal(resolveLocalizedSpecName(spec, 'en-US'), 'Plus Monthly')
+  assert.equal(formatSkuSpecValues(spec, 'zh-CN'), 'Plus 月付')
+  assert.equal(buildSkuDisplayText({ specValues: spec, locale: 'en-US' }), 'Plus Monthly')
+  assert.equal(resolveLocalizedSpecName({ plan: 'plus', country: 'PH', 'zh-TW': '僅繁體' }, 'zh-CN'), '僅繁體')
+})
+
+test('findLowestPriceDirectSkuIds flags strictly lowest purchasable SKUs across regions per spec name', () => {
+  const skus = [
+    // Plus: PH (100) and JP (100) tie for lowest against US (140); NG (80) is unavailable and ignored
+    { ...availableSku, id: 1, price_amount: '100.00', spec_values: { plan: 'plus', country: 'PH', 'zh-CN': 'Plus' } },
+    { ...availableSku, id: 2, price_amount: '140.00', spec_values: { plan: 'plus', country: 'US', 'zh-CN': 'Plus' } },
+    { ...availableSku, id: 3, price_amount: '100.00', spec_values: { plan: 'plus', country: 'JP', 'zh-CN': 'Plus' } },
+    { ...availableSku, id: 4, stock_status: 'out_of_stock', price_amount: '80.00', spec_values: { plan: 'plus', country: 'NG', 'zh-CN': 'Plus' } },
+    // Pro: US (750) is strictly lower than PH (800)
+    { ...availableSku, id: 5, price_amount: '800.00', spec_values: { plan: 'pro', country: 'PH', 'zh-CN': 'Pro' } },
+    { ...availableSku, id: 6, price_amount: '750.00', spec_values: { plan: 'pro', country: 'US', 'zh-CN': 'Pro' } },
+    // Equal across regions: no badge
+    { ...availableSku, id: 7, price_amount: '50.00', spec_values: { plan: 'go', country: 'PH', 'zh-CN': 'Go' } },
+    { ...availableSku, id: 8, price_amount: '50.00', spec_values: { plan: 'go', country: 'US', 'zh-CN': 'Go' } },
+    // Only one region: no cross-region comparison
+    { ...availableSku, id: 9, price_amount: '30.00', spec_values: { plan: 'mini', country: 'PH', 'zh-CN': 'Mini' } },
+  ]
+  const lowest = findLowestPriceDirectSkuIds(skus, {
+    getSpecName: (sku) => resolveLocalizedSpecName(sku.spec_values, 'zh-CN'),
+    normalizeId: (id) => Number(id) || 0,
+  })
+  assert.deepEqual([...lowest].sort((a, b) => a - b), [1, 3, 6])
 })

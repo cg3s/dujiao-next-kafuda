@@ -50,6 +50,22 @@ const resolveLocalizedText = (value: unknown, locale?: string) => {
   return ''
 }
 
+export const resolveLocalizedSpecName = (value: unknown, locale?: string): string => {
+  const normalized = parseJSONLike(value)
+  if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) return ''
+  const rows = normalized as Record<string, unknown>
+  const chain = localeFallbacks(locale)
+  for (const code of chain) {
+    const text = normalizeText(rows[code])
+    if (text) return text
+  }
+  for (const code of SUPPORTED_LOCALES) {
+    const text = normalizeText(rows[code])
+    if (text) return text
+  }
+  return ''
+}
+
 const parseJSONLike = (value: unknown): unknown => {
   if (typeof value !== 'string') return value
   const trimmed = value.trim()
@@ -120,6 +136,10 @@ export const formatSkuSpecValues = (specValues: unknown, locale?: string) => {
   if (typeof normalizedSpecValues !== 'object') return normalizeSpecValue(normalizedSpecValues, locale)
   if (isLocalizedObject(normalizedSpecValues)) {
     return resolveLocalizedText(normalizedSpecValues, locale)
+  }
+  const localizedSpecName = resolveLocalizedSpecName(normalizedSpecValues, locale)
+  if (localizedSpecName) {
+    return localizedSpecName
   }
   const entries = Object.entries(normalizedSpecValues as Record<string, unknown>)
     .map(([key, value]) => {

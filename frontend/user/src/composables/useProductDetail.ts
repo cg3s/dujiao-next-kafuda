@@ -13,12 +13,14 @@ import { debounceAsync } from '../utils/debounce'
 import {
   buildDirectSkuRegions,
   filterDirectSkusByRegion,
+  findLowestPriceDirectSkuIds,
   getDirectSkuRegion,
   isDirectFulfillmentType,
   isDirectSkuAvailable,
   resolveDirectSkuIdForRegion,
 } from '../utils/directPurchase'
-import { buildSkuDisplayText, normalizeSkuId } from '../utils/sku'
+import { amountToCents } from '../utils/money'
+import { buildSkuDisplayText, normalizeSkuId, resolveLocalizedSpecName } from '../utils/sku'
 import { resolveSkuAvailableStock, resolveSkuStockDisplay, type PublicStockDisplay } from '../utils/publicStock'
 import { useLocalized, useProductLabels } from './useProduct'
 import { toast } from './useToast'
@@ -402,12 +404,11 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
   })
 
   const skuDisplayText = (sku: any) => {
+    const localized = resolveLocalizedSpecName(sku?.spec_values, appStore.locale)
+    if (localized) return localized
     if (isDirect.value) {
-      const localized = getLocalizedText(sku?.spec_values)
-      if (localized) return localized
-      if (sku?.spec_values?.plan && sku?.spec_values?.country) {
-        return t('directPurchase.sku', { plan: sku.spec_values.plan, country: sku.spec_values.country })
-      }
+      const plan = typeof sku?.spec_values?.plan === 'string' ? sku.spec_values.plan.trim() : ''
+      if (plan) return plan
     }
     return buildSkuDisplayText({
       skuCode: sku?.sku_code,
@@ -416,6 +417,33 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
       locale: appStore.locale,
     })
   }
+
+  const getSkuComparablePriceCents = (sku: any): number | null => {
+    if (!sku) return null
+    const skuId = normalizeSkuId(sku.id)
+    if (hasSkuPromotionPrice(sku)) {
+      const promoPrice = getSkuPromotionPriceAmount(sku)
+      const promoMemberPrice = getMemberPriceForSku(skuId, promoPrice)
+      return amountToCents(promoMemberPrice !== null ? promoMemberPrice : promoPrice)
+    }
+    const memberPrice = getMemberPriceForSku(skuId, sku.price_amount)
+    const basePrice = Number(sku.price_amount || 0)
+    if (memberPrice !== null && memberPrice < basePrice) {
+      return amountToCents(memberPrice)
+    }
+    return amountToCents(sku.price_amount)
+  }
+
+  const lowestPriceSkuIds = computed(() => {
+    if (!isDirect.value || directSkuRegions.value.length < 2) return new Set<number>()
+    return findLowestPriceDirectSkuIds(activeSkus.value, {
+      getSpecName: skuDisplayText,
+      getPriceCents: getSkuComparablePriceCents,
+      normalizeId: normalizeSkuId,
+    })
+  })
+
+  const isLowestPriceSku = (sku: any) => lowestPriceSkuIds.value.has(normalizeSkuId(sku?.id))
 
   const syncActiveSkuRegion = () => {
     const regions = directSkuRegions.value
@@ -789,7 +817,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     selectedSkuPromotionPrice, selectedSkuPromotionFinalIsMember, selectedSkuPromotionFinalPrice,
     showSelectedSkuMemberBadge,
     // SKU / 库存 / 数量
-    isSkuPurchasable, skuDisplayText, skuStockText, skuStockBadgeClass, selectSkuRegion,
+    isSkuPurchasable, isLowestPriceSku, skuDisplayText, skuStockText, skuStockBadgeClass, selectSkuRegion,
     quantityEffectiveLimit, quantityEffectiveMin, handleQuantityInput,
     // 购买能力
     purchaseType, requiresLogin, requiresSKUSelection, canPurchase, cannotPurchaseReason,

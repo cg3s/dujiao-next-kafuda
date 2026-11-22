@@ -131,12 +131,12 @@
                   {{ region.label }}
                 </button>
               </div>
-              <div class="grid grid-cols-2 gap-2">
+              <div class="grid grid-cols-2 gap-2.5">
                 <button
                   v-for="sku in visibleSkus"
                   :key="sku.id"
                   type="button"
-                  class="flex min-h-[44px] flex-col items-start rounded-2xl border-2 px-3 py-2 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  class="relative flex min-h-[44px] items-center rounded-2xl border-2 px-3 py-2 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                   :class="[
                     normalizeSkuId(sku.id) === selectedSkuId ? 'border-foreground bg-card' : 'border-transparent bg-secondary',
                     isSkuPurchasable(sku) ? 'hover:border-foreground/40' : 'cursor-not-allowed opacity-50',
@@ -146,8 +146,11 @@
                   @click="selectedSkuId = normalizeSkuId(sku.id)"
                 >
                   <span class="font-semibold leading-tight">{{ skuDisplayText(sku) }}</span>
-                  <span class="mt-1 rounded-full border px-2 py-0.5 text-[11px]" :class="skuStockBadgeClass(sku)">
-                    {{ skuStockText(sku) }}
+                  <span
+                    v-if="isLowestPriceSku(sku)"
+                    class="pointer-events-none absolute -top-2 right-2 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-sm dark:bg-emerald-500"
+                  >
+                    {{ t('directPurchase.lowestPriceTag') }}
                   </span>
                 </button>
               </div>
@@ -346,7 +349,7 @@ const {
   selectedSkuWholesaleRules,
   selectedSkuPromotionPrice, selectedSkuPromotionFinalIsMember, selectedSkuPromotionFinalPrice,
   showSelectedSkuMemberBadge,
-  isSkuPurchasable, skuDisplayText, skuStockText, skuStockBadgeClass, selectSkuRegion,
+  isSkuPurchasable, isLowestPriceSku, skuDisplayText, selectSkuRegion,
   quantityEffectiveLimit, quantityEffectiveMin, handleQuantityInput,
   requiresLogin, requiresSKUSelection, canPurchase, cannotPurchaseReason,
   categoryName, images,

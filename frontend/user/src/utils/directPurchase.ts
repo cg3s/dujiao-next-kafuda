@@ -1,4 +1,5 @@
 import type { CartItem } from '../stores/cart'
+import { amountToCents } from './money.ts'
 
 export const GPT_DIRECT = 'gpt_direct'
 export const UNKNOWN_DIRECT_SKU_REGION = '__unknown__'
@@ -69,6 +70,60 @@ export const resolveDirectSkuIdForRegion = <T extends {
   if (inRegion.length === 0) return 0
   const firstAvailable = inRegion.find((sku) => isDirectSkuAvailable(sku))
   return normalizeId((firstAvailable ?? inRegion[0])?.id)
+}
+
+export const findLowestPriceDirectSkuIds = <T extends {
+  id?: unknown
+  is_active?: boolean
+  is_sold_out?: boolean
+  stock_status?: string
+  price_amount?: unknown
+  spec_values?: Record<string, unknown> | null
+}>(
+  skus: readonly T[],
+  options: {
+    getSpecName: (sku: T) => string
+    getPriceCents?: (sku: T) => number | null
+    normalizeId: (id: unknown) => number
+  },
+): Set<number> => {
+  const groups = new Map<string, Array<{ id: number; region: string; priceCents: number }>>()
+  const resolvePrice = options.getPriceCents ?? ((sku: T) => amountToCents(sku.price_amount))
+  for (const sku of skus) {
+    if (!isDirectSkuAvailable(sku)) continue
+    const id = options.normalizeId(sku.id)
+    if (id <= 0) continue
+    const specName = options.getSpecName(sku).trim()
+    if (!specName) continue
+    const priceCents = resolvePrice(sku)
+    if (priceCents === null || priceCents < 0) continue
+    const region = getDirectSkuRegion(sku)
+    const bucket = groups.get(specName)
+    if (bucket) {
+      bucket.push({ id, region, priceCents })
+    } else {
+      groups.set(specName, [{ id, region, priceCents }])
+    }
+  }
+
+  const lowestIds = new Set<number>()
+  for (const entries of groups.values()) {
+    const regions = new Set(entries.map((entry) => entry.region))
+    if (regions.size < 2) continue
+    let minPrice = Number.POSITIVE_INFINITY
+    let maxPrice = Number.NEGATIVE_INFINITY
+    for (const entry of entries) {
+      if (entry.priceCents < minPrice) minPrice = entry.priceCents
+      if (entry.priceCents > maxPrice) maxPrice = entry.priceCents
+    }
+    if (minPrice >= maxPrice) continue
+    for (const entry of entries) {
+      if (entry.priceCents === minPrice) {
+        lowestIds.add(entry.id)
+      }
+    }
+  }
+  return lowestIds
 }
 
 export const directCheckoutRestriction = (
