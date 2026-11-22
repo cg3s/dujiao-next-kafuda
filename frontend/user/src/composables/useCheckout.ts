@@ -573,7 +573,10 @@ export function useCheckout() {
 
   const manualFormFingerprint = computed(() => JSON.stringify(manualFormData.value))
 
-  const isGuestCheckout = computed(() => !hasDirectItems.value && !userAuthStore.isAuthenticated && checkoutMode.value === 'guest')
+  const canGuestCheckout = computed(() => (
+    !hasDirectItems.value || (!directCheckoutError.value && cartItems.value.every((item) => item.purchaseType === 'guest'))
+  ))
+  const isGuestCheckout = computed(() => canGuestCheckout.value && !userAuthStore.isAuthenticated && checkoutMode.value === 'guest')
   const guestEmailValid = computed(() => {
     if (!isGuestCheckout.value) return true
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guestEmail.value.trim())
@@ -854,7 +857,7 @@ export function useCheckout() {
           error.value = t('payment.walletInsufficientHint')
           return
         }
-        if (requiresOnlineChannel.value) {
+        if (authenticated && requiresOnlineChannel.value) {
           const hasChannels = await loadOrderPaymentChannels(orderPayload.items)
           if (!isCurrentCheckout(revision)) return
           if (!hasChannels || !isCurrentPaymentPreference()) {
@@ -1251,6 +1254,7 @@ export function useCheckout() {
     isResellerTenant,
     // mode select / guest
     checkoutMode,
+    canGuestCheckout,
     isGuestCheckout,
     guestEmail,
     guestPassword,

@@ -300,9 +300,7 @@ func (r *ProductStore) Update(product *productdomain.Product) error {
 func (r *ProductStore) QuickUpdate(id string, fields map[string]interface{}) error {
 	query := r.db.Model(&productdomain.Product{}).Where("id = ? AND deleted_at IS NULL", id)
 	var directUpdateErr error
-	if value, ok := fields["purchase_type"]; ok && value != constants.ProductPurchaseMember {
-		directUpdateErr = productcontract.ErrProductPurchaseInvalid
-	} else if value, ok := fields["stock_display_mode"]; ok && value != constants.ProductStockDisplayHidden {
+	if value, ok := fields["stock_display_mode"]; ok && value != constants.ProductStockDisplayHidden {
 		directUpdateErr = productcontract.ErrProductStockDisplayInvalid
 	}
 	if directUpdateErr != nil {

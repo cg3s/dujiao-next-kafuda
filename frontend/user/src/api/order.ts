@@ -67,6 +67,14 @@ export const guestOrderAPI = {
         const request = withGuestAuth(params, options)
         return userApi.get(`/guest/orders/${encodeURIComponent(orderNo)}`, { ...request.options, params: request.payload })
     },
+    directStatus: (orderNo: string, params: GuestAuthInput) => {
+        const request = withGuestAuth(params, { silentBusinessError: true })
+        return userApi.get(`/guest/orders/${encodeURIComponent(orderNo)}/direct-status`, { ...request.options, params: request.payload })
+    },
+    authorizeDirect: (orderNo: string, session: string, params: GuestAuthInput) => {
+        const request = withGuestAuth(params, { sensitiveBody: true, silentBusinessError: true })
+        return userApi.post(`/guest/orders/${encodeURIComponent(orderNo)}/direct-authorize`, { session }, request.options)
+    },
     downloadFulfillment: (orderNo: string, params: GuestAuthInput) => {
         const request = withGuestAuth(params, { blob: true })
         return userApi.get(`/guest/orders/${encodeURIComponent(orderNo)}/fulfillment/download`, { ...request.options, params: request.payload })

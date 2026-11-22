@@ -51,54 +51,74 @@ func newDirectStatusReader(c *container.Container) ordertransport.DirectStatusRe
 		return nil
 	}
 	return func(ctx context.Context, orderNo string, userID uint) (*ordertransport.DirectStatus, error) {
+		if userID == 0 {
+			return nil, nil
+		}
 		order, err := c.OrderStore.GetByOrderNoAndUserScoped(orderNo, userID, ordercontract.TenantScope{})
-		if err != nil || order == nil {
+		if err != nil || order == nil || order.UserID != userID {
 			return nil, err
 		}
-		if userID == 0 || order.UserID != userID || order.ParentID != nil || order.ResellerID != nil || order.PaidAt == nil ||
-			len(order.Children) != 1 {
-			return nil, nil
-		}
-		child := order.Children[0]
-		if child.ParentID == nil || *child.ParentID != order.ID || child.UserID != userID || child.ResellerID != nil ||
-			child.PaidAt == nil || len(child.Items) != 1 ||
-			child.Items[0].FulfillmentType != constants.FulfillmentTypeKafudaGPT || child.Status != order.Status {
-			return nil, nil
-		}
-		if order.Status == constants.OrderStatusRefunded && order.RefundedAmount.IsPositive() {
-			return &ordertransport.DirectStatus{Stage: constants.OrderStatusRefunded, UpdatedAt: order.UpdatedAt}, nil
-		}
-		if (order.Status != constants.OrderStatusPaid && order.Status != constants.OrderStatusFulfilling && order.Status != constants.OrderStatusCompleted) ||
-			!order.RefundedAmount.IsZero() || !child.RefundedAmount.IsZero() {
-			return nil, nil
-		}
-		record, err := c.KafudaGPT.Store.GetRecharge(ctx, child.ID)
-		if err != nil || record == nil {
-			return nil, err
-		}
-		stage := record.Stage
-		switch stage {
-		case kafudadomain.StageWaiting, kafudadomain.StageChecking, kafudadomain.StageSubmitting,
-			kafudadomain.StageProcessing, kafudadomain.StageManualReview, kafudadomain.StageCompleted:
-		case kafudadomain.StageManualDelivery:
-			stage = kafudadomain.StageManualReview
-		default:
-			return nil, nil
-		}
-		status := &ordertransport.DirectStatus{Stage: string(stage), UpdatedAt: record.UpdatedAt}
-		// Completion commits the recharge, fulfillment and shop order statuses
-		// together. The order read above may have occurred before that commit.
-		if stage == kafudadomain.StageCompleted && record.Snapshot.Product == "gpt" && record.CurrentAttemptID != nil {
-			attempt, err := c.KafudaGPT.Store.GetAttempt(ctx, *record.CurrentAttemptID)
-			if err != nil {
-				return nil, err
-			}
-			if attempt != nil && attempt.OrderID == child.ID && attempt.Status == kafudadomain.AttemptCompleted && attempt.UpstreamOrderID != nil {
-				status.RenewalCancelled = attempt.RenewalCancelled
-			}
-		}
-		return status, nil
+		return readDirectStatusForOrder(ctx, c.KafudaGPT.Store, order)
 	}
+}
+
+func newGuestDirectStatusReader(c *container.Container) ordertransport.GuestDirectStatusReader {
+	if c.OrderStore == nil || c.KafudaGPT == nil || c.KafudaGPT.Store == nil {
+		return nil
+	}
+	return func(ctx context.Context, orderNo, email, password string) (*ordertransport.DirectStatus, error) {
+		order, err := c.OrderStore.GetByOrderNoAndGuestScoped(orderNo, email, password, ordercontract.TenantScope{})
+		if err != nil || order == nil || order.UserID != 0 {
+			return nil, err
+		}
+		return readDirectStatusForOrder(ctx, c.KafudaGPT.Store, order)
+	}
+}
+
+func readDirectStatusForOrder(ctx context.Context, store kafudacontract.Store, order *orderdomain.Order) (*ordertransport.DirectStatus, error) {
+	if order == nil || order.ParentID != nil || order.ResellerID != nil || order.PaidAt == nil ||
+		len(order.Children) != 1 {
+		return nil, nil
+	}
+	child := order.Children[0]
+	if child.ParentID == nil || *child.ParentID != order.ID || child.UserID != order.UserID || child.ResellerID != nil ||
+		child.PaidAt == nil || len(child.Items) != 1 ||
+		child.Items[0].FulfillmentType != constants.FulfillmentTypeKafudaGPT || child.Status != order.Status {
+		return nil, nil
+	}
+	if order.Status == constants.OrderStatusRefunded && order.RefundedAmount.IsPositive() {
+		return &ordertransport.DirectStatus{Stage: constants.OrderStatusRefunded, UpdatedAt: order.UpdatedAt}, nil
+	}
+	if (order.Status != constants.OrderStatusPaid && order.Status != constants.OrderStatusFulfilling && order.Status != constants.OrderStatusCompleted) ||
+		!order.RefundedAmount.IsZero() || !child.RefundedAmount.IsZero() {
+		return nil, nil
+	}
+	record, err := store.GetRecharge(ctx, child.ID)
+	if err != nil || record == nil {
+		return nil, err
+	}
+	stage := record.Stage
+	switch stage {
+	case kafudadomain.StageWaiting, kafudadomain.StageChecking, kafudadomain.StageSubmitting,
+		kafudadomain.StageProcessing, kafudadomain.StageManualReview, kafudadomain.StageCompleted:
+	case kafudadomain.StageManualDelivery:
+		stage = kafudadomain.StageManualReview
+	default:
+		return nil, nil
+	}
+	status := &ordertransport.DirectStatus{Stage: string(stage), UpdatedAt: record.UpdatedAt}
+	// Completion commits the recharge, fulfillment and shop order statuses
+	// together. The order read above may have occurred before that commit.
+	if stage == kafudadomain.StageCompleted && record.Snapshot.Product == "gpt" && record.CurrentAttemptID != nil {
+		attempt, err := store.GetAttempt(ctx, *record.CurrentAttemptID)
+		if err != nil {
+			return nil, err
+		}
+		if attempt != nil && attempt.OrderID == child.ID && attempt.Status == kafudadomain.AttemptCompleted && attempt.UpstreamOrderID != nil {
+			status.RenewalCancelled = attempt.RenewalCancelled
+		}
+	}
+	return status, nil
 }
 
 type orderAdminQueryAdapter struct {

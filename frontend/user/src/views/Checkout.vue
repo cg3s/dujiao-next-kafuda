@@ -78,7 +78,7 @@
               <h2 :class="panelTitle">{{ t('checkout.modeTitle') }}</h2>
               <div class="flex rounded-full bg-secondary p-1 text-sm font-semibold">
                 <button
-                  v-if="!hasDirectItems"
+                  v-if="canGuestCheckout"
                   type="button"
                   class="h-9 rounded-full px-4 transition-colors"
                   :class="checkoutMode === 'guest' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'"
@@ -283,12 +283,12 @@ const panelTitle = 'text-[17px] font-bold'
 
 const {
   userAuthStore, getLocalizedText, formatPrice, getImageUrl,
-  isBuyNowMode, hasDirectItems, checkoutLoginTo, cartItems, totalItems, cartItemKey, checkoutItemImage, itemSkuDisplay,
+  isBuyNowMode, checkoutLoginTo, cartItems, totalItems, cartItemKey, checkoutItemImage, itemSkuDisplay,
   itemStockExceeded, itemStockHint,
   checkoutItemCurrency, checkoutItemPriceParts, checkoutItemOriginalPriceParts, checkoutItemHasPriceDiscount,
   manualFormProducts, manualFormData, submitAttempted, getManualFieldLabel, getManualFieldPlaceholder, manualFieldError,
   couponCode, isResellerTenant,
-  checkoutMode, isGuestCheckout, guestEmail, guestPassword, guestEmailValid,
+  checkoutMode, canGuestCheckout, isGuestCheckout, guestEmail, guestPassword, guestEmailValid,
   guestCaptchaEnabled, captchaProvider, guestCaptchaPayload, guestTurnstileToken, guestTurnstileSiteKey,
   guestImageCaptchaRef, guestTurnstileRef, handleGuestCaptchaConfigStale,
   previewCurrency, previewOriginal, previewCoupon, previewPromotion, previewWholesale, previewMemberDiscount, previewTotal,

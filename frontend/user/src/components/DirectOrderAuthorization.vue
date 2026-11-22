@@ -38,13 +38,17 @@
 <script setup lang="ts">
 import { onScopeDispose, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { userOrderAPI } from '../api'
+import { guestOrderAPI, userOrderAPI } from '../api'
 import { ApiRequestError } from '../api/client'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '../composables/useToast'
 
-const props = defineProps<{ orderNo: string; available: boolean }>()
+const props = defineProps<{
+  orderNo: string
+  available: boolean
+  guestAuth?: { email: string; order_password: string }
+}>()
 const emit = defineEmits<{ submitted: [] }>()
 const { t } = useI18n()
 const session = ref('')
@@ -69,7 +73,11 @@ const submit = async () => {
   showSession.value = false
   submitting.value = true
   try {
-    await userOrderAPI.authorizeDirect(props.orderNo, value)
+    if (props.guestAuth) {
+      await guestOrderAPI.authorizeDirect(props.orderNo, value, props.guestAuth)
+    } else {
+      await userOrderAPI.authorizeDirect(props.orderNo, value)
+    }
     if (disposed) return
     emit('submitted')
     toast.success(t('directPurchase.authorization.accepted'))

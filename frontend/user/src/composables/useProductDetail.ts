@@ -321,7 +321,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     }
   }
 
-  const purchaseType = computed(() => isDirect.value ? 'member' : (product.value?.purchase_type || 'member'))
+  const purchaseType = computed(() => product.value?.purchase_type || 'member')
   const requiresSKUSelection = computed(() => activeSkus.value.length > 1 && !selectedSku.value)
   const stockBelowMinPurchase = computed(() => {
     const limit = quantityEffectiveLimit.value
@@ -560,7 +560,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     image: images.value[0],
     minPurchaseQuantity: isDirect.value ? 1 : (normalizeOptionalLimitNumber(product.value.min_purchase_quantity) ?? undefined),
     maxPurchaseQuantity: isDirect.value ? 1 : (normalizeOptionalLimitNumber(product.value.max_purchase_quantity) ?? undefined),
-    purchaseType: isDirect.value ? 'member' : product.value.purchase_type,
+    purchaseType: product.value.purchase_type,
     fulfillmentType: product.value.fulfillment_type,
     manualFormSchema: isDirect.value ? undefined : (product.value.manual_form_schema || {}),
     paymentChannelIds: Array.isArray(product.value.payment_channel_ids) && product.value.payment_channel_ids.length > 0 ? product.value.payment_channel_ids : undefined,

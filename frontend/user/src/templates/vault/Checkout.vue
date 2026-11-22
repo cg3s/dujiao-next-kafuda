@@ -77,7 +77,7 @@
         <section v-if="!userAuthStore.isAuthenticated" class="rounded-xl border bg-card p-5">
           <h2 class="mb-3.5 text-lg font-bold">{{ t('checkout.modeTitle') }}</h2>
           <div class="mb-3.5 flex flex-wrap gap-2.5">
-            <Button v-if="!hasDirectItems" type="button" size="sm" class="rounded-full" :variant="checkoutMode === 'guest' ? 'default' : 'outline'" @click="checkoutMode = 'guest'">{{ t('checkout.guestPurchase') }}</Button>
+            <Button v-if="canGuestCheckout" type="button" size="sm" class="rounded-full" :variant="checkoutMode === 'guest' ? 'default' : 'outline'" @click="checkoutMode = 'guest'">{{ t('checkout.guestPurchase') }}</Button>
             <Button as-child variant="outline" size="sm" class="rounded-full"><RouterLink :to="checkoutLoginTo">{{ t('checkout.memberPurchase') }}</RouterLink></Button>
           </div>
 
@@ -218,12 +218,12 @@ const { t } = useI18n()
 
 const {
   userAuthStore, getLocalizedText, formatPrice, getImageUrl,
-  isBuyNowMode, hasDirectItems, checkoutLoginTo, cartItems, totalItems, cartItemKey, checkoutItemImage, itemSkuDisplay,
+  isBuyNowMode, checkoutLoginTo, cartItems, totalItems, cartItemKey, checkoutItemImage, itemSkuDisplay,
   itemStockExceeded, itemStockHint,
   checkoutItemCurrency, checkoutItemPriceParts, checkoutItemOriginalPriceParts, checkoutItemHasPriceDiscount,
   manualFormProducts, manualFormData, submitAttempted, getManualFieldLabel, getManualFieldPlaceholder, manualFieldError,
   couponCode, isResellerTenant,
-  checkoutMode, isGuestCheckout, guestEmail, guestPassword, guestEmailValid,
+  checkoutMode, canGuestCheckout, isGuestCheckout, guestEmail, guestPassword, guestEmailValid,
   guestCaptchaEnabled, captchaProvider, guestCaptchaPayload, guestTurnstileToken, guestTurnstileSiteKey,
   guestImageCaptchaRef, guestTurnstileRef, handleGuestCaptchaConfigStale,
   previewCurrency, previewOriginal, previewCoupon, previewPromotion, previewWholesale, previewMemberDiscount, previewTotal,

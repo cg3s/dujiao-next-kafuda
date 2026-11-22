@@ -42,9 +42,13 @@ test('direct SKU availability follows the storefront status at zero inventory', 
 const direct = { fulfillmentType: GPT_DIRECT, skuId: 7, quantity: 1 }
 const ordinary = { fulfillmentType: 'auto', skuId: 8, quantity: 2 }
 
-test('direct checkout accepts one specified SKU for an authenticated main storefront buyer', () => {
+test('direct checkout accepts one specified SKU for an authenticated buyer or a guest-enabled direct product', () => {
+  const guestDirect = { ...direct, purchaseType: 'guest' }
   assert.equal(directCheckoutRestriction([direct], true, true, false), '')
   assert.equal(directCheckoutRestriction([direct], true, false, false), 'directPurchase.loginRequired')
+  assert.equal(directCheckoutRestriction([guestDirect], true, false, false), '')
+  assert.equal(directCheckoutRestriction([guestDirect], true, false, true), 'directPurchase.checkoutRestricted')
+  assert.equal(directCheckoutRestriction([guestDirect], false, false, false), 'directPurchase.checkoutRestricted')
   assert.equal(directCheckoutRestriction([direct], true, true, true), 'directPurchase.checkoutRestricted')
   assert.equal(directCheckoutRestriction([direct], false, true, false), 'directPurchase.checkoutRestricted')
 })

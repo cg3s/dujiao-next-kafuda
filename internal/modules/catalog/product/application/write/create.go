@@ -56,7 +56,6 @@ func (s *WriteService) Create(input CreateProductInput) (*productdomain.Product,
 		if err != nil {
 			return nil, err
 		}
-		purchaseType = constants.ProductPurchaseMember
 	}
 
 	priceAmount := input.PriceAmount.Round(2)

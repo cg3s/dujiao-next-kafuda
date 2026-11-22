@@ -98,6 +98,10 @@ func registerStorefrontRoutes(
 	{
 		ordertransport.RegisterGuestCreateRoute(guestWrite, orderCreateHandler)
 		ordertransport.RegisterGuestCreateAndPayRoute(guestWrite, orderCreateHandler)
+		guestDirectLimit := middleware.RateLimitRule{Prefix: loginRule.Prefix + ":direct:guest", WindowSeconds: 60, MaxRequests: 12}
+		ordertransport.RegisterGuestDirectAuthorizationRoute(guestWrite, guestOrderHandler,
+			middleware.RateLimitMiddleware(redisClient, guestDirectLimit, middleware.KeyByIP),
+		)
 		paymenttransport.RegisterGuestWriteRoutes(guestWrite, paymentWriteHandler)
 	}
 

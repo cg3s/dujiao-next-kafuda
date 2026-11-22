@@ -136,7 +136,7 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 				return nil, catalogReadErr
 			}
 		}
-		product.PurchaseType, product.MinPurchaseQuantity, product.MaxPurchaseQuantity = constants.ProductPurchaseMember, 1, 1
+		product.MinPurchaseQuantity, product.MaxPurchaseQuantity = 1, 1
 		product.StockDisplayMode = constants.ProductStockDisplayHidden
 	}
 	var normalizedSKUs []normalizedProductSKU

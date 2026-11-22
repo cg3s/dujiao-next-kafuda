@@ -250,7 +250,7 @@ func TestPublicDirectProductAvailability(t *testing.T) {
 				}
 				wantSoldOut := scenario != "available" && scenario != "zero_revision"
 				if len(result.SKUs) != 2 || result.IsSoldOut != wantSoldOut || !result.StockQuantityHidden ||
-					result.PurchaseType != constants.ProductPurchaseMember || result.ManualFormSchema != nil {
+					result.PurchaseType != constants.ProductPurchaseGuest || result.ManualFormSchema != nil {
 					t.Fatalf("%s: invalid product availability: %+v", path, result)
 				}
 				if !result.SKUs[0].IsSoldOut || result.SKUs[1].IsSoldOut != wantSoldOut || (!wantSoldOut && !result.PriceAmount.Equal(sku.PriceAmount.Decimal)) {

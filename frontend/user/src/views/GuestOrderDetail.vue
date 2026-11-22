@@ -65,6 +65,16 @@
           </div>
         </div>
 
+        <DirectOrderStatus v-if="directOrderNo" :status="directStatus" :unavailable="directStatusUnavailable" :format-date="formatDate" />
+        <DirectOrderAuthorization
+          v-if="directOrderNo"
+          :key="directOrderNo"
+          :order-no="directOrderNo"
+          :guest-auth="auth"
+          :available="directStatus?.stage === 'waiting_session' && !directStatusUnavailable"
+          @submitted="refreshDirectStatus"
+        />
+
         <div v-if="order.children && order.children.length > 0"
           class="theme-float rounded-[22px] bg-card p-5 md:p-6">
           <h2 class="mb-4 text-[17px] font-bold">{{ t('orderDetail.childOrdersTitle') }}</h2>
@@ -419,12 +429,15 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import DirectOrderAuthorization from '../components/DirectOrderAuthorization.vue'
+import DirectOrderStatus from '../components/DirectOrderStatus.vue'
 import { useGuestOrderDetail } from '../composables/useGuestOrderDetail'
 
 const { t } = useI18n()
 
 const {
-  order, authError, auth, viewState, handleAuthSubmit, clearAuth,
+  order, directOrderNo, directStatus, directStatusUnavailable, refreshDirectStatus,
+  authError, auth, viewState, handleAuthSubmit, clearAuth,
   fulfillmentDownloading, handleDownloadFulfillment,
   statusLabel, statusVariant, fulfillmentTypeLabelText, fulfillmentStatusLabelText,
   formatDate, getLocalizedText, formatMoney, formatDiscountMoney, hasDiscountAmount,

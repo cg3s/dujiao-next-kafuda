@@ -116,7 +116,7 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 			return nil, ErrProductNotAvailable
 		}
 		direct := strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeKafudaGPT
-		if direct && (!input.StorefrontRequest || input.IsGuest || input.UserID == 0 ||
+		if direct && (!input.StorefrontRequest || (!input.IsGuest && input.UserID == 0) ||
 			!input.Tenant.IsMain || input.Tenant.ResellerID != nil || input.Tenant.Unavailable ||
 			len(input.Items) != 1 || item.Quantity != 1) {
 			return nil, ErrProductPurchaseNotAllowed

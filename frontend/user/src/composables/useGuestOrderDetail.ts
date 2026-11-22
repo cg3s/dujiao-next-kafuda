@@ -1,8 +1,9 @@
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { guestOrderAPI } from '../api'
 import { debounceAsync } from '../utils/debounce'
+import { directStatusOrderNo, startDirectOrderPolling, type DirectOrderStatus } from '../utils/directOrderStatus'
 import { clearGuestOrderAuth, loadGuestOrderAuth, saveGuestOrderAuth } from '../utils/guestOrderAuth'
 import { resolveGuestOrderDetailViewState } from '../utils/guestOrderDetailState'
 import { useOrderDisplayHelpers } from './useOrderDisplayHelpers'
@@ -23,6 +24,12 @@ export function useGuestOrderDetail() {
     order_password: '',
   })
   const fulfillmentDownloading = ref(false)
+  const directStatus = ref<DirectOrderStatus | null>(null)
+  const directStatusRefresh = ref(0)
+  const directStatusUnavailable = ref(false)
+  const orderNo = computed(() => String(route.params.order_no || '').trim())
+  const currentOrder = computed(() => order.value?.order_no === orderNo.value ? order.value : null)
+  const directOrderNo = computed(() => directStatusOrderNo(currentOrder.value))
 
   const helpers = useOrderDisplayHelpers(order)
 
@@ -104,8 +111,42 @@ export function useGuestOrderDetail() {
     clearGuestOrderAuth()
     auth.value = { email: '', order_password: '' }
     order.value = null
+    directStatus.value = null
+    directStatusUnavailable.value = false
     authError.value = t('guestOrderDetail.authRequired')
   }
+
+  let disposed = false
+
+  watch([directOrderNo, directStatusRefresh], ([number], _prev, onCleanup) => {
+    directStatus.value = null
+    directStatusUnavailable.value = false
+    if (!number || !hasAuth.value) return
+    const credentials = {
+      email: auth.value.email,
+      order_password: auth.value.order_password,
+    }
+    onCleanup(startDirectOrderPolling(
+      async () => {
+        const response = await guestOrderAPI.directStatus(number, credentials)
+        return response.data.data
+      },
+      (status) => {
+        if (disposed || number !== directOrderNo.value) return
+        directStatusUnavailable.value = status === null
+        if (!status) return
+        directStatus.value = status
+        if (status.stage === 'manual_review' && order.value?.status === 'paid') void loadOrder()
+      },
+      document,
+      async (stage) => {
+        if (disposed || number !== directOrderNo.value || order.value?.status === stage) return true
+        await loadOrder()
+        return disposed || number !== directOrderNo.value || order.value?.status === stage
+      },
+      { isOnline: () => navigator.onLine, events: window },
+    ))
+  })
 
   onMounted(() => {
     if (!route.params.order_no) {
@@ -117,12 +158,17 @@ export function useGuestOrderDetail() {
   })
 
   onUnmounted(() => {
+    disposed = true
     debouncedLoadOrder.cancel()
   })
 
   return {
     loading,
     order,
+    directOrderNo,
+    directStatus,
+    directStatusUnavailable,
+    refreshDirectStatus: () => { directStatusRefresh.value++ },
     authError,
     auth,
     showAuthForm,

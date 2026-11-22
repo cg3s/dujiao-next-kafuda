@@ -45,3 +45,41 @@ func ReserveBuyerAttempt(store ordercontract.Store, scope ordercontract.TenantSc
 	}
 	return reservation, nil
 }
+
+// ReserveGuestAttempt resolves the fulfillment child from a guest checkout
+// number verified by guest email and order password.
+func ReserveGuestAttempt(store ordercontract.Store, scope ordercontract.TenantScope, orderNo, email, password string, now, leaseUntil time.Time) (*kafudaapp.Reservation, error) {
+	orderNo = strings.TrimSpace(orderNo)
+	email = strings.TrimSpace(email)
+	password = strings.TrimSpace(password)
+	if scope.ResellerID != nil || orderNo == "" || email == "" || password == "" {
+		return nil, orderapp.ErrOrderNotFound
+	}
+	order, err := store.GetByOrderNoAndGuestScoped(orderNo, email, password, scope)
+	if err != nil {
+		return nil, err
+	}
+	if order == nil || order.UserID != 0 {
+		return nil, orderapp.ErrOrderNotFound
+	}
+	if len(order.Children) != 1 {
+		return nil, orderapp.ErrOrderStatusInvalid
+	}
+	childID := order.Children[0].ID
+	var reservation *kafudaapp.Reservation
+	err = withLockedDirectOrderIDs(store, order.ID, childID, func(tx ordercontract.Transaction, parent *orderdomain.Order) error {
+		if parent.UserID != 0 || parent.OrderNo != orderNo || !strings.EqualFold(strings.TrimSpace(parent.GuestEmail), email) {
+			return orderapp.ErrOrderNotFound
+		}
+		if !isOpenPaidShopOrder(parent.Status) {
+			return orderapp.ErrOrderStatusInvalid
+		}
+		reserved, err := kafudaapp.ReserveInTransaction(tx.KafudaGPT(), childID, now, leaseUntil)
+		reservation = reserved
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return reservation, nil
+}

@@ -77,7 +77,13 @@ func RegisterGuestReadRoutes(guest gin.IRoutes, handler *GuestHandler) {
 	}
 	guest.GET("/orders", handler.ListGuestOrders)
 	guest.GET("/orders/:order_no", handler.GetGuestOrderByOrderNo)
+	guest.GET("/orders/:order_no/direct-status", handler.GetGuestDirectStatus)
 	guest.GET("/orders/:order_no/fulfillment/download", handler.DownloadGuestFulfillment)
+}
+
+// RegisterGuestDirectAuthorizationRoute registers the guest direct recharge submission endpoint.
+func RegisterGuestDirectAuthorizationRoute(guest gin.IRoutes, handler *GuestHandler, limits ...gin.HandlerFunc) {
+	guest.POST("/orders/:order_no/direct-authorize", append(limits, handler.AuthorizeGuestDirect)...)
 }
 
 // RegisterUserPreviewRoute 注册前台用户订单预览路由。

@@ -247,7 +247,7 @@ func withLockedDirectOrderIDs(store ordercontract.Store, parentID, childID uint,
 		}
 		if child == nil || child.ParentID == nil || *child.ParentID != parent.ID ||
 			parent.ParentID != nil || parent.ResellerID != nil || child.ResellerID != nil ||
-			parent.UserID == 0 || child.UserID != parent.UserID ||
+			child.UserID != parent.UserID ||
 			len(child.Children) != 0 || len(child.Items) != 1 ||
 			child.Items[0].FulfillmentType != constants.FulfillmentTypeKafudaGPT ||
 			!paidDirectOrder(parent) || !paidDirectOrder(child) || child.Status != parent.Status {

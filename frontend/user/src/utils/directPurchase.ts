@@ -208,7 +208,7 @@ export const findLowestPriceDirectSkuIds = <T extends {
 }
 
 export const directCheckoutRestriction = (
-  items: readonly Pick<CartItem, 'fulfillmentType' | 'skuId' | 'quantity'>[],
+  items: readonly Pick<CartItem, 'fulfillmentType' | 'skuId' | 'quantity' | 'purchaseType'>[],
   buyNow: boolean,
   authenticated: boolean,
   reseller: boolean,
@@ -218,5 +218,8 @@ export const directCheckoutRestriction = (
   if (!buyNow || reseller || items.length !== 1 || !isPositiveSkuId(direct.skuId) || direct.quantity !== 1) {
     return 'directPurchase.checkoutRestricted'
   }
-  return authenticated ? '' : 'directPurchase.loginRequired'
+  if (authenticated || direct.purchaseType === 'guest') {
+    return ''
+  }
+  return 'directPurchase.loginRequired'
 }

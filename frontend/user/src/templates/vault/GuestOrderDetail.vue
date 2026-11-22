@@ -54,6 +54,17 @@
         </div>
       </div>
 
+      <DirectOrderStatus v-if="directOrderNo" class="mb-[18px]" :status="directStatus" :unavailable="directStatusUnavailable" :format-date="formatDate" />
+      <DirectOrderAuthorization
+        v-if="directOrderNo"
+        :key="directOrderNo"
+        class="mb-[18px]"
+        :order-no="directOrderNo"
+        :guest-auth="auth"
+        :available="directStatus?.stage === 'waiting_session' && !directStatusUnavailable"
+        @submitted="refreshDirectStatus"
+      />
+
       <VaultOrderBody
         :order="order"
         variant="guest"
@@ -70,13 +81,16 @@ import { AlertCircle } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import DirectOrderAuthorization from '../../components/DirectOrderAuthorization.vue'
+import DirectOrderStatus from '../../components/DirectOrderStatus.vue'
 import VaultOrderBody from './components/VaultOrderBody.vue'
 import { useGuestOrderDetail } from '../../composables/useGuestOrderDetail'
 
 const { t } = useI18n()
 
 const {
-  order, authError, auth, viewState, handleAuthSubmit, clearAuth,
+  order, directOrderNo, directStatus, directStatusUnavailable, refreshDirectStatus,
+  authError, auth, viewState, handleAuthSubmit, clearAuth,
   fulfillmentDownloading, handleDownloadFulfillment,
   statusLabel, statusVariant, formatDate, formatMoney,
 } = useGuestOrderDetail()

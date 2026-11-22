@@ -91,20 +91,20 @@ func TestQuickUpdateRechecksDirectTypeAndDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	fields := map[string]interface{}{"purchase_type": constants.ProductPurchaseGuest}
-	if err := repo.QuickUpdate(id, fields); !errors.Is(err, productcontract.ErrProductPurchaseInvalid) {
-		t.Fatalf("stale guest update: got %v, want invalid purchase type", err)
+	if err := repo.QuickUpdate(id, fields); err != nil {
+		t.Fatalf("guest purchase type update on direct product: got %v, want nil", err)
 	}
 	if err := repo.QuickUpdate(id, map[string]interface{}{"stock_display_mode": constants.ProductStockDisplayRange}); !errors.Is(err, productcontract.ErrProductStockDisplayInvalid) {
 		t.Fatalf("stale stock display update: got %v, want invalid stock display", err)
 	}
 	stored, err := repo.GetByID(id)
-	if err != nil || stored == nil || stored.PurchaseType != constants.ProductPurchaseMember || stored.StockDisplayMode != constants.ProductStockDisplayHidden {
-		t.Fatalf("stale update changed Direct settings: %+v, %v", stored, err)
+	if err != nil || stored == nil || stored.PurchaseType != constants.ProductPurchaseGuest || stored.StockDisplayMode != constants.ProductStockDisplayHidden {
+		t.Fatalf("unexpected Direct settings: %+v, %v", stored, err)
 	}
 	if err := repo.Delete(id); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.QuickUpdate(id, fields); !errors.Is(err, productcontract.ErrNotFound) {
+	if err := repo.QuickUpdate(id, map[string]interface{}{"stock_display_mode": constants.ProductStockDisplayRange}); !errors.Is(err, productcontract.ErrNotFound) {
 		t.Fatalf("deleted product: got %v, want not found", err)
 	}
 }

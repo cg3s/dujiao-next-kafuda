@@ -867,7 +867,6 @@ watch(() => form.fulfillment_type, () => {
     resetDirectCatalog()
     return
   }
-  form.purchase_type = 'member'
   form.min_purchase_quantity = 1
   form.max_purchase_quantity = 1
   form.stock_display_mode = 'hidden'
@@ -1090,7 +1089,7 @@ watch(
 
           <div class="col-span-1">
             <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.purchaseType') }}</label>
-            <Select v-model="form.purchase_type" :disabled="isDirect">
+            <Select v-model="form.purchase_type">
               <SelectTrigger class="h-9 w-full">
                 <SelectValue :placeholder="t('admin.products.purchaseType.member')" />
               </SelectTrigger>

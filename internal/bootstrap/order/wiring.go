@@ -107,7 +107,27 @@ func New(c *container.Container) Handlers {
 		),
 	}
 	handlers.User.SetDirectAuthorizer(newDirectAuthorizer(c))
+	handlers.Guest.SetDirectStatusReader(newGuestDirectStatusReader(c))
+	handlers.Guest.SetDirectAuthorizer(newGuestDirectAuthorizer(c))
 	return handlers
+}
+
+func mapDirectAuthorizationError(err error) error {
+	switch {
+	case errors.Is(err, kafudacontract.ErrCheckSessionInvalid):
+		return ordertransport.ErrDirectSessionInvalid
+	case errors.Is(err, kafudaworkflow.ErrBuyerCheckRetry), errors.Is(err, kafudaapp.ErrQuoteExpired):
+		return ordertransport.ErrDirectRetry
+	case errors.Is(err, kafudadomain.ErrNotFound):
+		return ordertransport.ErrOrderNotFound
+	case errors.Is(err, kafudadomain.ErrInvalidTransition):
+		return ordertransport.ErrOrderStatusInvalid
+	case err == kafudaapp.ErrQuotePolicy, err == kafudaapp.ErrQuoteUnavailable, err == kafudaapp.ErrQuoteRegionLocked,
+		err == kafudacontract.ErrMerchantBalanceInsufficient:
+		return nil
+	default:
+		return mapOrderTransportError(err)
+	}
 }
 
 func newDirectAuthorizer(c *container.Container) ordertransport.DirectAuthorizer {
@@ -125,21 +145,26 @@ func newDirectAuthorizer(c *container.Container) ordertransport.DirectAuthorizer
 		if completed {
 			kafudaworkflow.EnqueueCompletionEmail(ctx, c.OrderStore, module.Store, orderqueue.NewDirectCompletion(c.QueueClient), c.SettingService, c.Config, childID)
 		}
-		switch {
-		case errors.Is(err, kafudacontract.ErrCheckSessionInvalid):
-			return ordertransport.ErrDirectSessionInvalid
-		case errors.Is(err, kafudaworkflow.ErrBuyerCheckRetry), errors.Is(err, kafudaapp.ErrQuoteExpired):
+		return mapDirectAuthorizationError(err)
+	}
+}
+
+func newGuestDirectAuthorizer(c *container.Container) ordertransport.GuestDirectAuthorizer {
+	if c.OrderStore == nil || c.KafudaGPT == nil || c.KafudaGPT.Records == nil || c.KafudaGPT.Store == nil {
+		return nil
+	}
+	module := c.KafudaGPT
+	return func(ctx context.Context, orderNo, email, password, session string) error {
+		gw := module.CurrentGateway(ctx)
+		if gw == nil {
 			return ordertransport.ErrDirectRetry
-		case errors.Is(err, kafudadomain.ErrNotFound):
-			return ordertransport.ErrOrderNotFound
-		case errors.Is(err, kafudadomain.ErrInvalidTransition):
-			return ordertransport.ErrOrderStatusInvalid
-		case err == kafudaapp.ErrQuotePolicy, err == kafudaapp.ErrQuoteUnavailable, err == kafudaapp.ErrQuoteRegionLocked,
-			err == kafudacontract.ErrMerchantBalanceInsufficient:
-			return nil
-		default:
-			return mapOrderTransportError(err)
 		}
+		childID, completed, err := kafudaworkflow.SubmitGuestSession(ctx, c.OrderStore, module.Records, gw,
+			orderNo, email, password, session, module.PollInterval(c.Config.KafudaPollInterval()))
+		if completed {
+			kafudaworkflow.EnqueueCompletionEmail(ctx, c.OrderStore, module.Store, orderqueue.NewDirectCompletion(c.QueueClient), c.SettingService, c.Config, childID)
+		}
+		return mapDirectAuthorizationError(err)
 	}
 }
 

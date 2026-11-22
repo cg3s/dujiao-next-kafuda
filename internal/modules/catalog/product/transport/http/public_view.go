@@ -259,7 +259,6 @@ func (h *PublicHandler) decoratePublicProduct(product *productdomain.Product, pr
 
 func (v *publicProductView) applyDirectAvailability(revisions map[string]uint64) (map[uint]bool, uint) {
 	v.Product.StockDisplayMode = constants.ProductStockDisplayHidden
-	v.Product.PurchaseType = constants.ProductPurchaseMember
 	v.Product.ManualFormSchemaJSON = nil
 	v.StockStatus = constants.ProductStockStatusOutOfStock
 	v.IsSoldOut = true

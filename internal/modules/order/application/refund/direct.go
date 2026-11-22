@@ -14,7 +14,7 @@ func validateDirectRefund(tx ordercontract.Transaction, parent *orderdomain.Orde
 		return nil
 	}
 	if confirmedAttemptID == 0 || parent.ParentID != nil || parent.ResellerID != nil ||
-		parent.UserID == 0 || parent.PaidAt == nil || !parent.RefundedAmount.IsZero() || len(parent.Children) != 1 ||
+		parent.PaidAt == nil || !parent.RefundedAmount.IsZero() || len(parent.Children) != 1 ||
 		(parent.Status != constants.OrderStatusPaid && parent.Status != constants.OrderStatusFulfilling) {
 		return ErrOrderStatusInvalid
 	}

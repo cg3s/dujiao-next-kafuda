@@ -28,6 +28,24 @@ func SubmitBuyerSession(ctx context.Context, orders ordercontract.Store, records
 	if err != nil {
 		return 0, false, err
 	}
+	return submitReservedSession(ctx, orders, records, gateway, reservation, session, pollInterval)
+}
+
+// SubmitGuestSession reserves the paid guest order verified by guest email and
+// order password before checking and submitting the supplied session.
+func SubmitGuestSession(ctx context.Context, orders ordercontract.Store, records *kafudaapp.Service, gateway kafudacontract.Gateway, orderNo, email, password, session string, pollInterval time.Duration) (uint, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, false, err
+	}
+	now := time.Now().UTC()
+	reservation, err := ReserveGuestAttempt(orders, ordercontract.TenantScope{}, orderNo, email, password, now, now.Add(time.Minute))
+	if err != nil {
+		return 0, false, err
+	}
+	return submitReservedSession(ctx, orders, records, gateway, reservation, session, pollInterval)
+}
+
+func submitReservedSession(ctx context.Context, orders ordercontract.Store, records *kafudaapp.Service, gateway kafudacontract.Gateway, reservation *kafudaapp.Reservation, session string, pollInterval time.Duration) (uint, bool, error) {
 	if !reservation.Created {
 		return 0, false, nil
 	}
