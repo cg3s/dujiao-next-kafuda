@@ -11,13 +11,15 @@ import { useUserAuthStore } from '../stores/userAuth'
 import { useUserProfileStore } from '../stores/userProfile'
 import { debounceAsync } from '../utils/debounce'
 import {
-  buildDirectSkuRegions,
-  filterDirectSkusByRegion,
+  buildDirectSkuSpecs,
+  filterDirectSkusBySpec,
   findLowestPriceDirectSkuIds,
+  formatDirectSkuRegionLabel,
   getDirectSkuRegion,
   isDirectFulfillmentType,
   isDirectSkuAvailable,
-  resolveDirectSkuIdForRegion,
+  resolveDirectSkuIdForSpec,
+  sortDirectSkusByPrice,
 } from '../utils/directPurchase'
 import { amountToCents } from '../utils/money'
 import { buildSkuDisplayText, normalizeSkuId, resolveLocalizedSpecName } from '../utils/sku'
@@ -79,7 +81,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
   }
   const currentImage = ref<string>('')
   const selectedSkuId = ref(0)
-  const activeSkuRegion = ref('')
+  const activeSkuSpec = ref('')
   const quantity = ref(1)
   const purchaseWarning = ref('')
 
@@ -87,17 +89,6 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     const rows = Array.isArray(product.value?.skus) ? product.value.skus : []
     return rows.filter((sku: any) => Boolean(sku?.is_active))
   })
-
-  const directSkuRegions = computed(() => {
-    if (!isDirect.value) return []
-    return buildDirectSkuRegions(activeSkus.value, appStore.locale, t('directPurchase.unknownRegion'))
-  })
-
-  const visibleSkus = computed(() => (
-    directSkuRegions.value.length
-      ? filterDirectSkusByRegion(activeSkus.value, activeSkuRegion.value)
-      : activeSkus.value
-  ))
 
   const selectedSku = computed(() => {
     if (selectedSkuId.value <= 0) return null
@@ -434,8 +425,28 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     return amountToCents(sku.price_amount)
   }
 
+  const directSkuSpecs = computed(() => {
+    if (!isDirect.value) return []
+    return buildDirectSkuSpecs(activeSkus.value, skuDisplayText)
+  })
+
+  const visibleSkus = computed(() => (
+    directSkuSpecs.value.length
+      ? sortDirectSkusByPrice(
+        filterDirectSkusBySpec(activeSkus.value, activeSkuSpec.value, skuDisplayText),
+        getSkuComparablePriceCents,
+      )
+      : activeSkus.value
+  ))
+
+  const skuButtonLabel = (sku: any) => (
+    isDirect.value
+      ? formatDirectSkuRegionLabel(getDirectSkuRegion(sku), appStore.locale, t('directPurchase.unknownRegion'))
+      : skuDisplayText(sku)
+  )
+
   const lowestPriceSkuIds = computed(() => {
-    if (!isDirect.value || directSkuRegions.value.length < 2) return new Set<number>()
+    if (!isDirect.value) return new Set<number>()
     return findLowestPriceDirectSkuIds(activeSkus.value, {
       getSpecName: skuDisplayText,
       getPriceCents: getSkuComparablePriceCents,
@@ -445,29 +456,33 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
 
   const isLowestPriceSku = (sku: any) => lowestPriceSkuIds.value.has(normalizeSkuId(sku?.id))
 
-  const syncActiveSkuRegion = () => {
-    const regions = directSkuRegions.value
-    if (regions.length === 0) {
-      activeSkuRegion.value = ''
+  const syncActiveSkuSpec = () => {
+    const specs = directSkuSpecs.value
+    if (specs.length === 0) {
+      activeSkuSpec.value = ''
       return
     }
     if (selectedSku.value) {
-      const selectedRegion = getDirectSkuRegion(selectedSku.value)
-      if (regions.some(({ value }) => value === selectedRegion)) {
-        activeSkuRegion.value = selectedRegion
+      const selectedSpec = skuDisplayText(selectedSku.value).trim()
+      if (specs.some(({ value }) => value === selectedSpec)) {
+        activeSkuSpec.value = selectedSpec
         return
       }
     }
-    if (!regions.some(({ value }) => value === activeSkuRegion.value)) {
-      activeSkuRegion.value = regions[0]?.value ?? ''
+    if (!specs.some(({ value }) => value === activeSkuSpec.value)) {
+      activeSkuSpec.value = specs[0]?.value ?? ''
     }
   }
 
-  const selectSkuRegion = (region: string) => {
-    if (!directSkuRegions.value.some(({ value }) => value === region)) return
-    activeSkuRegion.value = region
-    if (!selectedSku.value || getDirectSkuRegion(selectedSku.value) !== region) {
-      selectedSkuId.value = resolveDirectSkuIdForRegion(activeSkus.value, region, normalizeSkuId)
+  const selectSkuSpec = (spec: string) => {
+    if (!directSkuSpecs.value.some(({ value }) => value === spec)) return
+    activeSkuSpec.value = spec
+    if (!selectedSku.value || skuDisplayText(selectedSku.value).trim() !== spec) {
+      selectedSkuId.value = resolveDirectSkuIdForSpec(activeSkus.value, spec, {
+        getSpecName: skuDisplayText,
+        getPriceCents: getSkuComparablePriceCents,
+        normalizeId: normalizeSkuId,
+      })
     }
   }
 
@@ -475,26 +490,41 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     const rows = activeSkus.value
     if (rows.length === 0) {
       selectedSkuId.value = 0
-      syncActiveSkuRegion()
+      syncActiveSkuSpec()
       return
     }
     if (rows.length === 1) {
       selectedSkuId.value = normalizeSkuId(rows[0]?.id)
-      syncActiveSkuRegion()
+      syncActiveSkuSpec()
       return
     }
     if (rows.some((sku: any) => normalizeSkuId(sku?.id) === selectedSkuId.value)) {
-      syncActiveSkuRegion()
+      syncActiveSkuSpec()
       return
+    }
+    if (isDirect.value && directSkuSpecs.value.length > 0) {
+      const firstAvailable = rows.find((sku: any) => isSkuPurchasable(sku))
+      const defaultSpec = firstAvailable
+        ? skuDisplayText(firstAvailable).trim()
+        : (directSkuSpecs.value[0]?.value ?? '')
+      if (defaultSpec) {
+        selectedSkuId.value = resolveDirectSkuIdForSpec(rows, defaultSpec, {
+          getSpecName: skuDisplayText,
+          getPriceCents: getSkuComparablePriceCents,
+          normalizeId: normalizeSkuId,
+        })
+        syncActiveSkuSpec()
+        return
+      }
     }
     const firstAvailable = rows.find((sku: any) => isSkuPurchasable(sku))
     if (firstAvailable) {
       selectedSkuId.value = normalizeSkuId(firstAvailable?.id)
-      syncActiveSkuRegion()
+      syncActiveSkuSpec()
       return
     }
     selectedSkuId.value = normalizeSkuId(rows[0]?.id)
-    syncActiveSkuRegion()
+    syncActiveSkuSpec()
   }
 
   const selectedCartQuantity = () => {
@@ -660,7 +690,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
       console.error('Failed to load product:', error)
       product.value = null
       selectedSkuId.value = 0
-      activeSkuRegion.value = ''
+      activeSkuSpec.value = ''
     } finally {
       loading.value = false
     }
@@ -770,8 +800,8 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     ensureMemberLevels()
   })
 
-  watch(directSkuRegions, () => {
-    syncActiveSkuRegion()
+  watch(directSkuSpecs, () => {
+    syncActiveSkuSpec()
   })
 
   watch(
@@ -808,8 +838,8 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     formatPromotionRule, formatWholesaleTier, formatRelatedPostDate,
     normalizeSkuId,
     // 状态
-    loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, activeSkuRegion, quantity, purchaseWarning,
-    activeSkus, directSkuRegions, visibleSkus, selectedSku,
+    loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
+    activeSkus, directSkuSpecs, visibleSkus, selectedSku,
     // 价格计算
     selectedSkuMemberPrice, hasMemberPrice,
     hasSelectedSkuWholesalePrice, selectedSkuWholesaleFinalIsMember, selectedSkuWholesaleFinalPrice,
@@ -817,7 +847,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     selectedSkuPromotionPrice, selectedSkuPromotionFinalIsMember, selectedSkuPromotionFinalPrice,
     showSelectedSkuMemberBadge,
     // SKU / 库存 / 数量
-    isSkuPurchasable, isLowestPriceSku, skuDisplayText, skuStockText, skuStockBadgeClass, selectSkuRegion,
+    isSkuPurchasable, isLowestPriceSku, skuDisplayText, skuButtonLabel, skuStockText, skuStockBadgeClass, selectSkuSpec,
     quantityEffectiveLimit, quantityEffectiveMin, handleQuantityInput,
     // 购买能力
     purchaseType, requiresLogin, requiresSKUSelection, canPurchase, cannotPurchaseReason,

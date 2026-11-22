@@ -3,13 +3,18 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   buildDirectSkuRegions,
+  buildDirectSkuSpecs,
   directCheckoutRestriction,
   filterDirectSkusByRegion,
+  filterDirectSkusBySpec,
   findLowestPriceDirectSkuIds,
+  formatDirectSkuRegionLabel,
   getDirectSkuRegion,
   GPT_DIRECT,
   isDirectSkuAvailable,
   resolveDirectSkuIdForRegion,
+  resolveDirectSkuIdForSpec,
+  sortDirectSkusByPrice,
   UNKNOWN_DIRECT_SKU_REGION,
 } from '../src/utils/directPurchase.ts'
 import { resolveCardDisplayPrice } from '../src/utils/productPricing.ts'
@@ -136,15 +141,16 @@ test('resolveDirectSkuIdForRegion prefers the first available SKU in the selecte
   assert.equal(resolveDirectSkuIdForRegion(skus, 'GB', normalize), 0)
 })
 
-test('Classic and Vault product detail pages render direct SKU region tabs, verbatim spec names, and lowest-price badge', () => {
+test('Classic and Vault product detail pages render direct SKU spec tabs, region buttons, and lowest-price badge', () => {
   for (const view of [
     'views/ProductDetail.vue',
     'templates/vault/ProductDetail.vue',
   ]) {
     const source = readFileSync(new URL(`../src/${view}`, import.meta.url), 'utf8')
-    assert.match(source, /directSkuRegions\.length/, view)
-    assert.match(source, /selectSkuRegion\(region\.value\)/, view)
+    assert.match(source, /directSkuSpecs\.length/, view)
+    assert.match(source, /selectSkuSpec\(spec\.value\)/, view)
     assert.match(source, /v-for="sku in visibleSkus"/, view)
+    assert.match(source, /skuButtonLabel\(sku\)/, view)
     assert.match(source, /isLowestPriceSku\(sku\)/, view)
     assert.match(source, /directPurchase\.lowestPriceTag/, view)
     assert.doesNotMatch(source, /skuStockText\(sku\)/, view)
@@ -155,6 +161,32 @@ test('Classic and Vault product detail pages render direct SKU region tabs, verb
     assert.ok(data.directPurchase.unknownRegion, `${locale}: unknownRegion`)
     assert.ok(data.directPurchase.lowestPriceTag, `${locale}: lowestPriceTag`)
   }
+})
+
+test('direct SKU spec tabs group regions, sort available cheapest first, and localize region labels', () => {
+  const skus = [
+    { ...availableSku, id: 1, price_amount: '140.00', spec_values: { plan: 'plus', country: 'US', 'zh-CN': 'Plus' } },
+    { ...availableSku, id: 2, stock_status: 'out_of_stock', price_amount: '60.00', spec_values: { plan: 'plus', country: 'NG', 'zh-CN': 'Plus' } },
+    { ...availableSku, id: 3, price_amount: '100.00', spec_values: { plan: 'plus', country: 'PH', 'zh-CN': 'Plus' } },
+    { ...availableSku, id: 4, price_amount: '750.00', spec_values: { plan: 'pro', country: 'US', 'zh-CN': 'Pro' } },
+    { ...availableSku, id: 5, price_amount: '800.00', spec_values: { plan: 'pro', country: 'PH', 'zh-CN': 'Pro' } },
+  ]
+  const getSpecName = (sku: (typeof skus)[number]) => resolveLocalizedSpecName(sku.spec_values, 'zh-CN')
+  const normalize = (id: unknown) => Number(id) || 0
+
+  assert.deepEqual(buildDirectSkuSpecs(skus, getSpecName), [
+    { value: 'Plus', label: 'Plus' },
+    { value: 'Pro', label: 'Pro' },
+  ])
+  assert.deepEqual(
+    sortDirectSkusByPrice(filterDirectSkusBySpec(skus, 'Plus', getSpecName)).map((sku) => sku.id),
+    [3, 1, 2],
+  )
+  assert.equal(resolveDirectSkuIdForSpec(skus, 'Plus', { getSpecName, normalizeId: normalize }), 3)
+  assert.equal(resolveDirectSkuIdForSpec(skus, 'Pro', { getSpecName, normalizeId: normalize }), 4)
+  assert.equal(resolveDirectSkuIdForSpec(skus, 'Unknown', { getSpecName, normalizeId: normalize }), 0)
+  assert.equal(formatDirectSkuRegionLabel('US', 'zh-CN', '未指定地区'), new Intl.DisplayNames(['zh-CN'], { type: 'region' }).of('US'))
+  assert.equal(formatDirectSkuRegionLabel(UNKNOWN_DIRECT_SKU_REGION, 'zh-CN', '未指定地区'), '未指定地区')
 })
 
 test('localized SKU spec names are extracted verbatim even when mixed with direct metadata', () => {

@@ -9,6 +9,11 @@ export interface DirectSkuRegionOption {
   label: string
 }
 
+export interface DirectSkuSpecOption {
+  value: string
+  label: string
+}
+
 // Older checkout drafts and storefront APIs used a provider-prefixed value.
 export const isDirectFulfillmentType = (type: unknown): boolean =>
   typeof type === 'string' && (type === GPT_DIRECT || type.endsWith(`_${GPT_DIRECT}`))
@@ -20,23 +25,29 @@ export const getDirectSkuRegion = (sku?: {
   return raw || UNKNOWN_DIRECT_SKU_REGION
 }
 
+export const formatDirectSkuRegionLabel = (
+  region: string,
+  locale: string,
+  unknownLabel: string,
+): string => {
+  if (!region || region === UNKNOWN_DIRECT_SKU_REGION) return unknownLabel
+  if (!/^[A-Z]{2}$/.test(region)) return region
+  try {
+    return new Intl.DisplayNames([locale], { type: 'region' }).of(region) || region
+  } catch {
+    return region
+  }
+}
+
 export const buildDirectSkuRegions = (
   skus: readonly { spec_values?: Record<string, unknown> | null }[],
   locale: string,
   unknownLabel: string,
 ): DirectSkuRegionOption[] => {
   const regions = new Set(skus.map((sku) => getDirectSkuRegion(sku)))
-  let displayNames: Intl.DisplayNames | null = null
-  try {
-    displayNames = new Intl.DisplayNames([locale], { type: 'region' })
-  } catch {
-    displayNames = null
-  }
   return Array.from(regions, (region) => ({
     value: region,
-    label: region === UNKNOWN_DIRECT_SKU_REGION
-      ? unknownLabel
-      : /^[A-Z]{2}$/.test(region) ? (displayNames?.of(region) || region) : region,
+    label: formatDirectSkuRegionLabel(region, locale, unknownLabel),
   }))
 }
 
@@ -44,6 +55,76 @@ export const filterDirectSkusByRegion = <T extends { spec_values?: Record<string
   skus: readonly T[],
   region: string,
 ): T[] => skus.filter((sku) => getDirectSkuRegion(sku) === region)
+
+export const buildDirectSkuSpecs = <T>(
+  skus: readonly T[],
+  getSpecName: (sku: T) => string,
+): DirectSkuSpecOption[] => {
+  const seen = new Set<string>()
+  const result: DirectSkuSpecOption[] = []
+  for (const sku of skus) {
+    const label = getSpecName(sku).trim()
+    if (!label || seen.has(label)) continue
+    seen.add(label)
+    result.push({ value: label, label })
+  }
+  return result
+}
+
+export const filterDirectSkusBySpec = <T>(
+  skus: readonly T[],
+  specName: string,
+  getSpecName: (sku: T) => string,
+): T[] => {
+  const target = specName.trim()
+  return skus.filter((sku) => getSpecName(sku).trim() === target)
+}
+
+export const sortDirectSkusByPrice = <T extends {
+  id?: unknown
+  is_active?: boolean
+  is_sold_out?: boolean
+  stock_status?: string
+  price_amount?: unknown
+}>(
+  skus: readonly T[],
+  getPriceCents?: (sku: T) => number | null,
+): T[] => {
+  const resolvePrice = getPriceCents ?? ((sku: T) => amountToCents(sku.price_amount))
+  return skus
+    .map((sku, index) => {
+      const cents = resolvePrice(sku)
+      return {
+        sku,
+        index,
+        available: isDirectSkuAvailable(sku) ? 0 : 1,
+        price: cents !== null && cents >= 0 ? cents : Number.POSITIVE_INFINITY,
+      }
+    })
+    .sort((a, b) => (a.available - b.available) || (a.price - b.price) || (a.index - b.index))
+    .map((entry) => entry.sku)
+}
+
+export const resolveDirectSkuIdForSpec = <T extends {
+  id?: unknown
+  is_active?: boolean
+  is_sold_out?: boolean
+  stock_status?: string
+  price_amount?: unknown
+}>(
+  skus: readonly T[],
+  specName: string,
+  options: {
+    getSpecName: (sku: T) => string
+    getPriceCents?: (sku: T) => number | null
+    normalizeId: (id: unknown) => number
+  },
+): number => {
+  const inSpec = filterDirectSkusBySpec(skus, specName, options.getSpecName)
+  if (inSpec.length === 0) return 0
+  const sorted = sortDirectSkusByPrice(inSpec, options.getPriceCents)
+  return options.normalizeId(sorted[0]?.id)
+}
 
 const isPositiveSkuId = (id: unknown): id is number =>
   typeof id === 'number' && Number.isSafeInteger(id) && id > 0

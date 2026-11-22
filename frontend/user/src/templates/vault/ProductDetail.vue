@@ -136,24 +136,24 @@
           <div v-if="activeSkus.length" class="my-5">
             <div class="mb-2.5 text-[13px] font-bold uppercase tracking-[0.04em] text-muted-foreground">{{ t('productDetail.skuTitle') }}</div>
             <div
-              v-if="directSkuRegions.length"
+              v-if="directSkuSpecs.length"
               role="tablist"
-              :aria-label="t('directPurchase.skuRegions')"
+              :aria-label="t('productDetail.skuTitle')"
               class="mb-3 flex flex-wrap gap-1.5"
             >
               <button
-                v-for="region in directSkuRegions"
-                :key="region.value"
+                v-for="spec in directSkuSpecs"
+                :key="spec.value"
                 type="button"
                 role="tab"
-                :aria-selected="activeSkuRegion === region.value"
+                :aria-selected="activeSkuSpec === spec.value"
                 class="inline-flex min-h-[34px] items-center rounded-full border px-3 py-1 text-xs font-bold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                :class="activeSkuRegion === region.value
+                :class="activeSkuSpec === spec.value
                   ? 'border-primary bg-primary text-white'
                   : 'border-hairline-strong bg-card text-muted-foreground hover:border-primary hover:text-primary'"
-                @click="selectSkuRegion(region.value)"
+                @click="selectSkuSpec(spec.value)"
               >
-                {{ region.label }}
+                {{ spec.label }}
               </button>
             </div>
             <div class="flex flex-wrap gap-2.5">
@@ -169,7 +169,7 @@
                 :disabled="!isSkuPurchasable(sku)"
                 @click="selectedSkuId = normalizeSkuId(sku.id)"
               >
-                <span>{{ skuDisplayText(sku) }}</span>
+                <span>{{ skuButtonLabel(sku) }}</span>
                 <span
                   v-if="isLowestPriceSku(sku)"
                   class="pointer-events-none absolute -top-2 right-1.5 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-sm dark:bg-emerald-500"
@@ -312,14 +312,14 @@ const {
   hasSkuPromotionPrice, getSkuPromotionSaveAmount,
   hasPromotionRules, getPromotionRules,
   formatPromotionRule, formatWholesaleTier, formatRelatedPostDate, normalizeSkuId,
-  loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, activeSkuRegion, quantity, purchaseWarning,
-  activeSkus, directSkuRegions, visibleSkus, selectedSku,
+  loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
+  activeSkus, directSkuSpecs, visibleSkus, selectedSku,
   selectedSkuMemberPrice, hasMemberPrice,
   hasSelectedSkuWholesalePrice, selectedSkuWholesaleFinalIsMember, selectedSkuWholesaleFinalPrice,
   selectedSkuWholesaleRules,
   selectedSkuPromotionPrice, selectedSkuPromotionFinalIsMember, selectedSkuPromotionFinalPrice,
   showSelectedSkuMemberBadge,
-  isSkuPurchasable, isLowestPriceSku, skuDisplayText, selectSkuRegion,
+  isSkuPurchasable, isLowestPriceSku, skuButtonLabel, selectSkuSpec,
   quantityEffectiveLimit, quantityEffectiveMin, handleQuantityInput,
   requiresLogin, requiresSKUSelection, canPurchase, cannotPurchaseReason,
   categoryName, images,
