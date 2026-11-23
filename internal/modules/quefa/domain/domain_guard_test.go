@@ -85,3 +85,93 @@ func TestParseCatalogPayload(t *testing.T) {
 		t.Fatalf("expected mode support")
 	}
 }
+
+func TestParseCatalogPayloadVariants(t *testing.T) {
+	raw := []byte(`{
+		"data": {
+			"items": [
+				{
+					"code": "gpt_plus_1m",
+					"name": "Plus 1M",
+					"pricing": {"supply_price_cents": 11500, "min_sale_price_cents": 12500, "currency": "CNY"},
+					"supports_platform_collect": true,
+					"supports_auto_recharge": true,
+					"status": "published"
+				},
+				{
+					"product_code": "paused_sku",
+					"title": "Paused",
+					"supply_price": null,
+					"status": "disabled"
+				}
+			]
+		}
+	}`)
+	products, err := ParseCatalogPayload(raw)
+	if err != nil {
+		t.Fatalf("ParseCatalogPayload variants failed: %v", err)
+	}
+	if len(products) != 2 {
+		t.Fatalf("want 2 products, got %d", len(products))
+	}
+	if products[0].ProductCode != "gpt_plus_1m" || products[0].SupplyPrice.StringFixed(2) != "115.00" || products[0].MinSalePrice.StringFixed(2) != "125.00" {
+		t.Fatalf("unexpected parsed product[0]: %+v", products[0])
+	}
+	if !products[0].SupportsMode(CollectionModePlatformCollect, DeliveryModeAutoRecharge) {
+		t.Fatalf("expected inferred mode support on product[0]")
+	}
+	if products[1].Available {
+		t.Fatalf("expected paused_sku to be unavailable")
+	}
+	shape := DescribePayloadShape([]byte(`{"ok":true,"catalog":[{"id":"x"}]}`))
+	if shape == "" || shape == "empty" || shape == "non-json" {
+		t.Fatalf("unexpected shape summary: %q", shape)
+	}
+
+	// Official OpenAPI 1.4.3 GET /v1/products payload including quote_required=true with 0.00 placeholder price.
+	official := []byte(`{
+		"data": [
+			{
+				"product_code": "chatgpt_plus_cdk_1m",
+				"name": "ChatGPT Plus 月卡",
+				"supply_price": "110.00",
+				"max_sale_price": "159.00",
+				"currency": "CNY",
+				"max_quantity": 1,
+				"available": true,
+				"fulfillment_mode": "cdk",
+				"quote_required": false,
+				"delivery_modes": ["auto_recharge", "cdk"],
+				"payment_country": "PH",
+				"payment_currency": "PHP"
+			},
+			{
+				"product_code": "chatgpt_plus_us_direct_1m",
+				"name": "ChatGPT Plus US 直充",
+				"supply_price": "0.00",
+				"max_sale_price": "0.00",
+				"currency": "CNY",
+				"max_quantity": 1,
+				"available": true,
+				"fulfillment_mode": "direct",
+				"quote_required": true,
+				"delivery_modes": ["auto_recharge"],
+				"payment_country": "US",
+				"payment_currency": "USD"
+			}
+		]
+	}`)
+	officialProducts, err := ParseCatalogPayload(official)
+	if err != nil {
+		t.Fatalf("official OpenAPI catalog parse failed: %v", err)
+	}
+	if len(officialProducts) != 2 {
+		t.Fatalf("want 2 products, got %d", len(officialProducts))
+	}
+	if !officialProducts[0].SupportsMode(CollectionModePlatformCollect, DeliveryModeAutoRecharge) {
+		t.Fatalf("expected fixed-price product to support platform_collect + auto_recharge")
+	}
+	if !officialProducts[1].QuoteRequired || officialProducts[1].SupportsMode(CollectionModePlatformCollect, DeliveryModeAutoRecharge) {
+		t.Fatalf("expected quote_required=true product to parse cleanly but remain blocked from fixed-price checkout: %+v", officialProducts[1])
+	}
+}

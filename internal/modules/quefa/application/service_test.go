@@ -32,6 +32,10 @@ func (g *stubGateway) CreateOrder(ctx context.Context, req quefacontract.CreateO
 	return g.createOrderFn(ctx, req, idem)
 }
 
+func (g *stubGateway) CreateOrderPaymentCode(ctx context.Context, id, idem string) (*quefacontract.PaymentCodeSnapshot, error) {
+	return nil, &quefacontract.APIError{StatusCode: 403, Code: "direct_payment_code_disabled", Category: "forbidden"}
+}
+
 func (g *stubGateway) GetOrder(ctx context.Context, id string) (*quefacontract.OrderSnapshot, error) {
 	return g.getOrderFn(ctx, id)
 }

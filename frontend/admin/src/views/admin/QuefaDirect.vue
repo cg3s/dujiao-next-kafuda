@@ -135,7 +135,7 @@ const loadAll = async () => {
       meta.catalog_last_error = catPayload.last_error_code || ''
     }
   } catch (err: any) {
-    notifyError(err?.message || t('quefa.loadFailed'))
+    if (!err?.__notified) notifyError(err?.message || t('quefa.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -177,7 +177,7 @@ const handleSave = async () => {
     }
     notifySuccess(t('quefa.saveSuccess'))
   } catch (err: any) {
-    notifyError(err?.message || t('quefa.saveFailed'))
+    if (!err?.__notified) notifyError(err?.message || t('quefa.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -190,7 +190,7 @@ const handleTest = async () => {
     const count = res.data?.data?.product_count ?? 0
     notifySuccess(t('quefa.testSuccess', { count }))
   } catch (err: any) {
-    notifyError(err?.message || t('quefa.testFailed'))
+    if (!err?.__notified) notifyError(err?.message || t('quefa.testFailed'))
   } finally {
     testing.value = false
   }
@@ -214,7 +214,7 @@ const handleSyncCatalog = async () => {
     }
     notifySuccess(t('quefa.syncSuccess'))
   } catch (err: any) {
-    notifyError(err?.message || t('quefa.syncFailed'))
+    if (!err?.__notified) notifyError(err?.message || t('quefa.syncFailed'))
   } finally {
     syncing.value = false
   }

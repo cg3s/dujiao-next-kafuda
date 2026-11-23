@@ -4,14 +4,39 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/dujiao-next/internal/logger"
 	quefacontract "github.com/dujiao-next/internal/modules/quefa/contract"
 	quefadomain "github.com/dujiao-next/internal/modules/quefa/domain"
 	"github.com/shopspring/decimal"
 )
+
+// CatalogParseError preserves the underlying domain catalog error plus a secret-free payload shape summary.
+type CatalogParseError struct {
+	Err   error
+	Shape string
+}
+
+func (e *CatalogParseError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Shape != "" {
+		return fmt.Sprintf("%v (%s)", e.Err, e.Shape)
+	}
+	return fmt.Sprint(e.Err)
+}
+
+func (e *CatalogParseError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 // CatalogView is returned to admin UI for binding SKUs and inspecting sync health.
 type CatalogView struct {
@@ -94,13 +119,16 @@ func (s *CatalogService) Sync(ctx context.Context) (*CatalogView, error) {
 	raw, _, err := snap.Gateway.GetProducts(ctx)
 	if err != nil {
 		errCode := classifySyncErrorCode(err)
+		logger.Warnw("quefa_catalog_sync_request_failed", "error_code", errCode, "error", err)
 		_ = s.recordSyncError(ctx, errCode, now)
 		return nil, err
 	}
 	products, err := quefadomain.ParseCatalogPayload(raw)
 	if err != nil {
+		shape := quefadomain.DescribePayloadShape(raw)
+		logger.Warnw("quefa_catalog_sync_parse_failed", "shape", shape, "error", err)
 		_ = s.recordSyncError(ctx, "invalid_catalog", now)
-		return nil, err
+		return nil, &CatalogParseError{Err: err, Shape: shape}
 	}
 	parsedBytes, err := json.Marshal(products)
 	if err != nil {

@@ -172,14 +172,43 @@ func SignRequest(secret, canonical string) string {
 
 // VerifyWebhookSignature validates HMAC_SHA256(webhook_secret, timestamp + "." + RAW_BODY)
 // with a replay-protection timestamp skew check.
+// Supports the official Quefa header format "t=<timestamp>,v1=<hex>" (requiring t == timestamp)
+// as well as plain hex / "sha256=<hex>".
 func VerifyWebhookSignature(secret, timestamp string, rawBody []byte, signature string, now time.Time, maxSkew time.Duration) error {
 	secret = strings.TrimSpace(secret)
 	timestamp = strings.TrimSpace(timestamp)
-	signature = strings.ToLower(strings.TrimSpace(signature))
-	signature = strings.TrimPrefix(signature, "sha256=")
-	if secret == "" || timestamp == "" || signature == "" {
+	rawSig := strings.TrimSpace(signature)
+	if secret == "" || timestamp == "" || rawSig == "" {
 		return ErrWebhookSignatureMissing
 	}
+
+	var sigHex string
+	if strings.Contains(rawSig, "v1=") {
+		var sigTS string
+		for _, part := range strings.Split(rawSig, ",") {
+			kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+			if len(kv) != 2 {
+				continue
+			}
+			k := strings.ToLower(strings.TrimSpace(kv[0]))
+			v := strings.TrimSpace(kv[1])
+			switch k {
+			case "t":
+				sigTS = v
+			case "v1":
+				sigHex = strings.ToLower(v)
+			}
+		}
+		if sigHex == "" || (sigTS != "" && sigTS != timestamp) {
+			return ErrWebhookSignatureInvalid
+		}
+	} else {
+		sigHex = strings.ToLower(strings.TrimPrefix(rawSig, "sha256="))
+	}
+	if sigHex == "" {
+		return ErrWebhookSignatureMissing
+	}
+
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil || ts <= 0 {
 		return ErrWebhookTimestampInvalid
@@ -200,7 +229,7 @@ func VerifyWebhookSignature(secret, timestamp string, rawBody []byte, signature 
 	_, _ = mac.Write([]byte("."))
 	_, _ = mac.Write(rawBody)
 	expected := hex.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(expected), []byte(signature)) {
+	if !hmac.Equal([]byte(expected), []byte(sigHex)) {
 		return ErrWebhookSignatureInvalid
 	}
 	return nil
@@ -244,6 +273,41 @@ func (c *Client) CreateOrder(ctx context.Context, req quefacontract.CreateOrderR
 	return snap, nil
 }
 
+// CreateOrderPaymentCode calls POST /v1/orders/{order_id}/payment-code with empty JSON object "{}"
+// to obtain the official white-label Alipay payment_code and qr_image_data_url without exposing tibo.ink.
+func (c *Client) CreateOrderPaymentCode(ctx context.Context, upstreamOrderID string, idempotencyKey string) (*quefacontract.PaymentCodeSnapshot, error) {
+	id := strings.TrimSpace(upstreamOrderID)
+	if id == "" {
+		return nil, &quefacontract.APIError{Category: "invalid_response"}
+	}
+	path := ordersPath + "/" + url.PathEscape(id) + "/payment-code"
+	body, statusCode, hints, err := c.do(ctx, http.MethodPost, path, nil, []byte("{}"), idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	m, err := unwrapData(body)
+	if err != nil {
+		return nil, &quefacontract.APIError{StatusCode: statusCode, Category: "invalid_response", Hints: hints}
+	}
+	payCode := readString(m, "payment_code")
+	qrDataURL := readString(m, "qr_image_data_url")
+	if payCode == "" && qrDataURL == "" {
+		return nil, &quefacontract.APIError{StatusCode: statusCode, Category: "invalid_response", Hints: hints}
+	}
+	return &quefacontract.PaymentCodeSnapshot{
+		OrderID:         readString(m, "order_id"),
+		MerchantOrderNo: readString(m, "merchant_order_no"),
+		Amount:          readDecimalPtr(m, "amount"),
+		Currency:        strings.ToUpper(readString(m, "currency")),
+		PaymentStatus:   strings.ToLower(readString(m, "payment_status")),
+		PaymentCodeType: strings.ToLower(readString(m, "payment_code_type")),
+		PaymentCode:     payCode,
+		QRImageDataURL:  qrDataURL,
+		ExpiresAt:       readTimePtr(m, "expires_at"),
+		Hints:           hints,
+	}, nil
+}
+
 func (c *Client) GetOrder(ctx context.Context, upstreamOrderID string) (*quefacontract.OrderSnapshot, error) {
 	id := strings.TrimSpace(upstreamOrderID)
 	if id == "" {
@@ -268,7 +332,8 @@ func (c *Client) LookupOrderByMerchantNo(ctx context.Context, merchantOrderNo st
 		return nil, &quefacontract.APIError{Category: "invalid_response"}
 	}
 	q := url.Values{}
-	q.Set("merchant_order_no", no)
+	q.Set("search", no)
+	q.Set("limit", "20")
 	body, statusCode, hints, err := c.do(ctx, http.MethodGet, ordersPath, q, nil, "")
 	if err != nil {
 		return nil, err
@@ -339,18 +404,37 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, 0, quefacontract.PollHints{}, &quefacontract.APIError{Category: "network_error", Retryable: true}
+		return nil, 0, quefacontract.PollHints{}, &quefacontract.APIError{
+			Category:  "network_error",
+			Message:   sanitizeDiag(err.Error()),
+			Retryable: true,
+		}
 	}
 	defer resp.Body.Close()
 
 	hints := parsePollHints(resp.Header, c.now())
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		return nil, resp.StatusCode, hints, &quefacontract.APIError{StatusCode: resp.StatusCode, Category: "redirect_blocked"}
+		loc := sanitizeDiag(resp.Header.Get("Location"))
+		return nil, resp.StatusCode, hints, &quefacontract.APIError{
+			StatusCode: resp.StatusCode,
+			Category:   "redirect_blocked",
+			Message:    loc,
+			Hints:      hints,
+		}
 	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil || len(data) > maxResponseBytes {
-		return nil, resp.StatusCode, hints, &quefacontract.APIError{StatusCode: resp.StatusCode, Category: "invalid_response", Hints: hints}
+		msg := "response body too large"
+		if err != nil {
+			msg = sanitizeDiag(err.Error())
+		}
+		return nil, resp.StatusCode, hints, &quefacontract.APIError{
+			StatusCode: resp.StatusCode,
+			Category:   "invalid_response",
+			Message:    msg,
+			Hints:      hints,
+		}
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -390,11 +474,12 @@ func parsePollHints(h http.Header, now time.Time) quefacontract.PollHints {
 }
 
 func classifyError(status int, body []byte, hints quefacontract.PollHints) *quefacontract.APIError {
-	code := extractErrorCode(body)
+	code, msg := extractErrorCodeAndMessage(body)
 	lowerCode := strings.ToLower(code)
 	apiErr := &quefacontract.APIError{
 		StatusCode: status,
 		Code:       code,
+		Message:    sanitizeDiag(msg),
 		Hints:      hints,
 	}
 	switch {
@@ -421,26 +506,52 @@ func classifyError(status int, body []byte, hints quefacontract.PollHints) *quef
 	return apiErr
 }
 
-func extractErrorCode(body []byte) string {
+func extractErrorCodeAndMessage(body []byte) (string, string) {
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return ""
+		return "", ""
 	}
+	var code, msg string
 	for _, key := range []string{"code", "error_code", "result_code", "error"} {
 		if v, ok := raw[key]; ok {
 			switch val := v.(type) {
 			case string:
-				if trimmed := strings.TrimSpace(val); trimmed != "" {
-					return trimmed
+				if code == "" {
+					if trimmed := strings.TrimSpace(val); trimmed != "" {
+						code = trimmed
+					}
 				}
 			case map[string]any:
-				if nested, ok := val["code"].(string); ok && strings.TrimSpace(nested) != "" {
-					return strings.TrimSpace(nested)
+				if code == "" {
+					if nested, ok := val["code"].(string); ok && strings.TrimSpace(nested) != "" {
+						code = strings.TrimSpace(nested)
+					}
+				}
+				if msg == "" {
+					if nested, ok := val["message"].(string); ok && strings.TrimSpace(nested) != "" {
+						msg = strings.TrimSpace(nested)
+					}
 				}
 			}
 		}
 	}
-	return ""
+	if msg == "" {
+		for _, key := range []string{"message", "msg", "detail"} {
+			if s, ok := raw[key].(string); ok && strings.TrimSpace(s) != "" {
+				msg = strings.TrimSpace(s)
+				break
+			}
+		}
+	}
+	return code, msg
+}
+
+func sanitizeDiag(s string) string {
+	s = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(s, "\r", " "), "\n", " "))
+	if len(s) > 200 {
+		return s[:200]
+	}
+	return s
 }
 
 func unwrapData(raw []byte) (map[string]json.RawMessage, error) {
@@ -469,36 +580,73 @@ func parseOrderSnapshot(raw []byte) (*quefacontract.OrderSnapshot, error) {
 		return nil, err
 	}
 	orderID := readString(m, "order_id", "id")
-	status := strings.ToLower(readString(m, "status"))
-	if orderID == "" && status == "" {
+	paymentStatus := strings.ToLower(readString(m, "payment_status"))
+	fulfillmentStatus := strings.ToLower(readString(m, "fulfillment_status"))
+	rawStatus := strings.ToLower(readString(m, "status"))
+	if orderID == "" && paymentStatus == "" && rawStatus == "" {
 		return nil, fmt.Errorf("missing order_id and status")
 	}
+
+	// Derive effective lifecycle status from official OpenAPI payment_status + fulfillment_status.
+	status := rawStatus
+	if paymentStatus != "" {
+		switch paymentStatus {
+		case "refunded", "partially_refunded", "expired", "closed", "pending":
+			status = paymentStatus
+		case "paid":
+			if fulfillmentStatus != "" {
+				status = fulfillmentStatus
+			} else {
+				status = "paid"
+			}
+		default:
+			if status == "" {
+				status = paymentStatus
+			}
+		}
+	}
+
+	latestRedemption := readString(m, "latest_redemption_id", "redemption_id")
+	if latestRedemption == "" {
+		if arRaw, ok := m["auto_recharge"]; ok && len(bytes.TrimSpace(arRaw)) > 0 && bytes.TrimSpace(arRaw)[0] == '{' {
+			var ar map[string]json.RawMessage
+			if json.Unmarshal(arRaw, &ar) == nil {
+				latestRedemption = readString(ar, "redemption_id")
+			}
+		}
+	}
+
 	snap := &quefacontract.OrderSnapshot{
-		OrderID:              orderID,
-		MerchantOrderNo:      readString(m, "merchant_order_no"),
-		ProductCode:          readString(m, "product_code"),
-		Status:               status,
-		ResultCode:           readString(m, "result_code"),
-		CollectionMode:       strings.ToLower(readString(m, "collection_mode")),
-		DeliveryMode:         strings.ToLower(readString(m, "delivery_mode")),
-		SaleAmount:           readDecimalPtr(m, "sale_amount"),
-		PaidAmount:           readDecimalPtr(m, "paid_amount", "pay_amount"),
-		Currency:             strings.ToUpper(readString(m, "currency", "settlement_currency")),
-		PayURL:               readString(m, "pay_url", "payment_url", "cashier_url"),
-		QRCode:               readString(m, "qr_code", "qrcode", "payment_qr"),
-		PayExpiresAt:         readTimePtr(m, "pay_expires_at", "expires_at"),
-		FulfillmentURL:       readString(m, "fulfillment_url"),
-		LatestRedemptionID:   readString(m, "latest_redemption_id", "redemption_id"),
-		AttemptNo:            readInt(m, "attempt_no"),
-		ProgressVersion:      readInt64(m, "progress_version"),
-		ProgressStage:        readString(m, "progress_stage"),
-		ProgressMessage:      readString(m, "progress_message", "message"),
-		ProgressUpdatedAt:    readTimePtr(m, "progress_updated_at"),
-		RetryAllowed:         readBool(m, "retry_allowed"),
-		NextAction:           strings.ToLower(readString(m, "next_action")),
-		RecoveryAction:       strings.ToLower(readString(m, "recovery_action")),
-		RefundRef:            readString(m, "refund_ref", "refund_id"),
-		ProcurementRefundRef: readString(m, "procurement_refund_ref"),
+		OrderID:                   orderID,
+		MerchantOrderNo:           readString(m, "merchant_order_no"),
+		ProductCode:               readString(m, "product_code"),
+		Status:                    status,
+		PaymentStatus:             paymentStatus,
+		FulfillmentStatus:         fulfillmentStatus,
+		FulfillmentPaused:         readBool(m, "fulfillment_paused"),
+		SyncMark:                  strings.ToLower(readString(m, "sync_mark")),
+		FallbackRechargeAvailable: readBool(m, "fallback_recharge_available"),
+		ResultCode:                readString(m, "result_code", "fulfillment_failure_code"),
+		CollectionMode:            strings.ToLower(readString(m, "collection_mode")),
+		DeliveryMode:              strings.ToLower(readString(m, "delivery_mode")),
+		SaleAmount:                readDecimalPtr(m, "sale_amount"),
+		PaidAmount:                readDecimalPtr(m, "paid_amount", "pay_amount"),
+		Currency:                  strings.ToUpper(readString(m, "currency", "settlement_currency")),
+		PayURL:                    readString(m, "pay_url", "payment_url", "cashier_url", "qr_payload"),
+		QRCode:                    readString(m, "payment_code", "qr_code", "qrcode", "payment_qr", "qr_image_data_url"),
+		PayExpiresAt:              readTimePtr(m, "pay_expires_at", "expires_at"),
+		FulfillmentURL:            readString(m, "fulfillment_url"),
+		LatestRedemptionID:        latestRedemption,
+		AttemptNo:                 readInt(m, "attempt_no"),
+		ProgressVersion:           readInt64(m, "progress_version"),
+		ProgressStage:             readString(m, "progress_stage"),
+		ProgressMessage:           readString(m, "progress_message", "fulfillment_message", "message"),
+		ProgressUpdatedAt:         readTimePtr(m, "progress_updated_at"),
+		RetryAllowed:              readBool(m, "retry_allowed"),
+		NextAction:                strings.ToLower(readString(m, "next_action", "fulfillment_next_action")),
+		RecoveryAction:            strings.ToLower(readString(m, "recovery_action")),
+		RefundRef:                 readString(m, "refund_ref", "refund_id"),
+		ProcurementRefundRef:      readString(m, "procurement_refund_ref"),
 	}
 	return snap, nil
 }

@@ -458,11 +458,14 @@ func (s *ConfigService) TestConnection(ctx context.Context, patch *ConfigPatch) 
 	}
 	raw, _, err := gw.GetProducts(ctx)
 	if err != nil {
+		logger.Warnw("quefa_test_connection_failed", "base_url", cfg.APIBaseURL, "error", err)
 		return 0, err
 	}
 	products, err := quefadomain.ParseCatalogPayload(raw)
 	if err != nil {
-		return 0, err
+		shape := quefadomain.DescribePayloadShape(raw)
+		logger.Warnw("quefa_test_catalog_parse_failed", "base_url", cfg.APIBaseURL, "shape", shape, "error", err)
+		return 0, &CatalogParseError{Err: err, Shape: shape}
 	}
 	return len(products), nil
 }

@@ -95,9 +95,10 @@ type AdminOrderStatus struct {
 	CompletedAt          *time.Time `json:"completed_at,omitempty"`
 }
 
-// WebhookEnvelope is the parsed Quefa webhook JSON payload.
+// WebhookEnvelope is the parsed Quefa webhook JSON payload (supports both official nested data and flat payloads).
 type WebhookEnvelope struct {
 	EventID         string `json:"event_id"`
+	Event           string `json:"event"`
 	EventType       string `json:"event_type"`
 	Type            string `json:"type"`
 	OrderID         string `json:"order_id"`
@@ -107,6 +108,9 @@ type WebhookEnvelope struct {
 }
 
 func (e WebhookEnvelope) EffectiveType() string {
+	if e.Event != "" {
+		return e.Event
+	}
 	if e.EventType != "" {
 		return e.EventType
 	}

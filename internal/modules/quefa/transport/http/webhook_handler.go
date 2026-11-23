@@ -59,8 +59,51 @@ func (h *WebhookHandler) Handle(c *gin.Context) {
 		return
 	}
 
-	var env quefacontract.WebhookEnvelope
-	if err := json.Unmarshal(rawBody, &env); err != nil || strings.TrimSpace(env.EventID) == "" {
+	var rawPayload struct {
+		quefacontract.WebhookEnvelope
+		Data struct {
+			Event           string `json:"event"`
+			OrderID         string `json:"order_id"`
+			MerchantOrderNo string `json:"merchant_order_no"`
+			RedemptionID    string `json:"redemption_id"`
+			FulfillmentID   string `json:"fulfillment_id"`
+			RefundRef       string `json:"refund_ref"`
+			RefundID        string `json:"refund_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rawBody, &rawPayload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "invalid_event_payload"})
+		return
+	}
+	env := rawPayload.WebhookEnvelope
+	if strings.TrimSpace(env.EventID) == "" {
+		env.EventID = firstHeader(c, "X-Quefa-Event-Id", "X-Webhook-Event-Id")
+	}
+	if strings.TrimSpace(env.Event) == "" {
+		env.Event = firstHeader(c, "X-Quefa-Event", "X-Webhook-Event")
+	}
+	if strings.TrimSpace(env.Event) == "" {
+		env.Event = strings.TrimSpace(rawPayload.Data.Event)
+	}
+	if strings.TrimSpace(env.OrderID) == "" {
+		env.OrderID = strings.TrimSpace(rawPayload.Data.OrderID)
+	}
+	if strings.TrimSpace(env.MerchantOrderNo) == "" {
+		env.MerchantOrderNo = strings.TrimSpace(rawPayload.Data.MerchantOrderNo)
+	}
+	if strings.TrimSpace(env.RedemptionID) == "" {
+		env.RedemptionID = strings.TrimSpace(rawPayload.Data.RedemptionID)
+	}
+	if strings.TrimSpace(env.RedemptionID) == "" {
+		env.RedemptionID = strings.TrimSpace(rawPayload.Data.FulfillmentID)
+	}
+	if strings.TrimSpace(env.RefundRef) == "" {
+		env.RefundRef = strings.TrimSpace(rawPayload.Data.RefundRef)
+	}
+	if strings.TrimSpace(env.RefundRef) == "" {
+		env.RefundRef = strings.TrimSpace(rawPayload.Data.RefundID)
+	}
+	if strings.TrimSpace(env.EventID) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "invalid_event_payload"})
 		return
 	}

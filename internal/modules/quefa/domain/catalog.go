@@ -35,15 +35,20 @@ type CatalogProduct struct {
 	Title           string          `json:"title"`
 	SupplyPrice     decimal.Decimal `json:"supply_price"`
 	MinSalePrice    decimal.Decimal `json:"min_sale_price"`
+	QuoteRequired   bool            `json:"quote_required"`
 	Currency        string          `json:"currency"`
+	FulfillmentMode string          `json:"fulfillment_mode,omitempty"`
+	PaymentCountry  string          `json:"payment_country,omitempty"`
+	PaymentCurrency string          `json:"payment_currency,omitempty"`
+	MaxQuantity     int             `json:"max_quantity,omitempty"`
 	CollectionModes []string        `json:"collection_modes"`
 	DeliveryModes   []string        `json:"delivery_modes"`
 	Available       bool            `json:"available"`
 }
 
-// SupportsMode checks whether this catalog product supports the given collection and delivery modes.
+// SupportsMode checks whether this catalog product supports fixed-price sales for the given collection and delivery modes.
 func (p CatalogProduct) SupportsMode(collectionMode, deliveryMode string) bool {
-	if !p.Available {
+	if !p.Available || p.QuoteRequired || p.SupplyPrice.LessThanOrEqual(decimal.Zero) {
 		return false
 	}
 	if len(p.CollectionModes) > 0 && !containsFold(p.CollectionModes, collectionMode) {
@@ -104,7 +109,7 @@ func ParseCatalogPayload(raw []byte) ([]CatalogProduct, error) {
 			return nil, ErrCatalogInvalid
 		}
 		var nested json.RawMessage
-		for _, key := range []string{"products", "items", "data"} {
+		for _, key := range []string{"products", "items", "list", "catalog", "records", "results", "data"} {
 			if candidate, ok := env[key]; ok && len(candidate) > 0 {
 				nested = candidate
 				break
@@ -119,7 +124,7 @@ func ParseCatalogPayload(raw []byte) ([]CatalogProduct, error) {
 			if err := json.Unmarshal(nested, &inner); err != nil {
 				return nil, ErrCatalogInvalid
 			}
-			for _, key := range []string{"products", "items", "list"} {
+			for _, key := range []string{"products", "items", "list", "catalog", "records", "results", "data"} {
 				if candidate, ok := inner[key]; ok && len(candidate) > 0 {
 					nested = candidate
 					break
@@ -157,56 +162,151 @@ func ParseCatalogPayload(raw []byte) ([]CatalogProduct, error) {
 	return out, nil
 }
 
+// DescribePayloadShape returns a secret-free structural summary (JSON keys only) for diagnostics.
+func DescribePayloadShape(raw []byte) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return "empty"
+	}
+	if strings.HasPrefix(trimmed, "[") {
+		var list []json.RawMessage
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return "array(invalid)"
+		}
+		if len(list) == 0 {
+			return "array(len=0)"
+		}
+		return "array(len=" + decimal.NewFromInt(int64(len(list))).String() + ", item_keys=[" + strings.Join(objectKeys(list[0]), ",") + "])"
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		keys := objectKeys(raw)
+		var env map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &env); err == nil {
+			for _, k := range []string{"products", "items", "list", "catalog", "records", "results", "data"} {
+				if sub, ok := env[k]; ok {
+					st := strings.TrimSpace(string(sub))
+					if strings.HasPrefix(st, "[") {
+						var list []json.RawMessage
+						if json.Unmarshal(sub, &list) == nil && len(list) > 0 {
+							return "object(keys=[" + strings.Join(keys, ",") + "], " + k + "_item_keys=[" + strings.Join(objectKeys(list[0]), ",") + "])"
+						}
+					} else if strings.HasPrefix(st, "{") {
+						return "object(keys=[" + strings.Join(keys, ",") + "], " + k + "_keys=[" + strings.Join(objectKeys(sub), ",") + "])"
+					}
+				}
+			}
+		}
+		return "object(keys=[" + strings.Join(keys, ",") + "])"
+	}
+	return "non-json"
+}
+
+func objectKeys(raw json.RawMessage) []string {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if len(keys) > 20 {
+		keys = keys[:20]
+	}
+	return keys
+}
+
 func parseCatalogProduct(raw json.RawMessage) (CatalogProduct, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return CatalogProduct{}, ErrCatalogInvalid
 	}
+	// Flatten optional nested pricing/price_info objects as fallback lookup sources.
+	lookup := make(map[string]json.RawMessage, len(fields)+8)
+	for _, nestedKey := range []string{"pricing", "price_info", "price_detail"} {
+		if sub, ok := fields[nestedKey]; ok && len(sub) > 0 {
+			var subMap map[string]json.RawMessage
+			if json.Unmarshal(sub, &subMap) == nil {
+				for k, v := range subMap {
+					if _, exists := fields[k]; !exists {
+						lookup[k] = v
+					}
+				}
+			}
+		}
+	}
+	for k, v := range fields {
+		lookup[k] = v
+	}
 
-	code := firstNonEmptyString(fields, "product_code", "code", "sku_code")
+	code := firstNonEmptyString(lookup, "product_code", "code", "sku_code", "sku", "product_id", "id")
 	if code == "" || len(code) > 128 {
 		return CatalogProduct{}, ErrCatalogInvalid
 	}
-	title := firstNonEmptyString(fields, "title", "name", "product_name")
+	title := firstNonEmptyString(lookup, "title", "name", "product_name", "display_name")
 	if title == "" {
 		title = code
 	}
 
-	supplyPrice, ok := firstDecimal(fields, "supply_price", "cost_price", "wholesale_price", "price")
-	if !ok || supplyPrice.LessThanOrEqual(decimal.Zero) {
+	available := resolveProductAvailability(lookup)
+	quoteRequired, _ := readBoolField(lookup, "quote_required")
+	fulfillmentMode := strings.ToLower(firstNonEmptyString(lookup, "fulfillment_mode"))
+	paymentCountry := strings.ToUpper(firstNonEmptyString(lookup, "payment_country"))
+	paymentCurrency := strings.ToUpper(firstNonEmptyString(lookup, "payment_currency"))
+	var maxQuantity int
+	if mqRaw, ok := lookup["max_quantity"]; ok && len(mqRaw) > 0 {
+		_ = json.Unmarshal(mqRaw, &maxQuantity)
+	}
+
+	supplyPrice, ok := firstDecimal(lookup,
+		"supply_price", "cost_price", "wholesale_price", "agent_price", "partner_price",
+		"supply_amount", "cost_amount", "unit_price", "price", "sale_price", "sell_price", "base_price",
+	)
+	if !ok {
+		if cents, centsOK := firstDecimal(lookup,
+			"supply_price_cents", "cost_price_cents", "wholesale_price_cents", "agent_price_cents",
+			"unit_price_cents", "price_cents", "cost_cents",
+		); centsOK {
+			supplyPrice = cents.Div(decimal.NewFromInt(100))
+			ok = true
+		}
+	}
+	if !ok || supplyPrice.IsNegative() {
+		if (!available || quoteRequired) && !ok {
+			supplyPrice = decimal.Zero
+		} else {
+			return CatalogProduct{}, ErrCatalogInvalid
+		}
+	}
+	if supplyPrice.IsZero() && available && !quoteRequired {
 		return CatalogProduct{}, ErrCatalogInvalid
 	}
-	minSalePrice, _ := firstDecimal(fields, "min_sale_price", "floor_price", "suggested_min_price")
+
+	minSalePrice, minOK := firstDecimal(lookup,
+		"min_sale_price", "floor_price", "suggested_min_price", "min_sell_price", "min_price",
+	)
+	if !minOK {
+		if cents, centsOK := firstDecimal(lookup, "min_sale_price_cents", "floor_price_cents", "min_price_cents"); centsOK {
+			minSalePrice = cents.Div(decimal.NewFromInt(100))
+		}
+	}
 	if minSalePrice.IsNegative() {
 		return CatalogProduct{}, ErrCatalogInvalid
 	}
 
-	currency := strings.ToUpper(firstNonEmptyString(fields, "currency", "settlement_currency"))
+	currency := strings.ToUpper(firstNonEmptyString(lookup, "currency", "settlement_currency"))
 	if currency == "" {
 		currency = "CNY"
 	}
 
-	collectionModes := normalizeModeSlice(fields, "collection_modes", "supported_collection_modes", "collection_mode")
-	deliveryModes := normalizeModeSlice(fields, "delivery_modes", "supported_delivery_modes", "delivery_mode")
-
-	available := true
-	if rawAvail, ok := fields["available"]; ok {
-		var b bool
-		if err := json.Unmarshal(rawAvail, &b); err == nil {
-			available = b
-		}
-	} else if rawSellable, ok := fields["sellable"]; ok {
-		var b bool
-		if err := json.Unmarshal(rawSellable, &b); err == nil {
-			available = b
-		}
-	} else if rawInStock, ok := fields["in_stock"]; ok {
-		var b bool
-		if err := json.Unmarshal(rawInStock, &b); err == nil {
-			available = b
-		}
-	} else if status := strings.ToLower(firstNonEmptyString(fields, "status")); status != "" {
-		available = status == "active" || status == "available" || status == "on_sale" || status == "enabled"
+	collectionModes := normalizeModeSlice(lookup, "collection_modes", "supported_collection_modes", "collection_mode")
+	if len(collectionModes) == 0 {
+		collectionModes = inferCollectionModesFromFlags(lookup)
+	}
+	deliveryModes := normalizeModeSlice(lookup, "delivery_modes", "supported_delivery_modes", "delivery_mode")
+	if len(deliveryModes) == 0 {
+		deliveryModes = inferDeliveryModesFromFlags(lookup)
 	}
 
 	return CatalogProduct{
@@ -214,11 +314,67 @@ func parseCatalogProduct(raw json.RawMessage) (CatalogProduct, error) {
 		Title:           title,
 		SupplyPrice:     supplyPrice.Round(2),
 		MinSalePrice:    minSalePrice.Round(2),
+		QuoteRequired:   quoteRequired,
 		Currency:        currency,
+		FulfillmentMode: fulfillmentMode,
+		PaymentCountry:  paymentCountry,
+		PaymentCurrency: paymentCurrency,
+		MaxQuantity:     maxQuantity,
 		CollectionModes: collectionModes,
 		DeliveryModes:   deliveryModes,
 		Available:       available,
 	}, nil
+}
+
+func resolveProductAvailability(fields map[string]json.RawMessage) bool {
+	for _, key := range []string{"available", "is_available", "sellable", "can_order", "can_purchase", "in_stock", "is_active", "enabled"} {
+		if raw, ok := fields[key]; ok {
+			var b bool
+			if err := json.Unmarshal(raw, &b); err == nil {
+				return b
+			}
+		}
+	}
+	if status := strings.ToLower(firstNonEmptyString(fields, "status", "sale_status")); status != "" {
+		return status == "active" || status == "available" || status == "on_sale" || status == "enabled" || status == "published" || status == "online" || status == "normal"
+	}
+	return true
+}
+
+func inferCollectionModesFromFlags(fields map[string]json.RawMessage) []string {
+	var modes []string
+	if b, ok := readBoolField(fields, "supports_platform_collect", "platform_collect_enabled"); ok && b {
+		modes = append(modes, CollectionModePlatformCollect)
+	}
+	if b, ok := readBoolField(fields, "supports_agent_collect", "agent_collect_enabled"); ok && b {
+		modes = append(modes, CollectionModeAgentCollect)
+	}
+	return modes
+}
+
+func inferDeliveryModesFromFlags(fields map[string]json.RawMessage) []string {
+	var modes []string
+	if b, ok := readBoolField(fields, "supports_auto_recharge", "auto_recharge_enabled"); ok && b {
+		modes = append(modes, DeliveryModeAutoRecharge)
+	}
+	if b, ok := readBoolField(fields, "supports_cdk", "cdk_enabled"); ok && b {
+		modes = append(modes, "cdk")
+	}
+	return modes
+}
+
+func readBoolField(fields map[string]json.RawMessage, keys ...string) (bool, bool) {
+	for _, key := range keys {
+		raw, ok := fields[key]
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		var b bool
+		if err := json.Unmarshal(raw, &b); err == nil {
+			return b, true
+		}
+	}
+	return false, false
 }
 
 func firstNonEmptyString(fields map[string]json.RawMessage, keys ...string) string {

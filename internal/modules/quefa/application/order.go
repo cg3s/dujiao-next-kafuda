@@ -217,8 +217,8 @@ func (s *OrderService) CreatePlatformCollectPayment(ctx context.Context, parentO
 				SaleAmount:      frozenAmount.StringFixed(2),
 				CollectionMode:  record.CollectionMode,
 				DeliveryMode:    record.DeliveryMode,
-				ReturnURL:       strings.TrimSpace(returnURL),
 			}
+			_ = returnURL
 			rawReq, err := json.Marshal(req)
 			if err != nil {
 				return err
@@ -259,6 +259,23 @@ func (s *OrderService) CreatePlatformCollectPayment(ctx context.Context, parentO
 		// Schedule async recovery poll because CreateDispatched is already persisted.
 		s.schedulePollAfter(ctx, childOrderID, cfgSnap.Config.PollInterval())
 		return nil, createErr
+	}
+
+	// Prefer official white-label direct payment code (POST /v1/orders/{id}/payment-code) when the
+	// order's default qr_payload is absent or points to a non-whitelisted / tibo.ink domain.
+	if validatePaymentArtifacts(snap.PayURL, snap.QRCode, cfgSnap.Config.AllowedPayDomains) != nil && strings.TrimSpace(snap.OrderID) != "" {
+		if payCode, pcErr := cfgSnap.Gateway.CreateOrderPaymentCode(ctx, snap.OrderID, "quefa-paycode-"+req.MerchantOrderNo); pcErr == nil && payCode != nil {
+			if strings.TrimSpace(payCode.PaymentCode) != "" {
+				snap.QRCode = strings.TrimSpace(payCode.PaymentCode)
+				snap.PayURL = ""
+			} else if strings.TrimSpace(payCode.QRImageDataURL) != "" {
+				snap.QRCode = strings.TrimSpace(payCode.QRImageDataURL)
+				snap.PayURL = ""
+			}
+			if payCode.ExpiresAt != nil {
+				snap.PayExpiresAt = payCode.ExpiresAt
+			}
+		}
 	}
 
 	// White-label payment domain validation BEFORE persisting or returning anything to buyer.
@@ -797,7 +814,7 @@ func (s *OrderService) applyOrderSnapshot(ctx context.Context, childOrderID uint
 
 		prevStage := record.Stage
 		switch {
-		case status == "refunded" || (snap.RecoveryAction == "refund" && strings.TrimSpace(snap.RefundRef) != "" && status != "succeeded"):
+		case status == "refunded" || snap.SyncMark == "cancelled_refunded" || (snap.RecoveryAction == "refund" && strings.TrimSpace(snap.RefundRef) != "" && status != "succeeded"):
 			record.Stage = quefadomain.StageRefunded
 			record.RetryAllowed = false
 			record.PollStopped = true
@@ -808,6 +825,13 @@ func (s *OrderService) applyOrderSnapshot(ctx context.Context, childOrderID uint
 			if record.CollectionMode == quefadomain.CollectionModePlatformCollect {
 				triggerRefunded = true
 			}
+		case status == "partially_refunded":
+			record.Stage = quefadomain.StageManualReview
+			record.ExceptionCode = "order_partially_refunded"
+			record.RetryAllowed = false
+			next := computeNextPoll(now, snap.Hints, cfg.PollInterval())
+			record.NextPollAt = next
+			record.PollStopped = snap.Hints.PollStop
 		case snap.RecoveryAction == "refund":
 			record.Stage = quefadomain.StageRefunding
 			record.RetryAllowed = false

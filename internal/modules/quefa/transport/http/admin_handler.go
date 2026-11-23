@@ -3,10 +3,12 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
 
+	"github.com/dujiao-next/internal/i18n"
 	quefaapp "github.com/dujiao-next/internal/modules/quefa/application"
 	quefacontract "github.com/dujiao-next/internal/modules/quefa/contract"
 	quefadomain "github.com/dujiao-next/internal/modules/quefa/domain"
@@ -230,14 +232,57 @@ func respondQuefaConfigError(c *gin.Context, err error) {
 }
 
 func respondQuefaUpstreamError(c *gin.Context, err error) {
+	locale := i18n.ResolveLocale(c)
 	switch {
 	case errors.Is(err, quefaapp.ErrGatewayNotConfigured):
-		ginutil.RespondError(c, response.CodeBadRequest, "error.quefa_not_configured", nil)
+		ginutil.RespondError(c, response.CodeBadRequest, "error.quefa_not_configured", err)
+	case errors.Is(err, quefaapp.ErrConfigBaseURLInvalid), errors.Is(err, quefaapp.ErrConfigInvalid):
+		ginutil.RespondError(c, response.CodeBadRequest, "error.quefa_config_invalid", err)
 	case quefacontract.IsAPIErrorCategory(err, "auth"), quefacontract.IsAPIErrorCategory(err, "forbidden"):
-		ginutil.RespondError(c, response.CodeBadRequest, "error.quefa_upstream_auth_failed", nil)
+		base := i18n.T(locale, "error.quefa_upstream_auth_failed")
+		if detail := formatAdminUpstreamDetail(err); detail != "" {
+			ginutil.RespondErrorWithMsg(c, response.CodeBadRequest, base+" ("+detail+")", err)
+			return
+		}
+		ginutil.RespondError(c, response.CodeBadRequest, "error.quefa_upstream_auth_failed", err)
 	case quefacontract.IsAPIErrorCategory(err, "rate_limited"):
-		ginutil.RespondError(c, response.CodeTooManyRequests, "error.quefa_rate_limited", nil)
+		ginutil.RespondError(c, response.CodeTooManyRequests, "error.quefa_rate_limited", err)
 	default:
-		ginutil.RespondError(c, response.CodeInternal, "error.quefa_upstream_failed", nil)
+		base := i18n.T(locale, "error.quefa_upstream_failed")
+		if detail := formatAdminUpstreamDetail(err); detail != "" {
+			ginutil.RespondErrorWithMsg(c, response.CodeInternal, base+" ("+detail+")", err)
+			return
+		}
+		ginutil.RespondError(c, response.CodeInternal, "error.quefa_upstream_failed", err)
 	}
+}
+
+func formatAdminUpstreamDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	var apiErr *quefacontract.APIError
+	if errors.As(err, &apiErr) {
+		parts := make([]string, 0, 3)
+		if apiErr.StatusCode > 0 {
+			parts = append(parts, fmt.Sprintf("HTTP %d", apiErr.StatusCode))
+		} else if apiErr.Category != "" {
+			parts = append(parts, apiErr.Category)
+		}
+		if apiErr.Code != "" {
+			parts = append(parts, apiErr.Code)
+		}
+		if apiErr.Message != "" {
+			parts = append(parts, apiErr.Message)
+		}
+		return strings.Join(parts, ": ")
+	}
+	var parseErr *quefaapp.CatalogParseError
+	if errors.As(err, &parseErr) {
+		return parseErr.Error()
+	}
+	if errors.Is(err, quefadomain.ErrCatalogEmpty) || errors.Is(err, quefadomain.ErrCatalogInvalid) {
+		return err.Error()
+	}
+	return strings.TrimSpace(err.Error())
 }
