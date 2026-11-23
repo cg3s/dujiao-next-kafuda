@@ -532,19 +532,19 @@ const normalizeSKUsForSubmit = () => {
   const normalized = form.skus.map((item, index) => {
     const skuCode = String(item.sku_code || '').trim()
     if (!skuCode) {
-      if (isDirect.value) activeSKURegion.value = skuRegion(item)
+      if (isDirectOrQuefa) activeSKURegion.value = skuRegion(item)
       throw new Error(t('admin.products.errors.skuCodeRequired', { index: index + 1 }))
     }
     const codeKey = skuCode.toLowerCase()
     if (seenCode.has(codeKey)) {
-      if (isDirect.value) activeSKURegion.value = skuRegion(item)
+      if (isDirectOrQuefa) activeSKURegion.value = skuRegion(item)
       throw new Error(t('admin.products.errors.skuCodeDuplicate', { code: skuCode }))
     }
     seenCode.add(codeKey)
 
     const priceAmount = Number(item.price_amount)
     if (!Number.isFinite(priceAmount) || (priceAmount <= 0 && !(isDirectOrQuefa && !item.is_active && priceAmount === 0))) {
-      if (isDirect.value) activeSKURegion.value = skuRegion(item)
+      if (isDirectOrQuefa) activeSKURegion.value = skuRegion(item)
       throw new Error(t('admin.products.errors.skuPriceInvalid', { index: index + 1 }))
     }
 
@@ -552,7 +552,7 @@ const normalizeSKUsForSubmit = () => {
     const costPriceAmount = isDirectOrQuefa && item.cost_price_amount === '' ? undefined : Number(item.cost_price_amount)
     if ((isDirectOrQuefa && isActive && costPriceAmount === undefined) ||
         (costPriceAmount !== undefined && (!Number.isFinite(costPriceAmount) || costPriceAmount < 0))) {
-      if (isDirect.value) activeSKURegion.value = skuRegion(item)
+      if (isDirectOrQuefa) activeSKURegion.value = skuRegion(item)
       throw new Error(t('admin.products.errors.skuCostPriceInvalid', { index: index + 1 }))
     }
     const manualStockTotal = form.fulfillment_type === 'manual' ? toSafeStockTotal(item.manual_stock_total) : 0
@@ -633,9 +633,20 @@ const resetDirectCatalog = () => {
   directCostConfirmations.clear()
 }
 
+const originalFulfillmentType = ref('')
+const isDirectTypeChangeWarning = computed(() => {
+  if (!isEditing.value || !originalFulfillmentType.value || form.fulfillment_type === originalFulfillmentType.value) {
+    return false
+  }
+  return isDirect.value || isQuefa.value
+    || originalFulfillmentType.value === 'kafuda_gpt_direct'
+    || originalFulfillmentType.value === 'quefa_hosted'
+})
+
 const resetForm = () => {
   initialCategoryID.value = null
   originalManualStockTotal.value = null
+  originalFulfillmentType.value = ''
   originalDirectProductActive = undefined
   originalDirectSKUs.clear()
   Object.assign(form, {
@@ -713,6 +724,7 @@ const populateForm = (product: AdminProduct) => {
     sort_order: Number(product.sort_order || 0),
     manual_form_schema: parseManualFormSchemaForEdit(product.manual_form_schema),
   })
+  originalFulfillmentType.value = product.fulfillment_type || 'manual'
   if (product.fulfillment_type === 'kafuda_gpt_direct') {
     originalDirectProductActive = form.is_active
     for (const sku of form.skus) originalDirectSKUs.set(directSKUKey(sku), { ...sku, spec_values: { ...sku.spec_values } })
@@ -752,16 +764,22 @@ const resetQuefaCatalog = () => {
 const buildQuefaSpecValues = (
   productCode: string,
   title: string,
+  paymentCountry?: string,
   existing?: Record<string, string>,
 ): Record<string, string> => {
   const fallback = String(title || productCode).trim()
-  return {
+  const country = String(paymentCountry || existing?.country || '').trim().toUpperCase()
+  const out: Record<string, string> = {
     ...(existing || {}),
     product_code: productCode,
     'zh-CN': String(existing?.['zh-CN'] || '').trim() || fallback,
     'zh-TW': String(existing?.['zh-TW'] || '').trim() || fallback,
     'en-US': String(existing?.['en-US'] || '').trim() || fallback,
   }
+  if (country) {
+    out.country = country
+  }
+  return out
 }
 
 const applyQuefaMarkupToAllSKUs = () => {
@@ -827,7 +845,7 @@ const loadQuefaCatalog = async (sync: boolean) => {
 
       const existing = old.get(key)
       old.delete(key)
-      const specValues = buildQuefaSpecValues(productCode, item.title, existing?.spec_values)
+      const specValues = buildQuefaSpecValues(productCode, item.title, item.payment_country, existing?.spec_values)
       const defaults = createSKUFormItem({ sku_code: productCode, spec_values: specValues, is_active: false, sort_order: idx }, true)
       const resolvedCost = existing && existing.cost_price_amount !== ''
         ? existing.cost_price_amount
@@ -870,15 +888,22 @@ const unknownSKURegion = '__unknown__'
 const skuRegion = (sku: SKUFormItem) => sku.spec_values.country?.trim().toUpperCase() || unknownSKURegion
 const indexedSKUs = computed(() => form.skus.map((sku, index) => ({ sku, index })))
 const directSKURegions = computed(() => {
-  if (!isDirect.value) return []
-  const regions = new Set(indexedSKUs.value.map(({ sku }) => skuRegion(sku)))
+  if (!isDirect.value && !isQuefa.value) return []
+  const counts = new Map<string, number>()
+  for (const { sku } of indexedSKUs.value) {
+    const region = skuRegion(sku)
+    counts.set(region, (counts.get(region) ?? 0) + 1)
+  }
   const displayNames = new Intl.DisplayNames([locale.value], { type: 'region' })
-  return Array.from(regions, (region) => ({
-    value: region,
-    label: region === unknownSKURegion
+  return Array.from(counts.entries(), ([region, count]) => {
+    const name = region === unknownSKURegion
       ? t('kafuda.unknownRegion')
-      : /^[A-Z]{2}$/.test(region) ? (displayNames.of(region) || region) : region,
-  }))
+      : /^[A-Z]{2}$/.test(region) ? (displayNames.of(region) || region) : region
+    return {
+      value: region,
+      label: isQuefa.value ? `${name} (${count})` : name,
+    }
+  })
 })
 
 watch(directSKURegions, (regions) => {
@@ -1309,6 +1334,7 @@ watch(
               </SelectContent>
             </Select>
             <p v-if="editingIsMapped" class="mt-1 text-xs text-indigo-600">{{ t('admin.products.mappedFulfillmentLocked') }}</p>
+            <p v-else-if="isDirectTypeChangeWarning" class="mt-1 text-xs text-amber-600">{{ t('quefa.directTypeChangeNotice') }}</p>
           </div>
 
           <div v-if="!isDirect && !isQuefa" class="col-span-1">
@@ -1522,7 +1548,7 @@ watch(
                       </template>
                       <template v-else-if="isQuefa">
                         <p class="mt-1 text-xs text-muted-foreground">
-                          {{ sku.spec_values.product_code || sku.sku_code }}<template v-if="quefaSupplyCostCNY[quefaSKUKey(sku)] !== undefined"> · ¥{{ quefaSupplyCostCNY[quefaSKUKey(sku)]?.toFixed(2) }}</template>
+                          {{ sku.spec_values.product_code || sku.sku_code }}<template v-if="sku.spec_values.country"> · {{ sku.spec_values.country }}</template><template v-if="quefaSupplyCostCNY[quefaSKUKey(sku)] !== undefined"> · ¥{{ quefaSupplyCostCNY[quefaSKUKey(sku)]?.toFixed(2) }}</template>
                         </p>
                         <p v-if="quefaCatalogStale !== null && quefaQuoteRequired[quefaSKUKey(sku)]" class="text-xs text-amber-600">{{ t('quefa.skuQuoteRequired') }}</p>
                         <p v-else-if="quefaCatalogStale !== null && !quefaAvailability[quefaSKUKey(sku)]" class="text-xs text-amber-600">{{ t('quefa.skuUnavailable') }}</p>

@@ -461,7 +461,7 @@ describe('ProductEditModal Direct SKU edits', () => {
 })
 
 describe('ProductEditModal Quefa Hosted SKU auto-sync', () => {
-  it('auto-syncs Quefa catalog into SKUs on edit, preserves saved prices, blocks quote_required, and supports batch markup', async () => {
+  it('auto-syncs Quefa catalog into region-tabbed SKUs on edit, preserves saved prices, blocks quote_required, and supports batch markup across regions', async () => {
     api.getProduct.mockResolvedValue({
       data: {
         data: {
@@ -492,6 +492,7 @@ describe('ProductEditModal Quefa Hosted SKU auto-sync', () => {
             {
               product_code: 'chatgpt_plus_cdk_1m',
               title: 'ChatGPT Plus 月卡',
+              payment_country: 'PH',
               supply_price: '110.00',
               min_sale_price: '115.00',
               quote_required: false,
@@ -501,6 +502,7 @@ describe('ProductEditModal Quefa Hosted SKU auto-sync', () => {
             {
               product_code: 'chatgpt_pro_cdk_1m',
               title: 'ChatGPT Pro 月卡',
+              payment_country: 'PH',
               supply_price: '1000.00',
               min_sale_price: '1050.00',
               quote_required: false,
@@ -510,6 +512,7 @@ describe('ProductEditModal Quefa Hosted SKU auto-sync', () => {
             {
               product_code: 'chatgpt_plus_us_direct_1m',
               title: 'ChatGPT Plus US 直充',
+              payment_country: 'US',
               supply_price: '0.00',
               min_sale_price: '0.00',
               quote_required: true,
@@ -527,11 +530,16 @@ describe('ProductEditModal Quefa Hosted SKU auto-sync', () => {
     await flushRequests()
 
     expect(api.getQuefaCatalog).toHaveBeenCalledTimes(1)
-    const codeInputs = [...host.querySelectorAll<HTMLInputElement>('input[placeholder="admin.products.form.skuCodePlaceholder"]')]
-    expect(codeInputs.map((el) => el.value)).toEqual([
+    const tabs = [...host.querySelectorAll('[role="tab"]')]
+    expect(tabs).toHaveLength(2)
+    expect(tabs[0]?.textContent).toContain('(2)')
+    expect(tabs[1]?.textContent).toContain('(1)')
+
+    // First region tab (PH) shows only the 2 PH SKUs
+    const phCodeInputs = [...host.querySelectorAll<HTMLInputElement>('input[placeholder="admin.products.form.skuCodePlaceholder"]')]
+    expect(phCodeInputs.map((el) => el.value)).toEqual([
       'chatgpt_plus_cdk_1m',
       'chatgpt_pro_cdk_1m',
-      'chatgpt_plus_us_direct_1m',
     ])
 
     const priceInputs = [...host.querySelectorAll<HTMLInputElement>('input[placeholder="admin.products.form.skuPricePlaceholder"]')]
@@ -541,9 +549,16 @@ describe('ProductEditModal Quefa Hosted SKU auto-sync', () => {
     expect(costInputs[0]?.value).toBe('112')
     expect(priceInputs[1]?.value).toBe('0')
     expect(costInputs[1]?.value).toBe('1000')
+
+    // Switch to US tab to inspect the US quote_required SKU
+    tabs[1]!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
+    await nextTick()
+    expect(tabs[1]!.getAttribute('aria-selected')).toBe('true')
+    const usCodeInputs = [...host.querySelectorAll<HTMLInputElement>('input[placeholder="admin.products.form.skuCodePlaceholder"]')]
+    expect(usCodeInputs.map((el) => el.value)).toEqual(['chatgpt_plus_us_direct_1m'])
     expect(host.textContent).toContain('quefa.skuQuoteRequired')
 
-    // Apply 10% markup to all SKUs with cost
+    // Apply 10% markup to all SKUs with cost across all regions
     const markupBtn = [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'kafuda.applyMarkup')
     expect(markupBtn).toBeTruthy()
     markupBtn!.click()
@@ -554,18 +569,21 @@ describe('ProductEditModal Quefa Hosted SKU auto-sync', () => {
     expect(payload.skus[0]).toMatchObject({
       id: 91,
       sku_code: 'chatgpt_plus_cdk_1m',
+      spec_values: expect.objectContaining({ product_code: 'chatgpt_plus_cdk_1m', country: 'PH' }),
       price_amount: 123.2,
       cost_price_amount: 112,
       is_active: true,
     })
     expect(payload.skus[1]).toMatchObject({
       sku_code: 'chatgpt_pro_cdk_1m',
+      spec_values: expect.objectContaining({ product_code: 'chatgpt_pro_cdk_1m', country: 'PH' }),
       price_amount: 1100,
       cost_price_amount: 1000,
       is_active: false,
     })
     expect(payload.skus[2]).toMatchObject({
       sku_code: 'chatgpt_plus_us_direct_1m',
+      spec_values: expect.objectContaining({ product_code: 'chatgpt_plus_us_direct_1m', country: 'US' }),
       price_amount: 0,
       is_active: false,
     })

@@ -2,6 +2,7 @@ package productwrite
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -12,15 +13,21 @@ import (
 )
 
 func validateDirectTypeChange(product *productdomain.Product, repositories TransactionRepositories) error {
-	if product.IsMapped || product.ManualStockTotal != 0 || product.ManualStockLocked != 0 || product.ManualStockSold != 0 || repositories.Orders == nil || repositories.SKUs == nil || repositories.CardSecrets == nil {
-		return productcontract.ErrFulfillmentInvalid
+	if product.IsMapped {
+		return fmt.Errorf("%w: mapped product cannot change fulfillment type", productcontract.ErrFulfillmentInvalid)
+	}
+	if product.ManualStockTotal != 0 || product.ManualStockLocked != 0 || product.ManualStockSold != 0 {
+		return fmt.Errorf("%w: product manual stock must be 0 (total=%d locked=%d sold=%d)", productcontract.ErrFulfillmentInvalid, product.ManualStockTotal, product.ManualStockLocked, product.ManualStockSold)
+	}
+	if repositories.Orders == nil || repositories.SKUs == nil || repositories.CardSecrets == nil {
+		return fmt.Errorf("%w: required repositories unavailable", productcontract.ErrFulfillmentInvalid)
 	}
 	count, err := repositories.Orders.CountOrderItemsByProduct(product.ID)
 	if err != nil {
 		return err
 	}
 	if count != 0 {
-		return productcontract.ErrFulfillmentInvalid
+		return fmt.Errorf("%w: product has %d historical order items", productcontract.ErrFulfillmentInvalid, count)
 	}
 	skus, err := repositories.SKUs.ListByProduct(product.ID, false)
 	if err != nil {
@@ -28,7 +35,7 @@ func validateDirectTypeChange(product *productdomain.Product, repositories Trans
 	}
 	for _, sku := range skus {
 		if sku.ManualStockTotal != 0 || sku.ManualStockLocked != 0 || sku.ManualStockSold != 0 {
-			return productcontract.ErrFulfillmentInvalid
+			return fmt.Errorf("%w: sku %d manual stock must be 0 (total=%d locked=%d sold=%d)", productcontract.ErrFulfillmentInvalid, sku.ID, sku.ManualStockTotal, sku.ManualStockLocked, sku.ManualStockSold)
 		}
 	}
 	// Card secrets remain associated with their original product even if a

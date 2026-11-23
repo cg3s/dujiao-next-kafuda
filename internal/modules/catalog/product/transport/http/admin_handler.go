@@ -345,7 +345,7 @@ func (h *AdminProductHandler) CreateProduct(c *gin.Context) {
 			return
 		}
 		if errors.Is(err, productcontract.ErrFulfillmentInvalid) {
-			ginutil.RespondError(c, response.CodeBadRequest, "error.fulfillment_invalid", nil)
+			ginutil.RespondError(c, response.CodeBadRequest, "error.fulfillment_invalid", err)
 			return
 		}
 		if errors.Is(err, manualform.ErrSchemaInvalid) {
@@ -441,7 +441,7 @@ func (h *AdminProductHandler) UpdateProduct(c *gin.Context) {
 			return
 		}
 		if errors.Is(err, productcontract.ErrFulfillmentInvalid) {
-			ginutil.RespondError(c, response.CodeBadRequest, "error.fulfillment_invalid", nil)
+			ginutil.RespondError(c, response.CodeBadRequest, "error.fulfillment_invalid", err)
 			return
 		}
 		if errors.Is(err, manualform.ErrSchemaInvalid) {
