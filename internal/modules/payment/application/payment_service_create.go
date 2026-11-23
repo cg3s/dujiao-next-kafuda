@@ -156,9 +156,43 @@ func (s *PaymentService) CreatePayment(input CreatePaymentInput) (*CreatePayment
 			}
 		}
 
+		isQuefaOrder := lockedOrder.HasQuefaHosted()
+		var quefaWalletCap *money.Amount
+		if isQuefaOrder {
+			if walletOnly {
+				return ErrPaymentChannelNotAllowedForProduct
+			}
+			quefaOrder, qErr := tx.Quefa().GetOrderByParentOrderID(lockedOrder.ID)
+			if qErr != nil {
+				return ErrPaymentCreateFailed
+			}
+			if quefaOrder == nil {
+				return ErrPaymentInvalid
+			}
+			isPlatformCollect := strings.EqualFold(quefaOrder.CollectionMode, "platform_collect")
+			if isPlatformCollect {
+				if channel == nil || !strings.EqualFold(channel.ProviderType, constants.PaymentProviderQuefa) {
+					return ErrPaymentChannelNotAllowedForProduct
+				}
+				if feeRate.GreaterThan(decimal.Zero) || channel.FixedFee.Decimal.GreaterThan(decimal.Zero) {
+					return ErrPaymentChannelConfigInvalid
+				}
+			} else if channel != nil && strings.EqualFold(channel.ProviderType, constants.PaymentProviderQuefa) {
+				return ErrPaymentChannelNotAllowedForProduct
+			}
+			maxDeduct := lockedOrder.TotalAmount.Decimal.Sub(quefaOrder.CostFloorAmount.Decimal).Round(2)
+			if maxDeduct.IsNegative() {
+				maxDeduct = decimal.Zero
+			}
+			capVal := money.FromDecimal(maxDeduct)
+			quefaWalletCap = &capVal
+		} else if channel != nil && strings.EqualFold(channel.ProviderType, constants.PaymentProviderQuefa) {
+			return ErrPaymentChannelNotAllowedForProduct
+		}
+
 		if s.walletSvc != nil {
 			if input.UseBalance {
-				if _, err := orderapp.ApplyWalletBalance(s.walletSvc, tx, &lockedOrder, true); err != nil {
+				if _, err := orderapp.ApplyWalletBalanceWithCap(s.walletSvc, tx, &lockedOrder, true, quefaWalletCap); err != nil {
 					return err
 				}
 			} else if lockedOrder.WalletPaidAmount.Decimal.GreaterThan(decimal.Zero) {
@@ -169,6 +203,9 @@ func (s *PaymentService) CreatePayment(input CreatePaymentInput) (*CreatePayment
 		}
 
 		onlineAmount := normalizeOrderAmount(lockedOrder.TotalAmount.Decimal.Sub(lockedOrder.WalletPaidAmount.Decimal))
+		if isQuefaOrder && onlineAmount.LessThanOrEqual(decimal.Zero) {
+			return ErrPaymentChannelNotAllowedForProduct
+		}
 		if onlineAmount.LessThanOrEqual(decimal.Zero) {
 			walletPaidAmount := normalizeOrderAmount(lockedOrder.WalletPaidAmount.Decimal)
 			paidAt := time.Now()

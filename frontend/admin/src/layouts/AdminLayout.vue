@@ -466,6 +466,12 @@ const navGroups = computed<NavGroup[]>(() => {
           icon: Zap,
           permission: 'GET:/admin/kafuda-gpt/config',
         },
+        {
+          label: t('admin.navItems.quefaDirect'),
+          to: '/quefa-hosted',
+          icon: Zap,
+          permission: 'GET:/admin/quefa/config',
+        },
       ],
     },
     {

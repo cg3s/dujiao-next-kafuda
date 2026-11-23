@@ -74,3 +74,20 @@ func (sku ProductSKU) DirectPublicSpecValues() jsonmap.JSON {
 	}
 	return out
 }
+
+// QuefaProductCode resolves the bound Quefa product_code from spec_values or fallback sku_code.
+func (sku ProductSKU) QuefaProductCode() string {
+	if sku.SpecValuesJSON != nil {
+		if raw, ok := sku.SpecValuesJSON["product_code"].(string); ok {
+			if code := strings.TrimSpace(raw); code != "" {
+				return code
+			}
+		}
+	}
+	return strings.TrimSpace(sku.SKUCode)
+}
+
+// QuefaPriceValid reports whether a Quefa SKU has a positive sale price and non-negative cost.
+func (sku ProductSKU) QuefaPriceValid() bool {
+	return sku.PriceAmount.Decimal.Round(2).IsPositive() && !sku.CostPriceAmount.IsNegative() && sku.QuefaProductCode() != ""
+}

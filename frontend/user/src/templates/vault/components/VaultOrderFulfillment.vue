@@ -59,6 +59,7 @@ import { Copy, Check, Download, Info } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { useOrderDisplayHelpers } from '../../../composables/useOrderDisplayHelpers'
 import { isDirectOrderFulfillment } from '../../../utils/directOrderStatus'
+import { isHostedRechargeOrderFulfillment } from '../../../utils/hostedRechargeStatus'
 
 const props = defineProps<{
   title?: string
@@ -68,7 +69,10 @@ const props = defineProps<{
   downloading: boolean
 }>()
 
-const isDirect = computed(() => isDirectOrderFulfillment(props.items, props.fulfillment.type))
+const isDirect = computed(() =>
+  isDirectOrderFulfillment(props.items, props.fulfillment.type)
+  || isHostedRechargeOrderFulfillment(props.items, props.fulfillment.type),
+)
 
 const emit = defineEmits<{
   (e: 'download', orderNo: string): void

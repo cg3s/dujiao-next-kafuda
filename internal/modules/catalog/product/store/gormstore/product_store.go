@@ -80,6 +80,9 @@ func (r *ProductStore) List(filter productcontract.ListFilter) ([]productdomain.
 	if filter.ExcludeFulfillmentType != "" {
 		query = query.Where("products.fulfillment_type <> ?", filter.ExcludeFulfillmentType)
 	}
+	if len(filter.ExcludeFulfillmentTypes) > 0 {
+		query = query.Where("(products.fulfillment_type NOT IN ? OR products.fulfillment_type IS NULL)", filter.ExcludeFulfillmentTypes)
+	}
 	if search := strings.TrimSpace(filter.Search); search != "" {
 		like := "%" + search + "%"
 		condition, argCount := gormutil.BuildLocalizedLikeCondition(r.db, []string{"slug"}, []string{"title_json", "description_json"})
@@ -304,8 +307,8 @@ func (r *ProductStore) QuickUpdate(id string, fields map[string]interface{}) err
 		directUpdateErr = productcontract.ErrProductStockDisplayInvalid
 	}
 	if directUpdateErr != nil {
-		// A product can switch to Direct after the caller's preflight read.
-		query = query.Where("(fulfillment_type <> ? OR fulfillment_type IS NULL)", constants.FulfillmentTypeKafudaGPT)
+		// A product can switch to Direct/Quefa after the caller's preflight read.
+		query = query.Where("(fulfillment_type NOT IN ? OR fulfillment_type IS NULL)", []string{constants.FulfillmentTypeKafudaGPT, constants.FulfillmentTypeQuefaHosted})
 	}
 	result := query.Updates(fields)
 	if result.Error != nil || result.RowsAffected > 0 || directUpdateErr == nil {

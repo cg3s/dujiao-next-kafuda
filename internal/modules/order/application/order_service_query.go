@@ -87,6 +87,10 @@ func (s *OrderService) ensureOrderCanceledIfExpired(order *orderdomain.Order) er
 	if order.ExpiresAt.After(time.Now()) {
 		return nil
 	}
+	if order.HasQuefaHosted() && s.quefaLazyExpireHook != nil && s.quefaLazyExpireHook(order.ID) {
+		// Never issue synchronous upstream HTTP inside order list/detail GET; async worker verifies upstream state.
+		return nil
+	}
 	if err := s.cancelOrderWithChildren(order, true); err != nil {
 		return err
 	}

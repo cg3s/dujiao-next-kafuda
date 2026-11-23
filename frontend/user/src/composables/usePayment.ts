@@ -6,6 +6,7 @@ import { useAppStore } from '../stores/app'
 import { useTelegramMiniAppStore } from '../stores/telegramMiniApp'
 import { orderStatusLabel } from '../utils/status'
 import { fulfillmentTypeLabel } from '../utils/fulfillment'
+import { isHostedRechargeOrder } from '../utils/hostedRechargeStatus'
 import { debounceAsync } from '../utils/debounce'
 import { copyText } from '../utils/clipboard'
 import { amountToCents, centsToAmount } from '../utils/money'
@@ -431,8 +432,10 @@ export function usePayment() {
   })
   const expectedWalletPaidDisplay = computed(() => formatMoney(centsToAmount(expectedWalletPaidCents.value), order.value?.currency))
   const expectedOnlinePayDisplay = computed(() => formatMoney(centsToAmount(expectedOnlinePayCents.value), order.value?.currency))
+  const isHostedRecharge = computed(() => isHostedRechargeOrder(order.value))
   const requiresOnlineChannel = computed(() => {
     if (isGuest.value) return true
+    if (isHostedRecharge.value) return true
     if (!useBalance.value) return true
     return expectedOnlinePayCents.value > 0
   })
@@ -500,7 +503,7 @@ export function usePayment() {
   })
   const canSubmitPayment = computed(() => {
     if (submitting.value) return false
-    if (walletOnlyPayment.value && expectedOnlinePayCents.value > 0) return false
+    if (walletOnlyPayment.value && (isHostedRecharge.value || expectedOnlinePayCents.value > 0)) return false
     if (!walletOnlyPayment.value && requiresOnlineChannel.value && !selectedChannelId.value) return false
     if (requiresOnlineChannel.value && selectedChannelAmountHint.value) return false
     if (orderExpired.value || orderCanceled.value) return false

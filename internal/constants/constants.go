@@ -26,6 +26,7 @@ const (
 	FulfillmentTypeManual      = "manual"
 	FulfillmentTypeUpstream    = "upstream"
 	FulfillmentTypeKafudaGPT   = "kafuda_gpt_direct"
+	FulfillmentTypeQuefaHosted = "quefa_hosted"
 	FulfillmentStatusPending   = "pending"
 	FulfillmentStatusDelivered = "delivered"
 )
@@ -33,12 +34,24 @@ const (
 // FulfillmentTypeGPTDirect is the provider-neutral type published to buyers.
 const FulfillmentTypeGPTDirect = "gpt_direct"
 
+// FulfillmentTypeHostedRecharge is the provider-neutral hosted recharge type published to buyers.
+const FulfillmentTypeHostedRecharge = "hosted_recharge"
+
 // BuyerFulfillmentType converts internal direct recharge types at the storefront boundary.
 func BuyerFulfillmentType(value string) string {
-	if value == FulfillmentTypeKafudaGPT {
+	switch value {
+	case FulfillmentTypeKafudaGPT:
 		return FulfillmentTypeGPTDirect
+	case FulfillmentTypeQuefaHosted:
+		return FulfillmentTypeHostedRecharge
+	default:
+		return value
 	}
-	return value
+}
+
+// IsDirectRechargeFulfillment reports whether value is a zero-inventory direct recharge fulfillment type.
+func IsDirectRechargeFulfillment(value string) bool {
+	return value == FulfillmentTypeKafudaGPT || value == FulfillmentTypeQuefaHosted
 }
 
 // 支付状态常量
@@ -76,6 +89,7 @@ const (
 	PaymentProviderOkpay     = "okpay"
 	PaymentProviderTokenpay  = "tokenpay"
 	PaymentProviderWallet    = "wallet"
+	PaymentProviderQuefa     = "quefa"
 )
 
 // 支付渠道类型常量
@@ -408,6 +422,8 @@ const (
 	TaskProcurementSyncAccepted     = "procurement:sync_accepted"
 	TaskKafudaRecoverChecks         = "kafuda_gpt:recover_checks"
 	TaskKafudaRefreshCatalog        = "kafuda_gpt:refresh_catalog"
+	TaskQuefaSyncOrder              = "quefa:sync_order"
+	TaskQuefaPollOrders             = "quefa:poll_orders"
 	TaskUpstreamSyncProducts        = "upstream:sync_products"
 	TaskUpstreamSyncStock           = "upstream:sync_stock"
 	TaskReconciliationRun           = "reconciliation:run"

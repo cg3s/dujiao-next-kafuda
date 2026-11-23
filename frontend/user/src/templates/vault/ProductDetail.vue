@@ -206,7 +206,7 @@
 
           <div class="mt-4 flex items-center gap-3 rounded-md bg-[color:var(--teal-soft)] px-[18px] py-3.5 text-[color:var(--teal-strong)]">
             <component :is="product.fulfillment_type === 'manual' ? Pencil : TicketCheck" class="h-[22px] w-[22px] flex-none" />
-            <span v-if="isDirect" class="text-sm font-semibold">{{ t('directPurchase.notice') }}</span>
+            <span v-if="isDirect" class="text-sm font-semibold">{{ t(isHostedRecharge ? 'hostedRecharge.notice' : 'directPurchase.notice') }}</span>
             <span v-else class="text-sm font-semibold">{{ product.fulfillment_type === 'manual' ? t('productDetail.deliveryReassuranceManual') : t('productDetail.deliveryReassurance') }}</span>
           </div>
         </div>
@@ -312,7 +312,7 @@ const {
   hasSkuPromotionPrice, getSkuPromotionSaveAmount,
   hasPromotionRules, getPromotionRules,
   formatPromotionRule, formatWholesaleTier, formatRelatedPostDate, normalizeSkuId,
-  loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
+  loading, product, isDirect, isHostedRecharge, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
   activeSkus, directSkuSpecs, visibleSkus, selectedSku,
   selectedSkuMemberPrice, hasMemberPrice,
   hasSelectedSkuWholesalePrice, selectedSkuWholesaleFinalIsMember, selectedSkuWholesaleFinalPrice,

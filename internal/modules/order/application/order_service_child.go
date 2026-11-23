@@ -139,6 +139,9 @@ func (s *OrderService) CancelOrder(orderID uint, userID uint) (*orderdomain.Orde
 	if order.Status != constants.OrderStatusPendingPayment {
 		return nil, ErrOrderCancelNotAllowed
 	}
+	if order.HasQuefaHosted() && s.quefaCancelGuard != nil && !s.quefaCancelGuard(order.ID) {
+		return nil, ErrOrderCancelNotAllowed
+	}
 	// 未支付订单取消时同步回滚优惠券用量
 	if err := s.cancelOrderWithChildren(order, true); err != nil {
 		if errors.Is(err, ErrOrderCancelNotAllowed) {
@@ -175,8 +178,11 @@ func (s *OrderService) UpdateOrderStatus(orderID uint, targetStatus string) (*or
 	if order.Status == target {
 		return order, nil
 	}
-	if order.HasDirectRecharge() && target != constants.OrderStatusCanceled {
+	if (order.HasDirectRecharge() || order.HasQuefaHosted()) && target != constants.OrderStatusCanceled {
 		return nil, ErrOrderStatusInvalid
+	}
+	if order.HasQuefaHosted() && target == constants.OrderStatusCanceled && s.quefaCancelGuard != nil && !s.quefaCancelGuard(order.ID) {
+		return nil, ErrOrderCancelNotAllowed
 	}
 	// “已支付”只能由钱包原子扣款或经过验签、金额校验的支付回调驱动。
 	// 管理端通用状态接口不得绕过支付事实直接触发库存、累计消费和交付副作用。
@@ -458,6 +464,9 @@ func (s *OrderService) CancelExpiredOrder(orderID uint) (*orderdomain.Order, err
 	if order.ExpiresAt.After(now) {
 		return order, nil
 	}
+	if order.HasQuefaHosted() && s.quefaCancelGuard != nil && !s.quefaCancelGuard(order.ID) {
+		return order, nil
+	}
 	if err := s.cancelOrderWithChildren(order, true); err != nil {
 		return nil, err
 	}
@@ -613,8 +622,8 @@ func reserveAutoSecretsByItems(secretRepo cardsecretcontract.Repository, ownerOr
 }
 
 func releaseOrderSecrets(secretRepo cardsecretcontract.Repository, orderID uint, items []orderdomain.OrderItem) error {
-	// Direct checkout is a single-item order and never reserves card secrets.
-	if len(items) == 1 && items[0].FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+	// Direct recharge orders never reserve card secrets.
+	if len(items) == 1 && constants.IsDirectRechargeFulfillment(items[0].FulfillmentType) {
 		return nil
 	}
 	_, err := secretRepo.ReleaseByOrder(orderID)

@@ -72,7 +72,7 @@ func (s *Service) ListPublic(categoryID, search string, page, pageSize int) ([]p
 func (s *Service) ListForChannel(categoryID string, exact bool, page, pageSize int) ([]productdomain.Product, int64, error) {
 	return s.listPublic(productcontract.ListFilter{
 		Page: page, PageSize: pageSize, CategoryID: categoryID,
-		ExcludeFulfillmentType: constants.FulfillmentTypeKafudaGPT,
+		ExcludeFulfillmentTypes: []string{constants.FulfillmentTypeKafudaGPT, constants.FulfillmentTypeQuefaHosted},
 	}, exact)
 }
 
@@ -106,15 +106,15 @@ func (s *Service) ListPublicForTenant(tenant reseller.TenantContext, resellerRep
 		return nil, 0, err
 	}
 	filter := productcontract.ListFilter{
-		Page:                   page,
-		PageSize:               pageSize,
-		CategoryID:             categoryID,
-		CategoryIDs:            categoryIDs,
-		Search:                 search,
-		OnlyActive:             true,
-		WithCategory:           true,
-		ExcludeProductIDs:      hiddenIDs,
-		ExcludeFulfillmentType: constants.FulfillmentTypeKafudaGPT,
+		Page:                    page,
+		PageSize:                pageSize,
+		CategoryID:              categoryID,
+		CategoryIDs:             categoryIDs,
+		Search:                  search,
+		OnlyActive:              true,
+		WithCategory:            true,
+		ExcludeProductIDs:       hiddenIDs,
+		ExcludeFulfillmentTypes: []string{constants.FulfillmentTypeKafudaGPT, constants.FulfillmentTypeQuefaHosted},
 	}
 	return s.products.List(filter)
 }
@@ -123,12 +123,12 @@ func (s *Service) ListPublicForTenant(tenant reseller.TenantContext, resellerRep
 // includeInactive=true 时保留未软删的下架商品，便于下游同步下架状态。
 func (s *Service) ListForUpstreamSync(updatedAfter *time.Time, includeInactive bool, page, pageSize int) ([]productdomain.Product, int64, error) {
 	filter := productcontract.ListFilter{
-		Page:                   page,
-		PageSize:               pageSize,
-		OnlyActive:             !includeInactive,
-		WithCategory:           true,
-		UpdatedAfter:           updatedAfter,
-		ExcludeFulfillmentType: constants.FulfillmentTypeKafudaGPT,
+		Page:                    page,
+		PageSize:                pageSize,
+		OnlyActive:              !includeInactive,
+		WithCategory:            true,
+		UpdatedAfter:            updatedAfter,
+		ExcludeFulfillmentTypes: []string{constants.FulfillmentTypeKafudaGPT, constants.FulfillmentTypeQuefaHosted},
 	}
 	return s.products.List(filter)
 }
@@ -161,7 +161,7 @@ func (s *Service) GetPublicBySlugForTenant(tenant reseller.TenantContext, resell
 	if !tenant.IsReseller() {
 		return item, nil
 	}
-	if item.FulfillmentType == constants.FulfillmentTypeKafudaGPT || tenant.ResellerID == nil || resellerRepo == nil {
+	if constants.IsDirectRechargeFulfillment(item.FulfillmentType) || tenant.ResellerID == nil || resellerRepo == nil {
 		return nil, productcontract.ErrNotFound
 	}
 	hiddenIDs, err := resellerRepo.ListHiddenProductIDs(*tenant.ResellerID)

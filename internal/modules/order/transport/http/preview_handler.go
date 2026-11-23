@@ -32,6 +32,7 @@ var (
 	ErrGuestPasswordTooShort     = errors.New("guest password too short")
 	ErrInvalidEmail              = errors.New("invalid email")
 	ErrProductPurchaseNotAllowed = errors.New("product purchase not allowed")
+	ErrQuefaBelowCostFloor       = errors.New("quefa discounted amount below cost floor")
 	ErrGuestCouponNotAllowed     = errors.New("guest coupon not allowed")
 	ErrManualStockInsufficient   = errors.New("manual stock insufficient")
 	ErrOrderCurrencyMismatch     = errors.New("order currency mismatch")
@@ -337,6 +338,7 @@ var userOrderCommonErrorRules = []mappedError{
 	{target: productdomain.ErrPurchaseQuantityInvalid, code: response.CodeBadRequest, key: "error.order_item_invalid"},
 	{target: ErrInvalidOrderAmount, code: response.CodeBadRequest, key: "error.order_amount_invalid"},
 	{target: ErrProductPurchaseNotAllowed, code: response.CodeBadRequest, key: "error.product_purchase_not_allowed"},
+	{target: ErrQuefaBelowCostFloor, code: response.CodeBadRequest, key: "error.quefa_below_cost_floor"},
 	{target: productdomain.ErrMaxPurchaseExceeded, code: response.CodeBadRequest, key: "error.product_max_purchase_exceeded"},
 	{target: productdomain.ErrMinPurchaseNotMet, code: response.CodeBadRequest, key: "error.product_min_purchase_not_met"},
 	{target: ErrManualStockInsufficient, code: response.CodeBadRequest, key: "error.manual_stock_insufficient"},
@@ -383,6 +385,7 @@ var guestOrderCommonErrorRules = []mappedError{
 	{target: ErrGuestPasswordTooShort, code: response.CodeBadRequest, key: "error.guest_password_too_short"},
 	{target: ErrInvalidEmail, code: response.CodeBadRequest, key: "error.email_invalid"},
 	{target: ErrProductPurchaseNotAllowed, code: response.CodeBadRequest, key: "error.product_purchase_not_allowed"},
+	{target: ErrQuefaBelowCostFloor, code: response.CodeBadRequest, key: "error.quefa_below_cost_floor"},
 	{target: productdomain.ErrMaxPurchaseExceeded, code: response.CodeBadRequest, key: "error.product_max_purchase_exceeded"},
 	{target: productdomain.ErrMinPurchaseNotMet, code: response.CodeBadRequest, key: "error.product_min_purchase_not_met"},
 	{target: ErrGuestCouponNotAllowed, code: response.CodeBadRequest, key: "error.guest_coupon_not_allowed"},

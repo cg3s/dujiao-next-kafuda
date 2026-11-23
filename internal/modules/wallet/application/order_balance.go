@@ -46,6 +46,15 @@ func (s *Service) ApplyOrderBalance(tx walletcontract.Transaction, input walletc
 	if deduct.GreaterThan(total) {
 		deduct = total
 	}
+	if input.MaxDeductAmount != nil {
+		capAmt := input.MaxDeductAmount.Decimal.Round(2)
+		if capAmt.LessThanOrEqual(decimal.Zero) {
+			return money.FromDecimal(decimal.Zero), nil
+		}
+		if deduct.GreaterThan(capAmt) {
+			deduct = capAmt
+		}
+	}
 	reference, err := orderAllocationReference(repository, input.OrderID, constants.WalletTxnTypeOrderPay)
 	if err != nil {
 		return money.Amount{}, err

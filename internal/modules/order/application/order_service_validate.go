@@ -21,6 +21,7 @@ import (
 	memberlevelapp "github.com/dujiao-next/internal/modules/memberlevel/application"
 	promotionapp "github.com/dujiao-next/internal/modules/promotion/application"
 	promotiondomain "github.com/dujiao-next/internal/modules/promotion/domain"
+	quefacontract "github.com/dujiao-next/internal/modules/quefa/contract"
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/jsonslice"
 	"github.com/dujiao-next/internal/shared/money"
@@ -116,12 +117,13 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 			return nil, ErrProductNotAvailable
 		}
 		direct := strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeKafudaGPT
-		if direct && (!input.StorefrontRequest || (!input.IsGuest && input.UserID == 0) ||
+		quefaHosted := strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeQuefaHosted
+		if (direct || quefaHosted) && (!input.StorefrontRequest || (!input.IsGuest && input.UserID == 0) ||
 			!input.Tenant.IsMain || input.Tenant.ResellerID != nil || input.Tenant.Unavailable ||
 			len(input.Items) != 1 || item.Quantity != 1) {
 			return nil, ErrProductPurchaseNotAllowed
 		}
-		if direct && item.SKUID == 0 {
+		if (direct || quefaHosted) && item.SKUID == 0 {
 			return nil, ErrProductSKURequired
 		}
 		if err := productdomain.ValidatePurchaseQuantity(product, item.Quantity); err != nil {
@@ -141,6 +143,13 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		var directTerms *kafudacontract.PurchaseTerms
 		if direct {
 			directTerms, err = s.resolveDirectPurchaseTerms(product, sku)
+			if err != nil {
+				return nil, err
+			}
+		}
+		var quefaTerms *quefacontract.PurchaseTerms
+		if quefaHosted {
+			quefaTerms, err = s.resolveQuefaPurchaseTerms(product, sku, currency)
 			if err != nil {
 				return nil, err
 			}
@@ -244,7 +253,7 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		if fulfillmentType == "" {
 			fulfillmentType = constants.FulfillmentTypeManual
 		}
-		if fulfillmentType != constants.FulfillmentTypeManual && fulfillmentType != constants.FulfillmentTypeAuto && fulfillmentType != constants.FulfillmentTypeUpstream && !direct {
+		if fulfillmentType != constants.FulfillmentTypeManual && fulfillmentType != constants.FulfillmentTypeAuto && fulfillmentType != constants.FulfillmentTypeUpstream && !direct && !quefaHosted {
 			return nil, ErrFulfillmentInvalid
 		}
 		if fulfillmentType == constants.FulfillmentTypeManual &&
@@ -325,10 +334,20 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		if direct {
 			// Only plan, country, and localized display names belong in buyer-facing SKU metadata.
 			orderItem.SKUSnapshotJSON["spec_values"] = sku.DirectPublicSpecValues()
+		} else if quefaHosted && sku.SpecValuesJSON != nil {
+			sanitized := jsonmap.JSON{}
+			for k, v := range sku.SpecValuesJSON {
+				if strings.EqualFold(k, "product_code") {
+					continue
+				}
+				sanitized[k] = v
+			}
+			orderItem.SKUSnapshotJSON["spec_values"] = sanitized
 		}
 		orderItems = append(orderItems, orderItem)
 		plans = append(plans, childOrderPlan{
 			DirectTerms:       directTerms,
+			QuefaTerms:        quefaTerms,
 			Product:           product,
 			SKU:               sku,
 			Item:              orderItem,
@@ -400,6 +419,9 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		if planTotal.LessThan(decimal.Zero) {
 			planTotal = decimal.Zero
 		}
+		if plan.QuefaTerms != nil && planTotal.LessThan(plan.QuefaTerms.CostFloor.Round(2)) {
+			return nil, ErrQuefaBelowCostFloor
+		}
 		totalAmount = totalAmount.Add(planTotal).Round(2)
 	}
 	if totalAmount.LessThanOrEqual(decimal.Zero) {
@@ -438,6 +460,33 @@ func (s *OrderService) resolveDirectPurchaseTerms(product *productdomain.Product
 		return nil, ErrProductNotAvailable
 	}
 	return terms, nil
+}
+
+func (s *OrderService) resolveQuefaPurchaseTerms(product *productdomain.Product, sku *productdomain.ProductSKU, currency string) (*quefacontract.PurchaseTerms, error) {
+	if product.IsMapped || s.quefaCatalog == nil {
+		return nil, ErrProductNotAvailable
+	}
+	if !sku.QuefaPriceValid() {
+		return nil, ErrProductPriceInvalid
+	}
+	walletOnly := s.settingService != nil && s.settingService.GetWalletOnlyPayment()
+	terms, err := s.quefaCatalog.ResolvePurchaseTerms(context.Background(), sku.QuefaProductCode(), sku.CostPriceAmount.Decimal, currency, walletOnly)
+	if err != nil || terms == nil {
+		return nil, ErrProductNotAvailable
+	}
+	return terms, nil
+}
+
+func validateQuefaCheckout(plan childOrderPlan, product *productdomain.Product, sku *productdomain.ProductSKU) error {
+	terms := plan.QuefaTerms
+	if terms == nil || plan.SKU == nil || product.IsMapped || !sku.QuefaPriceValid() ||
+		sku.QuefaProductCode() != terms.ProductCode ||
+		!sku.PriceAmount.Equal(plan.Item.OriginalUnitPrice.Decimal) ||
+		!sku.CostPriceAmount.Equal(plan.Item.CostPrice.Decimal) ||
+		productdomain.ValidatePurchaseQuantity(product, 1) != nil {
+		return ErrProductNotAvailable
+	}
+	return nil
 }
 
 func validateDirectCheckout(tx ordercontract.Transaction, plan childOrderPlan, product *productdomain.Product, sku *productdomain.ProductSKU) error {

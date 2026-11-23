@@ -1,9 +1,11 @@
 package container
 
 import (
+	"context"
 	"errors"
 
 	kafudawiring "github.com/dujiao-next/internal/bootstrap/kafudagpt"
+	quefawiring "github.com/dujiao-next/internal/bootstrap/quefa"
 	"github.com/dujiao-next/internal/cache"
 	"github.com/dujiao-next/internal/config"
 	"github.com/dujiao-next/internal/constants"
@@ -15,6 +17,7 @@ import (
 	epusdtadapter "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/adapters/epusdt"
 	okpayadapter "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/adapters/okpay"
 	paypaladapter "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/adapters/paypal"
+	quefapayadapter "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/adapters/quefa"
 	stripeadapter "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/adapters/stripe"
 	tokenpayadapter "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/adapters/tokenpay"
 	wechatpayadapter "github.com/dujiao-next/internal/modules/payment/infrastructure/gateway/adapters/wechatpay"
@@ -22,7 +25,9 @@ import (
 	"github.com/dujiao-next/internal/platform/database/gormdb"
 	"github.com/dujiao-next/internal/plugin/directfulfillment"
 	_ "github.com/dujiao-next/internal/plugins/kafudagpt"
+	_ "github.com/dujiao-next/internal/plugins/quefa"
 	"github.com/dujiao-next/internal/queue"
+	"github.com/shopspring/decimal"
 )
 
 // NewContainer 初始化应用依赖容器。
@@ -62,6 +67,21 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 		if mod, ok := instance.(*kafudawiring.Module); ok {
 			c.KafudaGPT = mod
 		}
+		if mod, ok := instance.(*quefawiring.Module); ok {
+			c.Quefa = mod
+		}
+	}
+	if c.Quefa != nil && c.Quefa.Orders != nil {
+		quefaOrders := c.Quefa.Orders
+		c.PaymentProviderRegistry.Register(constants.PaymentProviderQuefa, "", quefapayadapter.NewAdapter(
+			func(ctx context.Context, parentOrderID uint, onlineAmount decimal.Decimal, returnURL string) (string, string, string, error) {
+				out, err := quefaOrders.CreatePlatformCollectPayment(ctx, parentOrderID, onlineAmount, returnURL)
+				if err != nil {
+					return "", "", "", err
+				}
+				return out.UpstreamOrderID, out.PayURL, out.QRCode, nil
+			},
+		))
 	}
 	c.initServices()
 	return c, nil

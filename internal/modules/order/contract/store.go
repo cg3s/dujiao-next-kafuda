@@ -13,6 +13,7 @@ import (
 	fulfillmentcontract "github.com/dujiao-next/internal/modules/fulfillment/contract"
 	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
+	quefacontract "github.com/dujiao-next/internal/modules/quefa/contract"
 	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
 	resellerdomain "github.com/dujiao-next/internal/modules/reseller/domain"
 	walletcontract "github.com/dujiao-next/internal/modules/wallet/contract"
@@ -78,6 +79,7 @@ type ResellerOrderStore interface {
 // 每个方法只暴露相应领域端口，保证事务原子性同时隔离 GORM。
 type Transaction interface {
 	KafudaGPT() KafudaOrderTransaction
+	Quefa() QuefaOrderTransaction
 	Orders() Store
 	Products() productcontract.Repository
 	ProductSKUs() productcontract.SKURepository
@@ -95,4 +97,9 @@ type Transaction interface {
 type KafudaOrderTransaction interface {
 	kafudacontract.CheckoutRepository
 	kafudacontract.Transaction
+}
+
+type QuefaOrderTransaction interface {
+	quefacontract.CheckoutRepository
+	quefacontract.Transaction
 }

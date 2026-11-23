@@ -1,7 +1,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '../stores/app'
-import { isDirectFulfillmentType } from '../utils/directPurchase'
+import { isDirectFulfillmentType, isHostedRechargeType, isSingleItemDirectType } from '../utils/directPurchase'
 import { amountToCents, centsToAmount } from '../utils/money'
 import { resolveCardDisplayPrice, resolveMemberPriceAmount } from '../utils/productPricing'
 import { useUserAuthStore } from '../stores/userAuth'
@@ -53,6 +53,7 @@ export function useProductLabels() {
   }
 
   const getFulfillmentTypeLabel = (fulfillmentType: string) => {
+    if (isHostedRechargeType(fulfillmentType)) return t('hostedRecharge.label')
     if (isDirectFulfillmentType(fulfillmentType)) return t('directPurchase.label')
     return fulfillmentType === 'auto' ? t('products.fulfillmentType.auto') : t('products.fulfillmentType.manual')
   }
@@ -72,7 +73,7 @@ export function useProductLabels() {
 
   const getStockStatusLabel = (product: any) => {
     const status = product?.stock_status || ''
-    if (isDirectFulfillmentType(product?.fulfillment_type)) {
+    if (isSingleItemDirectType(product?.fulfillment_type)) {
       return t(status === 'in_stock' && !product?.is_sold_out ? 'directPurchase.available' : 'directPurchase.unavailable')
     }
     if (status === 'unlimited') return t('products.stockStatus.unlimited')

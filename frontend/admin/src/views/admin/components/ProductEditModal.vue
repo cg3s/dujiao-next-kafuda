@@ -719,6 +719,48 @@ const populateForm = (product: AdminProduct) => {
 }
 
 const isDirect = computed(() => form.fulfillment_type === 'kafuda_gpt_direct')
+const isQuefa = computed(() => form.fulfillment_type === 'quefa_hosted')
+const quefaCatalogProducts = ref<Array<{ product_code: string; title: string; supply_price: string; min_sale_price: string; currency: string; available: boolean }>>([])
+const quefaCatalogLoading = ref(false)
+const loadQuefaCatalogForProduct = async (sync = false) => {
+  quefaCatalogLoading.value = true
+  try {
+    const res = sync ? await adminAPI.syncQuefaCatalog() : await adminAPI.getQuefaCatalog()
+    const list = res.data?.data?.products
+    quefaCatalogProducts.value = Array.isArray(list) ? list : []
+  } catch {
+    quefaCatalogProducts.value = []
+  } finally {
+    quefaCatalogLoading.value = false
+  }
+}
+const addQuefaSKUFromCatalog = (item: { product_code: string; title: string; supply_price: string; min_sale_price: string }) => {
+  const exists = form.skus.some((s) => s.sku_code === item.product_code || s.spec_values?.product_code === item.product_code)
+  if (exists) return
+  const floor = Math.max(Number(item.supply_price || 0), Number(item.min_sale_price || 0))
+  const supply = Number(item.supply_price || 0)
+  form.skus.push({
+    id: 0,
+    sku_code: item.product_code,
+    spec_values: { product_code: item.product_code, 'zh-CN': item.title, 'zh-TW': item.title, 'en-US': item.title },
+    price_amount: floor > 0 ? Number(floor.toFixed(2)) : 0,
+    cost_price_amount: supply > 0 ? Number(supply.toFixed(2)) : '',
+    direct_catalog_revision: 0,
+    direct_cost_configured: supply > 0,
+    manual_stock_total: 0,
+    original_manual_stock_total: null,
+    is_active: true,
+    sort_order: form.skus.length,
+  })
+}
+watch(isQuefa, (active) => {
+  if (active) {
+    form.stock_display_mode = 'hidden'
+    form.min_purchase_quantity = 1
+    form.max_purchase_quantity = 1
+    if (quefaCatalogProducts.value.length === 0) void loadQuefaCatalogForProduct(false)
+  }
+})
 
 const unknownSKURegion = '__unknown__'
 const skuRegion = (sku: SKUFormItem) => sku.spec_values.country?.trim().toUpperCase() || unknownSKURegion
@@ -1147,12 +1189,38 @@ watch(
                 <SelectItem value="manual">{{ t('admin.products.fulfillmentType.manual') }}</SelectItem>
                 <SelectItem value="auto">{{ t('admin.products.fulfillmentType.auto') }}</SelectItem>
                 <SelectItem value="kafuda_gpt_direct">{{ t('kafuda.type') }}</SelectItem>
+                <SelectItem value="quefa_hosted">{{ t('quefa.type') }}</SelectItem>
               </SelectContent>
             </Select>
             <p v-if="editingIsMapped" class="mt-1 text-xs text-indigo-600">{{ t('admin.products.mappedFulfillmentLocked') }}</p>
           </div>
 
-          <div v-if="!isDirect" class="col-span-1">
+          <div v-if="isQuefa" class="col-span-1 md:col-span-2 rounded-xl border border-border bg-muted/20 p-4 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div class="text-sm font-medium">{{ t('quefa.catalogBindTitle') }}</div>
+                <p class="text-xs text-muted-foreground">{{ t('quefa.catalogBindHint') }}</p>
+              </div>
+              <Button type="button" size="sm" variant="outline" :disabled="quefaCatalogLoading" @click="loadQuefaCatalogForProduct(true)">
+                {{ quefaCatalogLoading ? t('quefa.syncing') : t('quefa.syncCatalog') }}
+              </Button>
+            </div>
+            <div v-if="quefaCatalogProducts.length > 0" class="flex flex-wrap gap-2">
+              <Button
+                v-for="qItem in quefaCatalogProducts"
+                :key="qItem.product_code"
+                type="button"
+                size="sm"
+                variant="secondary"
+                :disabled="!qItem.available"
+                @click="addQuefaSKUFromCatalog(qItem)"
+              >
+                + {{ qItem.title }} ({{ qItem.product_code }} · {{ qItem.supply_price }} {{ qItem.currency }})
+              </Button>
+            </div>
+          </div>
+
+          <div v-if="!isDirect && !isQuefa" class="col-span-1">
             <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.manualStockTotal') }}</label>
             <Input
               v-model.number="form.manual_stock_total"

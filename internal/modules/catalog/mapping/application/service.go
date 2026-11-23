@@ -124,7 +124,7 @@ func (s *Service) SetActive(id uint, active bool) error {
 		return err
 	}
 	return s.withCurrentMapping(mapping, func(repos mappingcontract.ImportRepositories, current *mappingdomain.Mapping, product *productdomain.Product) error {
-		if product.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+		if constants.IsDirectRechargeFulfillment(product.FulfillmentType) {
 			return mappingcontract.ErrMappingNotFound
 		}
 		return repos.Mappings.UpdateActive(current.ID, active)

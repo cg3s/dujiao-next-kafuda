@@ -392,12 +392,99 @@ export interface KafudaConfigUpdatePayload {
   poll_interval_seconds?: number
 }
 
+export interface QuefaConfigData {
+  api_base_url: string
+  partner_id: string
+  key_id: string
+  client_secret_configured: boolean
+  webhook_secret_configured: boolean
+  collection_mode: 'platform_collect' | 'agent_collect'
+  sales_enabled: boolean
+  allowed_pay_domains: string[]
+  catalog_ttl_seconds: number
+  poll_interval_seconds: number
+  poll_review_after_seconds: number
+  webhook_max_skew_seconds: number
+  source: string
+  version: number
+  updated_at: string
+}
+
+export interface QuefaConfigUpdatePayload {
+  api_base_url?: string
+  partner_id?: string
+  key_id?: string
+  client_secret?: string
+  clear_client_secret?: boolean
+  webhook_secret?: string
+  clear_webhook_secret?: boolean
+  collection_mode?: 'platform_collect' | 'agent_collect'
+  sales_enabled?: boolean
+  allowed_pay_domains?: string[]
+  catalog_ttl_seconds?: number
+  poll_interval_seconds?: number
+  poll_review_after_seconds?: number
+  webhook_max_skew_seconds?: number
+}
+
+export interface QuefaCatalogProduct {
+  product_code: string
+  title: string
+  supply_price: string
+  min_sale_price: string
+  currency: string
+  collection_modes?: string[]
+  delivery_modes?: string[]
+  available: boolean
+}
+
+export interface QuefaOrderStatus {
+  order_id: number
+  parent_order_id: number
+  product_code: string
+  collection_mode: string
+  delivery_mode: string
+  cost_floor_amount: string
+  sale_amount: string
+  settlement_currency: string
+  merchant_order_no: string
+  upstream_order_id?: string
+  latest_redemption_id?: string
+  attempt_no: number
+  progress_version: number
+  progress_stage?: string
+  progress_message?: string
+  progress_updated_at?: string
+  stage: string
+  upstream_status?: string
+  result_code?: string
+  retry_allowed: boolean
+  next_action?: string
+  recovery_action?: string
+  refund_ref?: string
+  procurement_refund_ref?: string
+  exception_code?: string
+  review_remark?: string
+  poll_stopped: boolean
+  next_poll_at?: string
+  updated_at: string
+  completed_at?: string
+}
+
 export const adminAPI = {
 	getKafudaCatalog: () => api.get('/admin/kafuda-gpt/catalog'),
 	syncKafudaCatalog: () => api.post('/admin/kafuda-gpt/catalog/sync', {}),
   getKafudaConfig: () => api.get('/admin/kafuda-gpt/config'),
   updateKafudaConfig: (data: KafudaConfigUpdatePayload) => api.put('/admin/kafuda-gpt/config', data),
   testKafudaConfig: (data?: KafudaConfigUpdatePayload) => api.post('/admin/kafuda-gpt/config/test', data ?? {}),
+  getQuefaConfig: () => api.get('/admin/quefa/config'),
+  updateQuefaConfig: (data: QuefaConfigUpdatePayload) => api.put('/admin/quefa/config', data),
+  testQuefaConfig: (data?: QuefaConfigUpdatePayload) => api.post('/admin/quefa/config/test', data ?? {}),
+  getQuefaCatalog: () => api.get('/admin/quefa/catalog'),
+  syncQuefaCatalog: () => api.post('/admin/quefa/catalog/sync', {}),
+  getOrderQuefaStatus: (id: number) => api.get(`/admin/orders/${id}/quefa`),
+  syncOrderQuefaStatus: (id: number) => api.post(`/admin/orders/${id}/quefa/sync`, {}),
+  markOrderQuefaReview: (id: number, remark: string) => api.post(`/admin/orders/${id}/quefa/mark-review`, { remark }),
   login: (data: AdminLoginRequest) => api.post('/admin/login', data),
   verify2FA: (data: Verify2FAPayload) => api.post('/admin/login/verify-2fa', data),
   // 合规声明

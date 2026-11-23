@@ -70,6 +70,7 @@ type OrderBalanceInput struct {
 	UserID           uint
 	TotalAmount      money.Amount
 	WalletPaidAmount money.Amount
+	MaxDeductAmount  *money.Amount
 	Currency         string
 	UseBalance       bool
 }

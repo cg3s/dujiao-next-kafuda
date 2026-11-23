@@ -5,10 +5,12 @@ import (
 
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
+	quefacontract "github.com/dujiao-next/internal/modules/quefa/contract"
 	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
 )
 
 var (
+	ErrQuefaBelowCostFloor        = quefacontract.ErrBelowCostFloor
 	ErrInvalidEmail               = errors.New("invalid email")
 	ErrInvalidOrderItem           = productdomain.ErrPurchaseQuantityInvalid
 	ErrInvalidOrderAmount         = errors.New("invalid order amount")

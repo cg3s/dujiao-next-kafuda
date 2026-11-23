@@ -190,7 +190,7 @@
 
             <!-- 购买按钮：小屏滚出视野后由底部固定条接管 -->
             <div ref="purchaseActionsRef" class="mt-6 space-y-3">
-              <p v-if="isDirect" class="text-sm leading-relaxed text-muted-foreground">{{ t('directPurchase.notice') }}</p>
+              <p v-if="isDirect" class="text-sm leading-relaxed text-muted-foreground">{{ t(isHostedRecharge ? 'hostedRecharge.notice' : 'directPurchase.notice') }}</p>
               <Alert v-if="cannotPurchaseReason" variant="destructive">
                 <AlertDescription class="font-semibold">{{ cannotPurchaseReason }}</AlertDescription>
               </Alert>
@@ -342,7 +342,7 @@ const {
   hasSkuPromotionPrice, getSkuPromotionSaveAmount,
   hasPromotionRules, getPromotionRules,
   formatPromotionRule, formatWholesaleTier, formatRelatedPostDate, normalizeSkuId,
-  loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
+  loading, product, isDirect, isHostedRecharge, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
   activeSkus, directSkuSpecs, visibleSkus, selectedSku,
   selectedSkuMemberPrice, hasMemberPrice,
   hasSelectedSkuWholesalePrice, selectedSkuWholesaleFinalIsMember, selectedSkuWholesaleFinalPrice,

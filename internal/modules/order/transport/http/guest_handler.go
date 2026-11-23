@@ -11,6 +11,7 @@ import (
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 
 	orderpresenter "github.com/dujiao-next/internal/modules/order/transport/presenter"
+	quefacontract "github.com/dujiao-next/internal/modules/quefa/contract"
 	reseller "github.com/dujiao-next/internal/modules/reseller/contract"
 	"github.com/dujiao-next/internal/platform/http/ginutil"
 	"github.com/dujiao-next/internal/platform/http/response"
@@ -20,6 +21,8 @@ import (
 
 type GuestDirectStatusReader func(ctx context.Context, orderNo, email, password string) (*DirectStatus, error)
 type GuestDirectAuthorizer func(ctx context.Context, orderNo, email, password, session string) error
+type GuestHostedRechargeStatusReader func(ctx context.Context, orderNo, email, password string) (*quefacontract.BuyerStatus, error)
+type GuestHostedRechargeEntryOpener func(ctx context.Context, orderNo, email, password string) (*quefacontract.FulfillmentEntryResult, error)
 
 // GuestOrderQuery 游客订单只读端口。
 type GuestOrderQuery interface {
@@ -35,6 +38,72 @@ type GuestHandler struct {
 	refunds         RefundRecordDirectory
 	direct          GuestDirectStatusReader
 	authorizeDirect GuestDirectAuthorizer
+	hostedStatus    GuestHostedRechargeStatusReader
+	hostedEntry     GuestHostedRechargeEntryOpener
+}
+
+func (h *GuestHandler) SetHostedRecharge(status GuestHostedRechargeStatusReader, entry GuestHostedRechargeEntryOpener) {
+	if h != nil {
+		h.hostedStatus = status
+		h.hostedEntry = entry
+	}
+}
+
+func (h *GuestHandler) GetGuestHostedRechargeStatus(c *gin.Context) {
+	email, password, ok := ginutil.GetGuestCredentials(c)
+	if !ok || email == "" {
+		ginutil.RespondError(c, response.CodeBadRequest, "error.guest_email_required", nil)
+		return
+	}
+	if password == "" {
+		ginutil.RespondError(c, response.CodeBadRequest, "error.guest_password_required", nil)
+		return
+	}
+	tenant := tenantFromRequest(c)
+	orderNo := strings.TrimSpace(c.Param("order_no"))
+	if h.hostedStatus == nil || orderNo == "" || !tenant.IsMain || tenant.ResellerID != nil || tenant.Unavailable {
+		ginutil.RespondError(c, response.CodeNotFound, "error.guest_order_not_found", nil)
+		return
+	}
+	st, err := h.hostedStatus(c.Request.Context(), orderNo, email, password)
+	if err != nil {
+		ginutil.RespondError(c, response.CodeInternal, "error.order_fetch_failed", nil)
+		return
+	}
+	if st == nil {
+		ginutil.RespondError(c, response.CodeNotFound, "error.guest_order_not_found", nil)
+		return
+	}
+	response.Success(c, st)
+}
+
+func (h *GuestHandler) OpenGuestHostedRechargeEntry(c *gin.Context) {
+	email, password, ok := ginutil.GetGuestCredentials(c)
+	if !ok || email == "" {
+		ginutil.RespondError(c, response.CodeBadRequest, "error.guest_email_required", nil)
+		return
+	}
+	if password == "" {
+		ginutil.RespondError(c, response.CodeBadRequest, "error.guest_password_required", nil)
+		return
+	}
+	tenant := tenantFromRequest(c)
+	orderNo := strings.TrimSpace(c.Param("order_no"))
+	if h.hostedEntry == nil || orderNo == "" || !tenant.IsMain || tenant.ResellerID != nil || tenant.Unavailable {
+		ginutil.RespondError(c, response.CodeNotFound, "error.guest_order_not_found", nil)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	entry, err := h.hostedEntry(c.Request.Context(), orderNo, email, password)
+	if err != nil {
+		if errors.Is(err, ErrOrderNotFound) || errors.Is(err, ErrGuestOrderNotFound) {
+			ginutil.RespondError(c, response.CodeNotFound, "error.guest_order_not_found", nil)
+			return
+		}
+		ginutil.RespondError(c, response.CodeBadRequest, "error.hosted_recharge_entry_unavailable", nil)
+		return
+	}
+	response.Success(c, entry)
 }
 
 func NewGuestHandler(orders GuestOrderQuery, payments PaymentChannelPolicy, refunds RefundRecordDirectory) *GuestHandler {

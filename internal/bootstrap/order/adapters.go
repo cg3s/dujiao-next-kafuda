@@ -704,6 +704,7 @@ func mapOrderTransportError(err error) error {
 		{orderapp.ErrGuestPasswordTooShort, ordertransport.ErrGuestPasswordTooShort},
 		{orderapp.ErrInvalidEmail, ordertransport.ErrInvalidEmail},
 		{orderapp.ErrProductPurchaseNotAllowed, ordertransport.ErrProductPurchaseNotAllowed},
+		{orderapp.ErrQuefaBelowCostFloor, ordertransport.ErrQuefaBelowCostFloor},
 		{orderapp.ErrManualStockInsufficient, ordertransport.ErrManualStockInsufficient},
 		{orderapp.ErrOrderCurrencyMismatch, ordertransport.ErrOrderCurrencyMismatch},
 		{orderapp.ErrProductNotAvailable, ordertransport.ErrProductNotAvailable},

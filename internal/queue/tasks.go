@@ -38,6 +38,10 @@ const (
 	TaskKafudaRecoverChecks = constants.TaskKafudaRecoverChecks
 	// TaskKafudaRefreshCatalog 定时刷新直充目录。
 	TaskKafudaRefreshCatalog = constants.TaskKafudaRefreshCatalog
+	// TaskQuefaSyncOrder 异步同步单个 Quefa 托管直充订单。
+	TaskQuefaSyncOrder = constants.TaskQuefaSyncOrder
+	// TaskQuefaPollOrders 定时扫描到期在途 Quefa 订单与待发通知。
+	TaskQuefaPollOrders = constants.TaskQuefaPollOrders
 	// TaskDownstreamCallback 下游回调通知任务
 	TaskDownstreamCallback = constants.TaskDownstreamCallback
 	// TaskReconciliationRun 对账执行任务
@@ -185,6 +189,25 @@ func NewKafudaRecoverChecksTask() *asynq.Task {
 // NewKafudaRefreshCatalogTask refreshes the catalog with the worker's configured gateway.
 func NewKafudaRefreshCatalogTask() *asynq.Task {
 	return asynq.NewTask(TaskKafudaRefreshCatalog, nil)
+}
+
+// QuefaSyncOrderPayload carries only the local child order ID (no secrets).
+type QuefaSyncOrderPayload struct {
+	ChildOrderID uint `json:"child_order_id"`
+}
+
+// NewQuefaSyncOrderTask creates an async Quefa order sync/procurement task.
+func NewQuefaSyncOrderTask(payload QuefaSyncOrderPayload) (*asynq.Task, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return asynq.NewTask(TaskQuefaSyncOrder, body), nil
+}
+
+// NewQuefaPollOrdersTask creates the periodic Quefa recovery/polling sweep task.
+func NewQuefaPollOrdersTask() *asynq.Task {
+	return asynq.NewTask(TaskQuefaPollOrders, nil)
 }
 
 // NewUpstreamSyncStockTask 创建上游库存同步任务

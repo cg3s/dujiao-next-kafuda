@@ -267,7 +267,7 @@ func (h *Handler) GetProductDetail(c *gin.Context) {
 		respondChannelError(c, 500, 500, "internal_error", "error.internal_error", err)
 		return
 	}
-	if product == nil || !product.IsActive || !product.Category.IsActive || product.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+	if product == nil || !product.IsActive || !product.Category.IsActive || constants.IsDirectRechargeFulfillment(product.FulfillmentType) {
 		respondChannelError(c, 404, 404, "product_not_found", "error.product_not_found", nil)
 		return
 	}

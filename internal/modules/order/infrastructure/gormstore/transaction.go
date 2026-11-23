@@ -6,6 +6,7 @@ import (
 
 	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
 	paymentdomain "github.com/dujiao-next/internal/modules/payment/domain"
+	quefastore "github.com/dujiao-next/internal/modules/quefa/infrastructure/gormstore"
 
 	affiliatecontract "github.com/dujiao-next/internal/modules/affiliate/contract"
 	affiliategormstore "github.com/dujiao-next/internal/modules/affiliate/infrastructure/gormstore"
@@ -60,6 +61,10 @@ func (tx transaction) Orders() ordercontract.Store {
 }
 
 func (tx transaction) KafudaGPT() ordercontract.KafudaOrderTransaction { return kafudastore.New(tx.db) }
+
+func (tx transaction) Quefa() ordercontract.QuefaOrderTransaction {
+	return quefastore.UseTransaction(tx.db)
+}
 
 func (tx transaction) Products() productcontract.Repository {
 	return productgormstore.NewProductStore(tx.db)

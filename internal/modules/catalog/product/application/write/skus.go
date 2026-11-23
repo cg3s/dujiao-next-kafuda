@@ -169,7 +169,7 @@ func (s *WriteService) normalizeProductSKUInputs(inputs []ProductSKUInput, fulfi
 		seenCode[codeKey] = struct{}{}
 
 		priceAmount := input.PriceAmount.Round(2)
-		if priceAmount.LessThanOrEqual(decimal.Zero) && !(fulfillmentType == constants.FulfillmentTypeKafudaGPT && !isActive && priceAmount.IsZero()) {
+		if priceAmount.LessThanOrEqual(decimal.Zero) && !(constants.IsDirectRechargeFulfillment(fulfillmentType) && !isActive && priceAmount.IsZero()) {
 			return nil, decimal.Zero, 0, productcontract.ErrProductPriceInvalid
 		}
 		costPriceAmount := input.CostPriceAmount.Round(2)
@@ -237,7 +237,7 @@ func (s *WriteService) normalizeProductSKUInputs(inputs []ProductSKUInput, fulfi
 		}
 	}
 
-	if !hasActive && fulfillmentType != constants.FulfillmentTypeKafudaGPT {
+	if !hasActive && !constants.IsDirectRechargeFulfillment(fulfillmentType) {
 		return nil, decimal.Zero, 0, productcontract.ErrProductSKUInvalid
 	}
 	if fulfillmentType != constants.FulfillmentTypeManual {

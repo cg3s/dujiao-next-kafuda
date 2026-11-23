@@ -46,6 +46,7 @@ func RegisterUserReadRoutes(user gin.IRoutes, handler *UserHandler) {
 	user.GET("/orders/stats", handler.OrderStats)
 	user.GET("/orders/:order_no", handler.GetOrderByOrderNo)
 	user.GET("/orders/:order_no/direct-status", handler.GetDirectStatus)
+	user.GET("/orders/:order_no/hosted-recharge/status", handler.GetHostedRechargeStatus)
 	user.GET("/orders/:order_no/fulfillment/download", handler.DownloadFulfillment)
 }
 
@@ -68,6 +69,7 @@ func RegisterUserCancelRoute(user gin.IRoutes, handler *UserHandler) {
 // RegisterUserDirectAuthorizationRoute registers the authenticated submission endpoint.
 func RegisterUserDirectAuthorizationRoute(user gin.IRoutes, handler *UserHandler, limits ...gin.HandlerFunc) {
 	user.POST("/orders/:order_no/direct-authorize", append(limits, handler.AuthorizeDirect)...)
+	user.POST("/orders/:order_no/hosted-recharge/entry", append(limits, handler.OpenHostedRechargeEntry)...)
 }
 
 // RegisterGuestReadRoutes 注册前台游客订单只读路由。
@@ -78,12 +80,14 @@ func RegisterGuestReadRoutes(guest gin.IRoutes, handler *GuestHandler) {
 	guest.GET("/orders", handler.ListGuestOrders)
 	guest.GET("/orders/:order_no", handler.GetGuestOrderByOrderNo)
 	guest.GET("/orders/:order_no/direct-status", handler.GetGuestDirectStatus)
+	guest.GET("/orders/:order_no/hosted-recharge/status", handler.GetGuestHostedRechargeStatus)
 	guest.GET("/orders/:order_no/fulfillment/download", handler.DownloadGuestFulfillment)
 }
 
 // RegisterGuestDirectAuthorizationRoute registers the guest direct recharge submission endpoint.
 func RegisterGuestDirectAuthorizationRoute(guest gin.IRoutes, handler *GuestHandler, limits ...gin.HandlerFunc) {
 	guest.POST("/orders/:order_no/direct-authorize", append(limits, handler.AuthorizeGuestDirect)...)
+	guest.POST("/orders/:order_no/hosted-recharge/entry", append(limits, handler.OpenGuestHostedRechargeEntry)...)
 }
 
 // RegisterUserPreviewRoute 注册前台用户订单预览路由。

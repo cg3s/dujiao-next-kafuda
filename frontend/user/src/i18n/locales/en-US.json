@@ -269,6 +269,50 @@
     "loginRequired": "Sign in to continue to direct recharge checkout.",
     "checkoutRestricted": "Use Buy Now on the main storefront to purchase one direct recharge option."
   },
+  "hostedRecharge": {
+    "label": "Hosted Direct Recharge",
+    "notice": "Limit one specification and quantity 1 per order. After payment, open the order details and click Go to Recharge to complete fulfillment.",
+    "walletOnlyUnavailable": "Hosted direct recharge products are unavailable when wallet-only payment mode is enabled.",
+    "entry": {
+      "openButton": "Go to Recharge",
+      "resubmitButton": "Re-open Recharge Page",
+      "opening": "Opening recharge page…",
+      "hint": "Opens the hosted recharge page in a new window. Follow the on-screen instructions to complete your recharge.",
+      "popupBlocked": "Your browser blocked the new tab. Open it manually using the link below:",
+      "openManually": "Open recharge page",
+      "failed": "Unable to open the recharge page right now. Please try again later."
+    },
+    "progress": {
+      "title": "Recharge Status",
+      "refresh": "Refresh",
+      "waiting_payment": "Awaiting payment",
+      "waiting_procurement": "Preparing recharge",
+      "procurement_blocked": "Channel busy",
+      "waiting_submit": "Ready to recharge",
+      "recharging": "Recharging",
+      "resubmit_required": "Action required",
+      "manual_review": "Under manual review",
+      "refunding": "Refunding",
+      "succeeded": "Completed",
+      "closed": "Closed",
+      "refunded": "Refunded",
+      "updated": "Updated {time}",
+      "retrying": "Status is temporarily unavailable. Retrying automatically."
+    },
+    "stageHints": {
+      "waiting_payment": "Payment has not been completed yet.",
+      "waiting_procurement": "Payment confirmed. We are preparing your recharge entry, please wait a moment.",
+      "procurement_blocked": "The recharge channel is temporarily busy. Please wait or contact support for assistance.",
+      "waiting_submit": "Your recharge entry is ready. Click the button below to submit your account for recharge.",
+      "recharging": "Your recharge is in progress. Status updates automatically.",
+      "resubmit_required": "The previous submission could not be completed. Please open the recharge page again to resubmit.",
+      "manual_review": "Your order is under manual review. Please wait or contact support.",
+      "refunding": "A refund is currently being processed for this order.",
+      "succeeded": "Your recharge has been completed successfully.",
+      "closed": "This recharge order has been closed.",
+      "refunded": "This order has been refunded."
+    }
+  },
   "productPurchase": {
     "label": "Purchase type",
     "member": "Members only",

@@ -23,6 +23,21 @@ func (o Order) HasDirectRecharge() bool {
 	return false
 }
 
+// HasQuefaHosted checks whether an order or any child item uses Quefa hosted recharge.
+func (o Order) HasQuefaHosted() bool {
+	for _, item := range o.Items {
+		if item.FulfillmentType == constants.FulfillmentTypeQuefaHosted {
+			return true
+		}
+	}
+	for _, child := range o.Children {
+		if child.HasQuefaHosted() {
+			return true
+		}
+	}
+	return false
+}
+
 // Order 订单表
 type Order struct {
 	ID                      uint         `gorm:"primarykey" json:"id"`                                                             // 主键

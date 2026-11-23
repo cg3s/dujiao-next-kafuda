@@ -334,6 +334,12 @@ const routes = [
         meta: { permission: 'GET:/admin/kafuda-gpt/config' },
       },
       {
+        path: 'quefa-hosted',
+        name: 'quefa-hosted',
+        component: () => import('@/views/admin/QuefaDirect.vue'),
+        meta: { permission: 'GET:/admin/quefa/config' },
+      },
+      {
         path: 'telegram-bot',
         name: 'telegram-bot',
         component: () => import('@/views/admin/TelegramBot.vue'),

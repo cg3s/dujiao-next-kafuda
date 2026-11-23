@@ -45,6 +45,7 @@ func (s *WriteService) Create(input CreateProductInput) (*productdomain.Product,
 		return nil, productcontract.ErrFulfillmentInvalid
 	}
 	isDirect := fulfillmentType == constants.FulfillmentTypeKafudaGPT
+	isQuefa := fulfillmentType == constants.FulfillmentTypeQuefaHosted
 	requestedSKUs := input.SKUs
 	catalogForUpdate, _ := s.directCatalog.(directCatalogForUpdate)
 	if isDirect {
@@ -59,8 +60,11 @@ func (s *WriteService) Create(input CreateProductInput) (*productdomain.Product,
 	}
 
 	priceAmount := input.PriceAmount.Round(2)
-	if len(input.SKUs) == 0 && priceAmount.LessThanOrEqual(decimal.Zero) {
+	if len(input.SKUs) == 0 && priceAmount.LessThanOrEqual(decimal.Zero) && !isQuefa {
 		return nil, productcontract.ErrProductPriceInvalid
+	}
+	if isQuefa && len(input.SKUs) == 0 {
+		return nil, productcontract.ErrProductSKUInvalid
 	}
 
 	manualStockTotal := 0
@@ -104,9 +108,10 @@ func (s *WriteService) Create(input CreateProductInput) (*productdomain.Product,
 		}
 		costPriceAmount = minActiveCostPrice(normalizedSKUs)
 	}
-	if isDirect {
+	if isDirect || isQuefa {
 		minPurchaseQuantity, maxPurchaseQuantity = 1, 1
 		stockDisplayMode = constants.ProductStockDisplayHidden
+		manualStockTotal = 0
 	}
 	paymentChannelIDs, err := s.filterAvailablePaymentChannelIDs(input.PaymentChannelIDs)
 	if err != nil {

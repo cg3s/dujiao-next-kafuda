@@ -72,6 +72,10 @@ type DirectAvailability interface {
 	PurchasableSKURevisions(context.Context) (map[string]uint64, error)
 }
 
+type QuefaAvailability interface {
+	IsSKUSellable(ctx context.Context, productCode string, adminCost decimal.Decimal) bool
+}
+
 // PublicHandler 处理公开商品目录 HTTP 请求。
 type PublicHandler struct {
 	products     PublicProductQueries
@@ -82,6 +86,13 @@ type PublicHandler struct {
 	skuMappings  SKUMappingLookup
 	relatedPosts RelatedPostReader
 	direct       DirectAvailability
+	quefa        QuefaAvailability
+}
+
+func (h *PublicHandler) SetQuefaAvailability(q QuefaAvailability) {
+	if h != nil {
+		h.quefa = q
+	}
 }
 
 // NewPublicHandler 创建公开商品目录 Handler。

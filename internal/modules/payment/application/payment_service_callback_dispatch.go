@@ -103,6 +103,10 @@ func (s *PaymentService) enqueueOrderPaidAsync(order *orderdomain.Order, payment
 	}
 	// 上游采购：为包含上游交付类型的订单创建采购单
 	s.enqueueProcurementAsync(order, log)
+	// Quefa 托管直充：agent_collect 模式下支付成功后排队发起采购单创建
+	if order.HasQuefaHosted() && s.quefaPaidHook != nil {
+		s.quefaPaidHook(order.ID)
+	}
 	// B 侧：订单支付成功后检查是否需要回调下游
 	s.enqueueDownstreamCallbackAsync(order, log)
 }
@@ -242,7 +246,7 @@ func hasManualFulfillmentItems(order *orderdomain.Order) bool {
 		return false
 	}
 	for _, item := range order.Items {
-		if strings.EqualFold(strings.TrimSpace(item.FulfillmentType), constants.FulfillmentTypeKafudaGPT) {
+		if constants.IsDirectRechargeFulfillment(strings.TrimSpace(item.FulfillmentType)) {
 			continue
 		}
 		if notificationformat.NormalizeFulfillmentType(item.FulfillmentType) == constants.FulfillmentTypeManual {

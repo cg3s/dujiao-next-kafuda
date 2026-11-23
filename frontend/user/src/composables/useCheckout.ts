@@ -3,7 +3,14 @@ import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useCartStore, type CartItem } from '../stores/cart'
 import { useBuyNowStore } from '../stores/buyNow'
-import { directCheckoutRestriction, GPT_DIRECT, isDirectFulfillmentType } from '../utils/directPurchase'
+import {
+  directCheckoutRestriction,
+  GPT_DIRECT,
+  HOSTED_RECHARGE,
+  isDirectFulfillmentType,
+  isHostedRechargeType,
+  isSingleItemDirectType,
+} from '../utils/directPurchase'
 import { useAppStore } from '../stores/app'
 import { useUserAuthStore } from '../stores/userAuth'
 import { guestOrderAPI, userOrderAPI, walletAPI, type CaptchaPayload } from '../api'
@@ -66,7 +73,8 @@ export function useCheckout() {
     }
     return cartStore.items
   })
-  const hasDirectItems = computed(() => cartItems.value.some((item) => isDirectFulfillmentType(item.fulfillmentType)))
+  const hasDirectItems = computed(() => cartItems.value.some((item) => isSingleItemDirectType(item.fulfillmentType)))
+  const hasHostedRechargeItems = computed(() => cartItems.value.some((item) => isHostedRechargeType(item.fulfillmentType)))
   const checkoutLoginTo = computed(() => hasDirectItems.value
     ? { path: '/auth/login', query: { redirect: route.fullPath } }
     : '/auth/login')
@@ -159,6 +167,7 @@ export function useCheckout() {
   const expectedOnlinePayDisplay = computed(() => formatPrice(centsToAmount(expectedOnlinePayCents.value), previewCurrency.value))
   const requiresOnlineChannel = computed(() => {
     if (!userAuthStore.isAuthenticated) return true
+    if (hasHostedRechargeItems.value) return true
     if (!useBalance.value) return true
     return expectedOnlinePayCents.value > 0
   })
@@ -396,7 +405,7 @@ export function useCheckout() {
   const manualFormProducts = computed<ManualFormProduct[]>(() => {
     const grouped = new Map<number, ManualFormProduct>()
     cartItems.value.forEach((item) => {
-      if (isDirectFulfillmentType(item.fulfillmentType)) return
+      if (isSingleItemDirectType(item.fulfillmentType)) return
       // 按 schema 而非交付类型判断：对接商品对外展示为 auto 时也可能需要交付资料
       const fields = normalizeManualFormSchema(item.manualFormSchema)
       if (fields.length === 0) {
@@ -627,6 +636,7 @@ export function useCheckout() {
     if (minBlockedItem) {
       return t('cart.minPurchaseNotMet', { count: itemPurchaseMin(minBlockedItem) })
     }
+    if (walletOnlyPayment.value && hasHostedRechargeItems.value) return t('hostedRecharge.walletOnlyUnavailable')
     if (walletOnlyPayment.value && expectedOnlinePayCents.value > 0) return t('payment.walletInsufficientHint')
     const selectedChannel = hasDirectItems.value ? selectedPaymentChannel.value : selectedChannelId.value
     if (!walletOnlyPayment.value && requiresOnlineChannel.value && !selectedChannel) return t('checkout.errors.selectPayment')
@@ -668,7 +678,11 @@ export function useCheckout() {
     product_id: item.productId,
     sku_id: normalizeSkuId(item.skuId) || undefined,
     quantity: item.quantity,
-    fulfillment_type: isDirectFulfillmentType(item.fulfillmentType) ? GPT_DIRECT : item.fulfillmentType || undefined,
+    fulfillment_type: isDirectFulfillmentType(item.fulfillmentType)
+      ? GPT_DIRECT
+      : isHostedRechargeType(item.fulfillmentType)
+        ? HOSTED_RECHARGE
+        : item.fulfillmentType || undefined,
   }))
 
   const buildOrderPayload = () => ({
@@ -697,9 +711,14 @@ export function useCheckout() {
     }
     const revision = checkoutRevision
     const requestedPreview = preview.value
-    const onlineAmount = expectedOnlinePayCents.value
+    const onlineAmount = expectedOnlinePayCents.value > 0
+      ? expectedOnlinePayCents.value
+      : (hasHostedRechargeItems.value ? (amountToCents(previewTotal.value) ?? 0) : 0)
     const isCurrentRequest = () => requestId === orderPaymentChannelsRequestId.value && isCurrentCheckout(revision)
-      && requestedPreview === preview.value && requiresOnlineChannel.value && onlineAmount === expectedOnlinePayCents.value
+      && requestedPreview === preview.value && requiresOnlineChannel.value
+      && onlineAmount === (expectedOnlinePayCents.value > 0
+        ? expectedOnlinePayCents.value
+        : (hasHostedRechargeItems.value ? (amountToCents(previewTotal.value) ?? 0) : 0))
     try {
       const response = await userOrderAPI.getPaymentChannels({
         amount: centsToAmount(onlineAmount),

@@ -64,6 +64,17 @@
         :available="directStatus?.stage === 'waiting_session' && !directStatusUnavailable"
         @submitted="refreshDirectStatus"
       />
+      <HostedRechargePanel
+        v-if="hostedRechargeOrderNo"
+        :key="`hosted-${hostedRechargeOrderNo}`"
+        class="mb-[18px]"
+        :order-no="hostedRechargeOrderNo"
+        :guest-auth="auth"
+        :status="hostedRechargeStatus"
+        :unavailable="hostedRechargeUnavailable"
+        :format-date="formatDate"
+        @refresh="refreshHostedRechargeStatus"
+      />
 
       <VaultOrderBody
         :order="order"
@@ -83,6 +94,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import DirectOrderAuthorization from '../../components/DirectOrderAuthorization.vue'
 import DirectOrderStatus from '../../components/DirectOrderStatus.vue'
+import HostedRechargePanel from '../../components/HostedRechargePanel.vue'
 import VaultOrderBody from './components/VaultOrderBody.vue'
 import { useGuestOrderDetail } from '../../composables/useGuestOrderDetail'
 
@@ -90,6 +102,7 @@ const { t } = useI18n()
 
 const {
   order, directOrderNo, directStatus, directStatusUnavailable, refreshDirectStatus,
+  hostedRechargeOrderNo, hostedRechargeStatus, hostedRechargeUnavailable, refreshHostedRechargeStatus,
   authError, auth, viewState, handleAuthSubmit, clearAuth,
   fulfillmentDownloading, handleDownloadFulfillment,
   statusLabel, statusVariant, formatDate, formatMoney,

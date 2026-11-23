@@ -19,7 +19,7 @@ import (
 // Update 更新商品
 func (s *WriteService) Update(id string, input CreateProductInput) (*productdomain.Product, error) {
 	priceAmount := input.PriceAmount.Round(2)
-	if len(input.SKUs) == 0 && priceAmount.LessThanOrEqual(decimal.Zero) && strings.TrimSpace(input.FulfillmentType) != constants.FulfillmentTypeKafudaGPT {
+	if len(input.SKUs) == 0 && priceAmount.LessThanOrEqual(decimal.Zero) && !constants.IsDirectRechargeFulfillment(strings.TrimSpace(input.FulfillmentType)) {
 		return nil, productcontract.ErrProductPriceInvalid
 	}
 	product, err := s.products.GetByID(id)
@@ -99,7 +99,7 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 	if fulfillmentType == "" {
 		return nil, productcontract.ErrFulfillmentInvalid
 	}
-	directTypeChange := fulfillmentType != originalFulfillmentType && (fulfillmentType == constants.FulfillmentTypeKafudaGPT || originalFulfillmentType == constants.FulfillmentTypeKafudaGPT)
+	directTypeChange := fulfillmentType != originalFulfillmentType && (constants.IsDirectRechargeFulfillment(fulfillmentType) || constants.IsDirectRechargeFulfillment(originalFulfillmentType))
 	if directTypeChange && (product.IsMapped || s.orders == nil || s.skus == nil || s.cardSecrets == nil) {
 		return nil, productcontract.ErrFulfillmentInvalid
 	}
@@ -125,6 +125,7 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 	}
 
 	isDirect := fulfillmentType == constants.FulfillmentTypeKafudaGPT
+	isQuefa := fulfillmentType == constants.FulfillmentTypeQuefaHosted
 	var directOptions []kafudacontract.SKUOption
 	var catalogForUpdate directCatalogForUpdate
 	var catalogReadErr error
@@ -138,6 +139,11 @@ func (s *WriteService) Update(id string, input CreateProductInput) (*productdoma
 		}
 		product.MinPurchaseQuantity, product.MaxPurchaseQuantity = 1, 1
 		product.StockDisplayMode = constants.ProductStockDisplayHidden
+	}
+	if isQuefa {
+		product.MinPurchaseQuantity, product.MaxPurchaseQuantity = 1, 1
+		product.StockDisplayMode = constants.ProductStockDisplayHidden
+		manualStockTotal = 0
 	}
 	var normalizedSKUs []normalizedProductSKU
 	normalizeSKUs := func(skuRepo SKURepository) error {

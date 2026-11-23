@@ -51,6 +51,8 @@ export const userOrderAPI = {
     detail: (orderNo: string, options?: any) => userApi.get(`/orders/${encodeURIComponent(orderNo)}`, options),
     directStatus: (orderNo: string) => userApi.get(`/orders/${encodeURIComponent(orderNo)}/direct-status`, { silentBusinessError: true }),
     authorizeDirect: (orderNo: string, session: string) => userApi.post(`/orders/${encodeURIComponent(orderNo)}/direct-authorize`, { session }, { sensitiveBody: true, silentBusinessError: true }),
+    hostedRechargeStatus: (orderNo: string) => userApi.get(`/orders/${encodeURIComponent(orderNo)}/hosted-recharge/status`, { silentBusinessError: true }),
+    openHostedRechargeEntry: (orderNo: string) => userApi.post(`/orders/${encodeURIComponent(orderNo)}/hosted-recharge/entry`, {}, { silentBusinessError: true }),
     cancel: (orderNo: string) => userApi.post(`/orders/${encodeURIComponent(orderNo)}/cancel`),
     downloadFulfillment: (orderNo: string) => userApi.get(`/orders/${encodeURIComponent(orderNo)}/fulfillment/download`, { blob: true }),
 }
@@ -74,6 +76,14 @@ export const guestOrderAPI = {
     authorizeDirect: (orderNo: string, session: string, params: GuestAuthInput) => {
         const request = withGuestAuth(params, { sensitiveBody: true, silentBusinessError: true })
         return userApi.post(`/guest/orders/${encodeURIComponent(orderNo)}/direct-authorize`, { session }, request.options)
+    },
+    hostedRechargeStatus: (orderNo: string, params: GuestAuthInput) => {
+        const request = withGuestAuth(params, { silentBusinessError: true })
+        return userApi.get(`/guest/orders/${encodeURIComponent(orderNo)}/hosted-recharge/status`, { ...request.options, params: request.payload })
+    },
+    openHostedRechargeEntry: (orderNo: string, params: GuestAuthInput) => {
+        const request = withGuestAuth(params, { silentBusinessError: true })
+        return userApi.post(`/guest/orders/${encodeURIComponent(orderNo)}/hosted-recharge/entry`, {}, request.options)
     },
     downloadFulfillment: (orderNo: string, params: GuestAuthInput) => {
         const request = withGuestAuth(params, { blob: true })

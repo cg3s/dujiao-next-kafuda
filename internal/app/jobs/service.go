@@ -83,6 +83,20 @@ func registerPeriodicTasks(scheduler *asynq.Scheduler, consumer *jobconsumer.Con
 			logger.Infow("scheduler_register_kafuda_refresh_catalog_ok", "entry_id", entryID, "interval", scheduleInterval.String(), "mode", mode)
 		}
 	}
+	if consumer.Quefa != nil {
+		pollInterval := 10 * time.Second
+		if consumer.Config != nil {
+			pollInterval = consumer.Config.QuefaPollInterval()
+		}
+		task := queue.NewQuefaPollOrdersTask()
+		uniqueTTL := min(pollInterval, time.Minute)
+		entryID, err := scheduler.Register("@every "+pollInterval.String(), task, asynq.Queue(queue.DefaultQueue), asynq.Unique(uniqueTTL))
+		if err != nil {
+			logger.Warnw("scheduler_register_quefa_poll_orders_failed", "error", err, "interval", pollInterval.String())
+		} else {
+			logger.Infow("scheduler_register_quefa_poll_orders_ok", "entry_id", entryID, "interval", pollInterval.String())
+		}
+	}
 	if consumer.AffiliateService != nil {
 		task := queue.NewAffiliateConfirmCommissionsTask()
 		entryID, err := scheduler.Register("@every 1m", task, asynq.Queue(queue.DefaultQueue))

@@ -4,6 +4,11 @@ import { useI18n } from 'vue-i18n'
 import { guestOrderAPI } from '../api'
 import { debounceAsync } from '../utils/debounce'
 import { directStatusOrderNo, startDirectOrderPolling, type DirectOrderStatus } from '../utils/directOrderStatus'
+import {
+  hostedRechargeStatusOrderNo,
+  startHostedRechargePolling,
+  type HostedRechargeStatus,
+} from '../utils/hostedRechargeStatus'
 import { clearGuestOrderAuth, loadGuestOrderAuth, saveGuestOrderAuth } from '../utils/guestOrderAuth'
 import { resolveGuestOrderDetailViewState } from '../utils/guestOrderDetailState'
 import { useOrderDisplayHelpers } from './useOrderDisplayHelpers'
@@ -27,9 +32,13 @@ export function useGuestOrderDetail() {
   const directStatus = ref<DirectOrderStatus | null>(null)
   const directStatusRefresh = ref(0)
   const directStatusUnavailable = ref(false)
+  const hostedRechargeStatus = ref<HostedRechargeStatus | null>(null)
+  const hostedRechargeRefresh = ref(0)
+  const hostedRechargeUnavailable = ref(false)
   const orderNo = computed(() => String(route.params.order_no || '').trim())
   const currentOrder = computed(() => order.value?.order_no === orderNo.value ? order.value : null)
   const directOrderNo = computed(() => directStatusOrderNo(currentOrder.value))
+  const hostedRechargeOrderNo = computed(() => hostedRechargeStatusOrderNo(currentOrder.value))
 
   const helpers = useOrderDisplayHelpers(order)
 
@@ -113,6 +122,8 @@ export function useGuestOrderDetail() {
     order.value = null
     directStatus.value = null
     directStatusUnavailable.value = false
+    hostedRechargeStatus.value = null
+    hostedRechargeUnavailable.value = false
     authError.value = t('guestOrderDetail.authRequired')
   }
 
@@ -148,6 +159,38 @@ export function useGuestOrderDetail() {
     ))
   })
 
+  watch([hostedRechargeOrderNo, hostedRechargeRefresh], ([number], _prev, onCleanup) => {
+    hostedRechargeStatus.value = null
+    hostedRechargeUnavailable.value = false
+    if (!number || !hasAuth.value) return
+    const credentials = {
+      email: auth.value.email,
+      order_password: auth.value.order_password,
+    }
+    onCleanup(startHostedRechargePolling(
+      async () => {
+        const response = await guestOrderAPI.hostedRechargeStatus(number, credentials)
+        return response.data.data
+      },
+      (status) => {
+        if (disposed || number !== hostedRechargeOrderNo.value) return
+        hostedRechargeUnavailable.value = status === null
+        if (!status) return
+        hostedRechargeStatus.value = status
+      },
+      document,
+      async (stage) => {
+        const expected = stage === 'succeeded' ? 'completed' : stage === 'refunded' ? 'refunded' : ''
+        if (disposed || number !== hostedRechargeOrderNo.value) return true
+        if (expected && order.value?.status === expected) return true
+        await loadOrder()
+        if (!expected) return true
+        return disposed || number !== hostedRechargeOrderNo.value || order.value?.status === expected
+      },
+      { isOnline: () => navigator.onLine, events: window },
+    ))
+  })
+
   onMounted(() => {
     if (!route.params.order_no) {
       router.push('/guest/orders')
@@ -169,6 +212,10 @@ export function useGuestOrderDetail() {
     directStatus,
     directStatusUnavailable,
     refreshDirectStatus: () => { directStatusRefresh.value++ },
+    hostedRechargeOrderNo,
+    hostedRechargeStatus,
+    hostedRechargeUnavailable,
+    refreshHostedRechargeStatus: () => { hostedRechargeRefresh.value++ },
     authError,
     auth,
     showAuthForm,

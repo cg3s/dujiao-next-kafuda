@@ -1,4 +1,4 @@
-import { isDirectFulfillmentType } from './directPurchase'
+import { isDirectFulfillmentType, isHostedRechargeType } from './directPurchase'
 
 type TranslateFn = (key: string, params?: Record<string, any>) => string
 
@@ -6,6 +6,7 @@ export type FulfillmentLabelScope = 'orderDetail'
 
 export const fulfillmentTypeLabel = (t: TranslateFn, type?: string, scope: FulfillmentLabelScope = 'orderDetail') => {
   if (!type) return '-'
+  if (isHostedRechargeType(type)) return t('hostedRecharge.label')
   if (isDirectFulfillmentType(type)) return t('directPurchase.label')
   const baseKey = `${scope}.fulfillmentTypes`
   const map: Record<string, string> = {

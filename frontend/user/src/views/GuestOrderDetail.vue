@@ -74,6 +74,16 @@
           :available="directStatus?.stage === 'waiting_session' && !directStatusUnavailable"
           @submitted="refreshDirectStatus"
         />
+        <HostedRechargePanel
+          v-if="hostedRechargeOrderNo"
+          :key="`hosted-${hostedRechargeOrderNo}`"
+          :order-no="hostedRechargeOrderNo"
+          :guest-auth="auth"
+          :status="hostedRechargeStatus"
+          :unavailable="hostedRechargeUnavailable"
+          :format-date="formatDate"
+          @refresh="refreshHostedRechargeStatus"
+        />
 
         <div v-if="order.children && order.children.length > 0"
           class="theme-float rounded-[22px] bg-card p-5 md:p-6">
@@ -162,7 +172,7 @@
                 <div class="flex items-center justify-between mb-3">
                   <h3 class="text-sm font-semibold text-foreground">{{
                     t('orderDetail.childFulfillmentTitle') }}</h3>
-                  <Button v-if="child.fulfillment?.status === 'delivered'" size="sm"
+                  <Button v-if="child.fulfillment?.status === 'delivered' && !isHostedRechargeOrderFulfillment(child.items, child.fulfillment.type)" size="sm"
                     @click="handleCopyFulfillment(child.fulfillment)">
                     <Copy v-if="!fulfillmentCopied" class="w-3.5 h-3.5" :stroke-width="2" />
                     <Check v-else class="w-3.5 h-3.5" :stroke-width="2" />
@@ -174,40 +184,42 @@
                     fulfillmentTypeLabelText(child.fulfillment.type) }}</div>
                   <div class="text-sm text-muted-foreground">{{ t('orderDetail.fulfillmentStatus') }}：{{
                     fulfillmentStatusLabelText(child.fulfillment.status) }}</div>
-                  <div v-if="isFulfillmentTruncated(child.fulfillment)" class="mt-3">
-                    <div class="flex items-center justify-between mb-2">
-                      <span class="text-sm text-muted-foreground">{{ t('orderDetail.fulfillmentTotalLines', { count: child.fulfillment.payload_line_count }) }}</span>
-                      <Button size="sm"
-                        :disabled="fulfillmentDownloading"
-                        @click="handleDownloadFulfillment(child.order_no || order.order_no)">
-                        <Download class="w-3.5 h-3.5" :stroke-width="2" />
-                        {{ fulfillmentDownloading ? t('orderDetail.fulfillmentDownloading') : t('orderDetail.fulfillmentDownload') }}
-                      </Button>
-                    </div>
-                    <div class="mb-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-                      {{ t('orderDetail.fulfillmentTruncatedHint') }}
-                    </div>
-                    <div class="rounded-2xl bg-secondary/60 p-4 text-sm text-muted-foreground whitespace-pre-wrap break-all overflow-hidden max-h-48 overflow-y-auto">{{ child.fulfillment.payload }}</div>
-                  </div>
-                  <div v-else-if="fulfillmentDeliveryLines(child.fulfillment).length"
-                    class="mt-3 rounded-2xl bg-secondary/60 p-4 text-sm text-muted-foreground space-y-1 break-all overflow-hidden">
-                    <div v-for="(line, index) in fulfillmentDeliveryLines(child.fulfillment)" :key="`child-fulfillment-${child.id}-${index}`">{{ line }}</div>
-                  </div>
-                  <div v-else-if="child.fulfillment.payload"
-                    class="mt-3 rounded-2xl bg-secondary/60 p-4 text-sm text-muted-foreground whitespace-pre-wrap break-all overflow-hidden">
-                    {{ child.fulfillment.payload }}
-                  </div>
-                  <div v-if="child.fulfillment.status === 'delivered' && instructionBlocks(child.items).length"
-                    class="mt-4 space-y-3">
-                    <div v-for="(block, bi) in instructionBlocks(child.items)" :key="`guest-child-inst-${child.id}-${bi}`"
-                      class="rounded-2xl bg-secondary/60 p-4">
-                      <div class="flex items-center gap-2 mb-2 text-sm font-semibold text-foreground">
-                        <Info class="w-4 h-4" :stroke-width="2" />
-                        {{ t('orderDetail.instructionsTitle') }}
+                  <template v-if="!isHostedRechargeOrderFulfillment(child.items, child.fulfillment.type)">
+                    <div v-if="isFulfillmentTruncated(child.fulfillment)" class="mt-3">
+                      <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm text-muted-foreground">{{ t('orderDetail.fulfillmentTotalLines', { count: child.fulfillment.payload_line_count }) }}</span>
+                        <Button size="sm"
+                          :disabled="fulfillmentDownloading"
+                          @click="handleDownloadFulfillment(child.order_no || order.order_no)">
+                          <Download class="w-3.5 h-3.5" :stroke-width="2" />
+                          {{ fulfillmentDownloading ? t('orderDetail.fulfillmentDownloading') : t('orderDetail.fulfillmentDownload') }}
+                        </Button>
                       </div>
-                      <div class="prose prose-sm max-w-none dark:prose-invert text-muted-foreground break-words [&_img]:max-h-80 [&_img]:w-auto" v-html="block.html"></div>
+                      <div class="mb-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                        {{ t('orderDetail.fulfillmentTruncatedHint') }}
+                      </div>
+                      <div class="rounded-2xl bg-secondary/60 p-4 text-sm text-muted-foreground whitespace-pre-wrap break-all overflow-hidden max-h-48 overflow-y-auto">{{ child.fulfillment.payload }}</div>
                     </div>
-                  </div>
+                    <div v-else-if="fulfillmentDeliveryLines(child.fulfillment).length"
+                      class="mt-3 rounded-2xl bg-secondary/60 p-4 text-sm text-muted-foreground space-y-1 break-all overflow-hidden">
+                      <div v-for="(line, index) in fulfillmentDeliveryLines(child.fulfillment)" :key="`child-fulfillment-${child.id}-${index}`">{{ line }}</div>
+                    </div>
+                    <div v-else-if="child.fulfillment.payload"
+                      class="mt-3 rounded-2xl bg-secondary/60 p-4 text-sm text-muted-foreground whitespace-pre-wrap break-all overflow-hidden">
+                      {{ child.fulfillment.payload }}
+                    </div>
+                    <div v-if="child.fulfillment.status === 'delivered' && instructionBlocks(child.items).length"
+                      class="mt-4 space-y-3">
+                      <div v-for="(block, bi) in instructionBlocks(child.items)" :key="`guest-child-inst-${child.id}-${bi}`"
+                        class="rounded-2xl bg-secondary/60 p-4">
+                        <div class="flex items-center gap-2 mb-2 text-sm font-semibold text-foreground">
+                          <Info class="w-4 h-4" :stroke-width="2" />
+                          {{ t('orderDetail.instructionsTitle') }}
+                        </div>
+                        <div class="prose prose-sm max-w-none dark:prose-invert text-muted-foreground break-words [&_img]:max-h-80 [&_img]:w-auto" v-html="block.html"></div>
+                      </div>
+                    </div>
+                  </template>
                 </div>
                 <div v-else class="text-sm text-muted-foreground">{{ t('orderDetail.childFulfillmentEmpty') }}</div>
               </div>
@@ -431,12 +443,15 @@ import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import DirectOrderAuthorization from '../components/DirectOrderAuthorization.vue'
 import DirectOrderStatus from '../components/DirectOrderStatus.vue'
+import HostedRechargePanel from '../components/HostedRechargePanel.vue'
+import { isHostedRechargeOrderFulfillment } from '../utils/hostedRechargeStatus'
 import { useGuestOrderDetail } from '../composables/useGuestOrderDetail'
 
 const { t } = useI18n()
 
 const {
   order, directOrderNo, directStatus, directStatusUnavailable, refreshDirectStatus,
+  hostedRechargeOrderNo, hostedRechargeStatus, hostedRechargeUnavailable, refreshHostedRechargeStatus,
   authError, auth, viewState, handleAuthSubmit, clearAuth,
   fulfillmentDownloading, handleDownloadFulfillment,
   statusLabel, statusVariant, fulfillmentTypeLabelText, fulfillmentStatusLabelText,

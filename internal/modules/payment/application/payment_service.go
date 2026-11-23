@@ -68,6 +68,8 @@ type PaymentService struct {
 	memberLevelSvc          MemberLevelProgressor
 	paymentProviderRegistry paymentcontract.GatewayRegistry
 	resellerAccounting      resellerAccountingTransactions
+	quefaPaidHook           func(orderID uint)
+	quefaCollectionMode     func() string
 }
 
 type MemberLevelProgressor interface {

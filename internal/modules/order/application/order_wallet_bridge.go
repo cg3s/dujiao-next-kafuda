@@ -22,6 +22,18 @@ func ApplyWalletBalance(
 	order *orderdomain.Order,
 	useBalance bool,
 ) (decimal.Decimal, error) {
+	return ApplyWalletBalanceWithCap(wallets, tx, order, useBalance, nil)
+}
+
+// ApplyWalletBalanceWithCap deducts wallet balance up to maxDeduct (when non-nil)
+// so cost-floor orders never let wallet credits reduce actual online payment below cost.
+func ApplyWalletBalanceWithCap(
+	wallets *walletapp.Service,
+	tx ordercontract.Transaction,
+	order *orderdomain.Order,
+	useBalance bool,
+	maxDeduct *money.Amount,
+) (decimal.Decimal, error) {
 	if tx == nil {
 		return decimal.Zero, ErrOrderUpdateFailed
 	}
@@ -37,6 +49,7 @@ func ApplyWalletBalance(
 		UserID:           order.UserID,
 		TotalAmount:      order.TotalAmount,
 		WalletPaidAmount: order.WalletPaidAmount,
+		MaxDeductAmount:  maxDeduct,
 		Currency:         order.Currency,
 		UseBalance:       useBalance,
 	})

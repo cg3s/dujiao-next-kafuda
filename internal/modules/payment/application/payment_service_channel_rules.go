@@ -121,11 +121,31 @@ func (s *PaymentService) GetAllowedChannelsForProducts(productIDs []uint) ([]pay
 		return nil, err
 	}
 	if len(productIDs) == 0 {
-		return channels, nil
+		return filterOutQuefaChannels(channels), nil
 	}
 	products, err := s.productRepo.ListByIDs(productIDs)
 	if err != nil {
 		return nil, ErrProductFetchFailed
+	}
+	hasQuefa := false
+	for _, p := range products {
+		if p.FulfillmentType == constants.FulfillmentTypeQuefaHosted {
+			hasQuefa = true
+			break
+		}
+	}
+	if hasQuefa {
+		mode := ""
+		if s.quefaCollectionMode != nil {
+			mode = s.quefaCollectionMode()
+		}
+		if mode == "platform_collect" {
+			channels = filterOnlyQuefaChannels(channels)
+		} else {
+			channels = filterOutQuefaChannels(channels)
+		}
+	} else {
+		channels = filterOutQuefaChannels(channels)
 	}
 	allowed := computeProductChannelIntersection(products)
 	if allowed == nil {
@@ -154,6 +174,7 @@ func (s *PaymentService) GetWalletRechargeChannels() ([]paymentdomain.PaymentCha
 	if err != nil {
 		return nil, err
 	}
+	channels = filterOutQuefaChannels(channels)
 	if s.settingService == nil {
 		return channels, nil
 	}

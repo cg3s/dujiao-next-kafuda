@@ -121,6 +121,64 @@ func (c *Client) EnqueueKafudaRefreshCatalog(ctx context.Context) error {
 	return err
 }
 
+// QuefaWorkerReady verifies an active asynq worker and scheduled Quefa poll task exist.
+func (c *Client) QuefaWorkerReady(_ context.Context) bool {
+	if c == nil || !c.Enabled() || c.inspector == nil {
+		return false
+	}
+	servers, err := c.inspector.Servers()
+	if err != nil || len(servers) == 0 {
+		return false
+	}
+	entries, err := c.inspector.SchedulerEntries()
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Task.Type() == TaskQuefaPollOrders {
+			info, err := c.inspector.GetQueueInfo(c.defaultQueue)
+			return err == nil && !info.Paused
+		}
+	}
+	return false
+}
+
+// EnqueueQuefaSyncOrder schedules an async Quefa order sync/procurement task.
+func (c *Client) EnqueueQuefaSyncOrder(ctx context.Context, childOrderID uint, delay time.Duration) error {
+	if !c.Enabled() || childOrderID == 0 {
+		return nil
+	}
+	task, err := NewQuefaSyncOrderTask(QuefaSyncOrderPayload{ChildOrderID: childOrderID})
+	if err != nil {
+		return err
+	}
+	opts := []asynq.Option{
+		asynq.Queue(c.defaultQueue),
+		asynq.MaxRetry(5),
+		asynq.Unique(15 * time.Second),
+	}
+	if delay > 0 {
+		opts = append(opts, asynq.ProcessIn(delay))
+	}
+	_, err = c.client.EnqueueContext(ctx, task, opts...)
+	if errors.Is(err, asynq.ErrDuplicateTask) {
+		return nil
+	}
+	return err
+}
+
+// EnqueueQuefaPollOrders triggers an immediate Quefa recovery/polling sweep.
+func (c *Client) EnqueueQuefaPollOrders(ctx context.Context) error {
+	if !c.Enabled() {
+		return nil
+	}
+	_, err := c.client.EnqueueContext(ctx, NewQuefaPollOrdersTask(), asynq.Queue(c.defaultQueue), asynq.Unique(time.Minute))
+	if errors.Is(err, asynq.ErrDuplicateTask) {
+		return nil
+	}
+	return err
+}
+
 // EnqueueOrderStatusEmail 推送订单状态邮件任务
 func (c *Client) EnqueueOrderStatusEmail(payload OrderStatusEmailPayload, opts ...asynq.Option) error {
 	if !c.Enabled() {

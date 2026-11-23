@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	catalogmappingbootstrap "github.com/dujiao-next/internal/bootstrap/catalogmapping"
 	telegrambroadcast "github.com/dujiao-next/internal/bootstrap/telegrambroadcast"
 	"github.com/dujiao-next/internal/logger"
@@ -11,6 +12,8 @@ import (
 	localfilestore "github.com/dujiao-next/internal/modules/content/infrastructure/filestore/local"
 	contentgormstore "github.com/dujiao-next/internal/modules/content/infrastructure/gormstore"
 	dashboardapp "github.com/dujiao-next/internal/modules/dashboard/application"
+	"time"
+
 	downstreamcallbackapp "github.com/dujiao-next/internal/modules/downstreamcallback/application"
 	downstreamcallbackcontract "github.com/dujiao-next/internal/modules/downstreamcallback/contract"
 	downstreamcallbackclient "github.com/dujiao-next/internal/modules/downstreamcallback/infrastructure/callbackclient"
@@ -21,6 +24,7 @@ import (
 	notificationapp "github.com/dujiao-next/internal/modules/notification/application"
 	notificationasyncqueue "github.com/dujiao-next/internal/modules/notification/infrastructure/asyncqueue"
 	notificationfeishu "github.com/dujiao-next/internal/modules/notification/infrastructure/feishu"
+	orderqueue "github.com/dujiao-next/internal/modules/order/infrastructure/queueadapter"
 	paymentapp "github.com/dujiao-next/internal/modules/payment/application"
 	paymentqueue "github.com/dujiao-next/internal/modules/payment/infrastructure/queueadapter"
 	procurementapp "github.com/dujiao-next/internal/modules/procurement/application"
@@ -29,6 +33,9 @@ import (
 	procurementorder "github.com/dujiao-next/internal/modules/procurement/infrastructure/orderreader"
 	procurementqueue "github.com/dujiao-next/internal/modules/procurement/infrastructure/queueadapter"
 	procurementupstream "github.com/dujiao-next/internal/modules/procurement/infrastructure/upstreamgateway"
+	quefaapp "github.com/dujiao-next/internal/modules/quefa/application"
+	quefacontract "github.com/dujiao-next/internal/modules/quefa/contract"
+	quefadomain "github.com/dujiao-next/internal/modules/quefa/domain"
 	reconciliationapp "github.com/dujiao-next/internal/modules/reconciliation/application"
 	reconciliationnotification "github.com/dujiao-next/internal/modules/reconciliation/infrastructure/notificationadapter"
 	reconciliationprocurement "github.com/dujiao-next/internal/modules/reconciliation/infrastructure/procurementreader"
@@ -39,6 +46,7 @@ import (
 	notifyapp "github.com/dujiao-next/internal/modules/telegram/notify/application"
 	notifybotapi "github.com/dujiao-next/internal/modules/telegram/notify/infrastructure/botapi"
 	"github.com/dujiao-next/internal/platform/database/gormdb"
+	quefaworkflow "github.com/dujiao-next/internal/workflows/quefa/application"
 )
 
 // initIntegrationServices 装配通知、站点对接、支付、采购、渠道与 Telegram 集成。
@@ -142,4 +150,93 @@ func (c *Container) initIntegrationServices() {
 		telegrambroadcast.NewDispatcher(c.QueueClient),
 		telegramNotifyService,
 	)
+	c.wireQuefaLifecycle()
+}
+
+func (c *Container) wireQuefaLifecycle() {
+	if c.Quefa == nil || c.Quefa.Orders == nil {
+		return
+	}
+	if c.OrderService != nil {
+		c.OrderService.SetQuefaCancelHooks(
+			func(parentOrderID uint) bool {
+				eval, err := c.Quefa.Orders.EvaluateCancelOrExpire(context.Background(), parentOrderID)
+				return err == nil && eval.CanClose
+			},
+			func(parentOrderID uint) bool {
+				rec, err := c.Quefa.Orders.GetOrderByParentOrder(context.Background(), parentOrderID)
+				if err != nil || rec == nil {
+					return false
+				}
+				if rec.CollectionMode != quefadomain.CollectionModePlatformCollect {
+					return false
+				}
+				if !rec.CreateDispatched && (rec.UpstreamOrderID == nil || *rec.UpstreamOrderID == "") {
+					return false
+				}
+				if c.QueueClient != nil && c.QueueClient.Enabled() {
+					_ = c.QueueClient.EnqueueQuefaSyncOrder(context.Background(), rec.OrderID, 0)
+				}
+				return true
+			},
+		)
+	}
+	if c.PaymentService != nil {
+		c.PaymentService.SetQuefaIntegration(
+			func() string {
+				if c.Quefa.Config == nil {
+					return ""
+				}
+				return c.Quefa.Config.Snapshot().Config.CollectionMode
+			},
+			func(parentOrderID uint) {
+				rec, err := c.Quefa.Orders.GetOrderByParentOrder(context.Background(), parentOrderID)
+				if err != nil || rec == nil || rec.CollectionMode != quefadomain.CollectionModeAgentCollect {
+					return
+				}
+				if c.QueueClient != nil && c.QueueClient.Enabled() {
+					_ = c.QueueClient.EnqueueQuefaSyncOrder(context.Background(), rec.OrderID, 0)
+				}
+			},
+		)
+	}
+	c.Quefa.Orders.SetHooks(quefaapp.LifecycleHooks{
+		OnPlatformOrderPaid: func(ctx context.Context, record *quefadomain.Order, snap *quefacontract.OrderSnapshot) error {
+			return quefaworkflow.ApplyPlatformCollectPaid(ctx, c.PaymentService, c.PaymentStore, record, snap)
+		},
+		OnOrderSucceeded: func(ctx context.Context, record *quefadomain.Order) error {
+			completed, err := quefaworkflow.CompleteOrder(c.OrderStore, record.OrderID, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			if completed && c.QueueClient != nil && c.QueueClient.Enabled() {
+				quefaworkflow.EnqueueCompletionEmail(ctx, c.OrderStore, c.Quefa.Store, orderqueue.NewDirectCompletion(c.QueueClient), c.SettingService, c.Config, record.OrderID)
+			}
+			return nil
+		},
+		OnPlatformOrderRefunded: func(_ context.Context, record *quefadomain.Order, refundRef string) error {
+			if err := quefaworkflow.ApplyPlatformCollectRefunded(c.OrderStore, c.WalletService, record, refundRef); err != nil {
+				return err
+			}
+			if c.AffiliateService != nil {
+				if err := c.AffiliateService.HandleOrderCanceled(record.ParentOrderID, "quefa_order_refunded"); err != nil {
+					logger.Warnw("quefa_refund_affiliate_cancel_failed", "order_id", record.ParentOrderID, "error", err)
+				}
+			}
+			return nil
+		},
+		OnOrderClosed: func(_ context.Context, record *quefadomain.Order) error {
+			if c.OrderService == nil || record == nil {
+				return nil
+			}
+			_, err := c.OrderService.CancelExpiredOrder(record.ParentOrderID)
+			return err
+		},
+		EnqueueSync: func(ctx context.Context, childOrderID uint, delay time.Duration) error {
+			if c.QueueClient == nil || !c.QueueClient.Enabled() {
+				return nil
+			}
+			return c.QueueClient.EnqueueQuefaSyncOrder(ctx, childOrderID, delay)
+		},
+	})
 }

@@ -172,7 +172,7 @@ func (h *Handler) GetProduct(c *gin.Context) {
 		errorResponse(c, http.StatusInternalServerError, "internal_error", "failed to get product")
 		return
 	}
-	if product == nil || product.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+	if product == nil || constants.IsDirectRechargeFulfillment(product.FulfillmentType) {
 		errorResponse(c, http.StatusNotFound, "product_not_found", "product not found")
 		return
 	}

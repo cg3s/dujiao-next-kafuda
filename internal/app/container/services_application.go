@@ -28,6 +28,7 @@ import (
 	orderriskapp "github.com/dujiao-next/internal/modules/orderrisk/application"
 	orderrisklimiter "github.com/dujiao-next/internal/modules/orderrisk/infrastructure/redislimiter"
 	promotionapp "github.com/dujiao-next/internal/modules/promotion/application"
+	quefacontract "github.com/dujiao-next/internal/modules/quefa/contract"
 	sitemapapp "github.com/dujiao-next/internal/modules/sitemap/application"
 	sitemapcontract "github.com/dujiao-next/internal/modules/sitemap/contract"
 	sitemapcache "github.com/dujiao-next/internal/modules/sitemap/infrastructure/cacheadapter"
@@ -109,8 +110,13 @@ func (c *Container) initApplicationServices() {
 	if c.KafudaGPT != nil {
 		directCatalog = c.KafudaGPT.Commerce
 	}
+	var quefaCatalog quefacontract.CommercePolicy
+	if c.Quefa != nil {
+		quefaCatalog = c.Quefa.Catalog
+	}
 	c.OrderService = orderapp.NewOrderService(orderapp.OrderServiceOptions{
 		DirectCatalog:           directCatalog,
+		QuefaCatalog:            quefaCatalog,
 		OrderStore:              c.OrderStore,
 		UserStore:               c.UserStore,
 		ProductStore:            c.ProductRepo,

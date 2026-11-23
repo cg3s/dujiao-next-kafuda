@@ -127,7 +127,7 @@ func (s *Service) BatchUpdateCardSecretStatus(ids []uint, batchID uint, filter L
 			if err != nil {
 				return err
 			}
-			if product == nil || strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeKafudaGPT {
+			if product == nil || constants.IsDirectRechargeFulfillment(strings.TrimSpace(product.FulfillmentType)) {
 				continue
 			}
 			items, err := skus.ListByProduct(productID, false)
@@ -220,7 +220,7 @@ func (s *Service) UpdateCardSecret(id uint, secret, status string) (*cardsecretd
 			if err != nil {
 				return ErrUpdateFailed
 			}
-			if product == nil || strings.TrimSpace(product.FulfillmentType) == constants.FulfillmentTypeKafudaGPT {
+			if product == nil || constants.IsDirectRechargeFulfillment(strings.TrimSpace(product.FulfillmentType)) {
 				return ErrInvalid
 			}
 			if current.SKUID != 0 {

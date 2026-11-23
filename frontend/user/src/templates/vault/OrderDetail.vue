@@ -49,6 +49,16 @@
       <DirectOrderStatus v-if="directOrderNo" class="mb-[18px]" :status="directStatus" :unavailable="directStatusUnavailable" :format-date="formatDate" />
       <DirectOrderAuthorization v-if="directOrderNo" :key="directOrderNo" class="mb-[18px]" :order-no="directOrderNo"
         :available="directStatus?.stage === 'waiting_session' && !directStatusUnavailable" @submitted="refreshDirectStatus" />
+      <HostedRechargePanel
+        v-if="hostedRechargeOrderNo"
+        :key="`hosted-${hostedRechargeOrderNo}`"
+        class="mb-[18px]"
+        :order-no="hostedRechargeOrderNo"
+        :status="hostedRechargeStatus"
+        :unavailable="hostedRechargeUnavailable"
+        :format-date="formatDate"
+        @refresh="refreshHostedRechargeStatus"
+      />
 
       <VaultOrderBody
         :order="order"
@@ -69,6 +79,7 @@ import VaultOrderBody from './components/VaultOrderBody.vue'
 import { useOrderDetail } from '../../composables/useOrderDetail'
 import DirectOrderStatus from '../../components/DirectOrderStatus.vue'
 import DirectOrderAuthorization from '../../components/DirectOrderAuthorization.vue'
+import HostedRechargePanel from '../../components/HostedRechargePanel.vue'
 
 const { t } = useI18n()
 
@@ -76,5 +87,6 @@ const {
   loading, order, orderOffline, orderLoadFailed, debouncedLoadOrder, cancelOrder, fulfillmentDownloading, handleDownloadFulfillment,
   statusLabel, statusVariant, formatDate, formatMoney,
   directOrderNo, directStatus, directStatusUnavailable, refreshDirectStatus,
+  hostedRechargeOrderNo, hostedRechargeStatus, hostedRechargeUnavailable, refreshHostedRechargeStatus,
 } = useOrderDetail()
 </script>

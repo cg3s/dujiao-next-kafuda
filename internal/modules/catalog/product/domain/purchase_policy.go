@@ -48,6 +48,8 @@ func NormalizeFulfillmentType(raw string) string {
 		return constants.FulfillmentTypeUpstream
 	case constants.FulfillmentTypeKafudaGPT:
 		return constants.FulfillmentTypeKafudaGPT
+	case constants.FulfillmentTypeQuefaHosted:
+		return constants.FulfillmentTypeQuefaHosted
 	default:
 		return ""
 	}

@@ -1,6 +1,7 @@
 package producthttp
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -123,7 +124,7 @@ func (v *publicProductView) productStockQuantity() int64 {
 
 func (v *publicProductView) skuStockState(sv publicSKUView) (string, int64) {
 	fulfillmentType := strings.TrimSpace(v.Product.FulfillmentType)
-	if fulfillmentType == constants.FulfillmentTypeKafudaGPT {
+	if constants.IsDirectRechargeFulfillment(fulfillmentType) {
 		if sv.DirectAvailable {
 			return constants.ProductStockStatusInStock, 0
 		}
@@ -153,9 +154,12 @@ func (h *PublicHandler) decoratePublicProduct(product *productdomain.Product, pr
 	displaySKUID := resolvePublicDisplaySKUID(product)
 	item.Product.PriceAmount = resolvePublicDisplayPrice(product)
 	direct := product.FulfillmentType == constants.FulfillmentTypeKafudaGPT
+	quefa := product.FulfillmentType == constants.FulfillmentTypeQuefaHosted
 	var directAvailable map[uint]bool
 	if direct {
 		directAvailable, displaySKUID = item.applyDirectAvailability(directRevisions)
+	} else if quefa {
+		directAvailable, displaySKUID = item.applyQuefaAvailability(h.quefa)
 	} else {
 		h.decorateProductStock(product, &item)
 	}
@@ -205,15 +209,17 @@ func (h *PublicHandler) decoratePublicProduct(product *productdomain.Product, pr
 
 	for _, sku := range item.Product.SKUs {
 		sv := publicSKUView{ProductSKU: sku}
-		if direct {
+		if direct || quefa {
 			sv.DirectAvailable = directAvailable[sku.ID]
-			sv.SpecValuesJSON = sku.DirectPublicSpecValues()
+			if direct {
+				sv.SpecValuesJSON = sku.DirectPublicSpecValues()
+			}
 			sv.ManualStockTotal = 0
 			sv.ManualStockSold = 0
 			sv.AutoStockAvailable = 0
 			sv.UpstreamStock = 0
 		}
-		priceable := sku.IsActive && (!direct || sv.DirectAvailable)
+		priceable := sku.IsActive && (!(direct || quefa) || sv.DirectAvailable)
 
 		// 计算当前用户的会员价
 		if memberLevelID > 0 && h.memberLevels != nil && priceable {
@@ -274,6 +280,35 @@ func (v *publicProductView) applyDirectAvailability(revisions map[string]uint64)
 		}
 		revision, listed := revisions[kafudacontract.SKUCode(plan, country)]
 		if !listed || revision != sku.DirectCatalogRevision || !sku.IsActive || sku.DeletedAt != nil || !sku.DirectPriceValid() {
+			continue
+		}
+		available[sku.ID] = true
+		if v.IsSoldOut {
+			v.StockStatus = constants.ProductStockStatusInStock
+			v.IsSoldOut = false
+			v.Product.PriceAmount = sku.PriceAmount
+			displaySKUID = sku.ID
+		}
+	}
+	return available, displaySKUID
+}
+
+func (v *publicProductView) applyQuefaAvailability(policy QuefaAvailability) (map[uint]bool, uint) {
+	v.Product.StockDisplayMode = constants.ProductStockDisplayHidden
+	v.Product.ManualFormSchemaJSON = nil
+	v.StockStatus = constants.ProductStockStatusOutOfStock
+	v.IsSoldOut = true
+	if policy == nil || v.Product.IsMapped || productdomain.ValidatePurchaseQuantity(&v.Product, 1) != nil {
+		return nil, 0
+	}
+	available := make(map[uint]bool, len(v.Product.SKUs))
+	var displaySKUID uint
+	ctx := context.Background()
+	for _, sku := range v.Product.SKUs {
+		if !sku.IsActive || sku.DeletedAt != nil || !sku.QuefaPriceValid() {
+			continue
+		}
+		if !policy.IsSKUSellable(ctx, sku.QuefaProductCode(), sku.CostPriceAmount.Decimal) {
 			continue
 		}
 		available[sku.ID] = true

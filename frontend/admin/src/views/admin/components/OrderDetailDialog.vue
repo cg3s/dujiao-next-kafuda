@@ -573,6 +573,28 @@ const submitManualConfirm = async () => {
   }
 }
 
+const quefaStatus = ref<any>(null)
+const quefaSyncing = ref(false)
+const hasQuefaItems = (order: AdminOrder | null) => {
+  if (!order) return false
+  const items = [...(order.items || []), ...(order.children || []).flatMap((c) => c.items || [])]
+  return items.some((i) => i.fulfillment_type === 'quefa_hosted')
+}
+const syncQuefaOrder = async () => {
+  const order = selectedOrder.value
+  if (!order || quefaSyncing.value) return
+  quefaSyncing.value = true
+  try {
+    const res = await adminAPI.syncOrderQuefaStatus(order.id)
+    quefaStatus.value = res.data?.data || null
+    await fetchOrderDetail(order.id)
+  } catch (err: any) {
+    detailError.value = err?.message || t('quefa.syncFailed')
+  } finally {
+    quefaSyncing.value = false
+  }
+}
+
 const fetchOrderDetail = async (orderId: number) => {
   const isInSession = captureOrderContext(orderId)
   if (!isInSession()) return
@@ -582,6 +604,7 @@ const fetchOrderDetail = async (orderId: number) => {
   detailError.value = ''
   selectedOrder.value = null
   procurementOrder.value = null
+  quefaStatus.value = null
   try {
     const response = await adminAPI.getOrder(orderId)
     if (!isCurrent()) return
@@ -589,6 +612,14 @@ const fetchOrderDetail = async (orderId: number) => {
     selectedOrder.value = order
     if (order?.direct_recharge) manualRefundForm.paymentFeeRefunded = false
     ensureRefundTabAvailable(order)
+    if (hasQuefaItems(order) && auth.hasPermission('GET:/admin/orders/:id/quefa')) {
+      try {
+        const qRes = await adminAPI.getOrderQuefaStatus(order!.id)
+        if (isCurrent()) quefaStatus.value = qRes.data?.data || null
+      } catch {
+        // ignore if not found
+      }
+    }
     if (!order?.order_no || !auth.hasPermission('GET:/admin/procurement-orders')) return
     try {
       const procRes = await adminAPI.getProcurementOrders({ order_no: order.order_no, page_size: 1 })
@@ -858,6 +889,31 @@ onUnmounted(() => { detailSession++ })
                 </Button>
               </div>
             </form>
+          </section>
+
+          <section v-if="quefaStatus" class="rounded-xl border border-border bg-muted/20 p-4 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h3 class="text-sm font-semibold text-foreground">{{ t('quefa.orderCardTitle') }}</h3>
+              <Button
+                v-if="auth.hasPermission('POST:/admin/orders/:id/quefa/sync')"
+                size="sm"
+                variant="outline"
+                :disabled="quefaSyncing"
+                @click="syncQuefaOrder"
+              >
+                {{ quefaSyncing ? t('quefa.syncing') : t('quefa.syncOrderAction') }}
+              </Button>
+            </div>
+            <dl class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.stage') }}</dt><dd class="font-medium mt-0.5">{{ quefaStatus.stage }}</dd></div>
+              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.collectionMode') }}</dt><dd class="font-medium mt-0.5">{{ quefaStatus.collection_mode }}</dd></div>
+              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.productCode') }}</dt><dd class="font-mono mt-0.5">{{ quefaStatus.product_code }}</dd></div>
+              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.upstreamOrderId') }}</dt><dd class="font-mono mt-0.5">{{ quefaStatus.upstream_order_id || '-' }}</dd></div>
+              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.costFloor') }}</dt><dd class="font-medium mt-0.5">{{ quefaStatus.cost_floor_amount }} {{ quefaStatus.settlement_currency }}</dd></div>
+              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.exceptionCode') }}</dt><dd class="font-medium mt-0.5">{{ quefaStatus.exception_code || '-' }}</dd></div>
+              <div v-if="quefaStatus.refund_ref"><dt class="text-muted-foreground">{{ t('quefa.orderFields.refundRef') }}</dt><dd class="font-mono mt-0.5">{{ quefaStatus.refund_ref }}</dd></div>
+              <div v-if="quefaStatus.procurement_refund_ref"><dt class="text-muted-foreground">{{ t('quefa.orderFields.procurementRefundRef') }}</dt><dd class="font-mono mt-0.5">{{ quefaStatus.procurement_refund_ref }}</dd></div>
+            </dl>
           </section>
 
           <div class="rounded-xl border border-border bg-muted/20 p-4">

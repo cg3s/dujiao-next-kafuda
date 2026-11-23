@@ -44,7 +44,7 @@ func (s *Service) CreateCardSecretBatch(input CreateCardSecretBatchInput) (*card
 	if product == nil {
 		return nil, 0, ErrProductNotFound
 	}
-	if product.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+	if constants.IsDirectRechargeFulfillment(product.FulfillmentType) {
 		return nil, 0, ErrInvalid
 	}
 	sku, err := s.resolveCardSecretSKU(product.ID, input.SKUID)
@@ -101,7 +101,7 @@ func (s *Service) CreateCardSecretBatch(input CreateCardSecretBatchInput) (*card
 		if current == nil {
 			return ErrProductNotFound
 		}
-		if current.FulfillmentType != product.FulfillmentType || current.FulfillmentType == constants.FulfillmentTypeKafudaGPT {
+		if current.FulfillmentType != product.FulfillmentType || constants.IsDirectRechargeFulfillment(current.FulfillmentType) {
 			return ErrInvalid
 		}
 		bound := *s

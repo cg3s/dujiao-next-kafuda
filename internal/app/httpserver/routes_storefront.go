@@ -19,6 +19,7 @@ import (
 	ordertransport "github.com/dujiao-next/internal/modules/order/transport/http"
 	paymenttransport "github.com/dujiao-next/internal/modules/payment/transport/http"
 	paymentcallbacktransport "github.com/dujiao-next/internal/modules/payment/transport/http/callback"
+	quefahttp "github.com/dujiao-next/internal/modules/quefa/transport/http"
 	resellertransport "github.com/dujiao-next/internal/modules/reseller/transport/http/user"
 	publicconfigtransport "github.com/dujiao-next/internal/modules/settings/transport/http/public"
 	wallettransport "github.com/dujiao-next/internal/modules/wallet/transport/http"
@@ -181,9 +182,12 @@ func registerStorefrontRoutes(
 	}
 }
 
-func registerPaymentCallbackRoutes(apiV1 *gin.RouterGroup, callbackHandler *paymentcallbacktransport.Handler, webhookHandler *paymenttransport.WebhookHandler, epayRedirectHandler *paymenttransport.EpayRedirectHandler, redisClient *redis.Client, callbackRule middleware.RateLimitRule) {
+func registerPaymentCallbackRoutes(apiV1 *gin.RouterGroup, callbackHandler *paymentcallbacktransport.Handler, webhookHandler *paymenttransport.WebhookHandler, epayRedirectHandler *paymenttransport.EpayRedirectHandler, quefaWebhookHandler *quefahttp.WebhookHandler, redisClient *redis.Client, callbackRule middleware.RateLimitRule) {
 	callbacks := apiV1.Group("", middleware.RateLimitMiddleware(redisClient, callbackRule, middleware.KeyByIP))
 	paymentcallbacktransport.RegisterRoutes(callbacks, callbackHandler)
 	paymenttransport.RegisterWebhookRoutes(callbacks, webhookHandler)
 	paymenttransport.RegisterEpayRedirectRoute(callbacks, epayRedirectHandler)
+	if quefaWebhookHandler != nil {
+		quefahttp.RegisterWebhookRoutes(callbacks, quefaWebhookHandler)
+	}
 }

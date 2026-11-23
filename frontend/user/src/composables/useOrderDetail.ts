@@ -5,6 +5,11 @@ import { userOrderAPI } from '../api'
 import { ApiRequestError } from '../api/client'
 import { debounceAsync } from '../utils/debounce'
 import { directPendingPaymentOrderNo, directStatusOrderNo, startDirectOrderPolling, type DirectOrderStatus } from '../utils/directOrderStatus'
+import {
+  hostedRechargeStatusOrderNo,
+  startHostedRechargePolling,
+  type HostedRechargeStatus,
+} from '../utils/hostedRechargeStatus'
 import { useConfirmDialog } from './useConfirmDialog'
 import { toast } from './useToast'
 import { useOrderDisplayHelpers } from './useOrderDisplayHelpers'
@@ -31,8 +36,12 @@ export function useOrderDetail() {
   const directStatus = ref<DirectOrderStatus | null>(null)
   const directStatusRefresh = ref(0)
   const directStatusUnavailable = ref(false)
+  const hostedRechargeStatus = ref<HostedRechargeStatus | null>(null)
+  const hostedRechargeRefresh = ref(0)
+  const hostedRechargeUnavailable = ref(false)
   const currentOrder = computed(() => order.value?.order_no === orderNo.value ? order.value : null)
   const directOrderNo = computed(() => directStatusOrderNo(currentOrder.value))
+  const hostedRechargeOrderNo = computed(() => hostedRechargeStatusOrderNo(currentOrder.value))
   const pendingDirectOrderNo = computed(() => directPendingPaymentOrderNo(currentOrder.value))
 
   const helpers = useOrderDisplayHelpers(order)
@@ -77,6 +86,8 @@ export function useOrderDetail() {
     order.value = null
     directStatus.value = null
     directStatusUnavailable.value = false
+    hostedRechargeStatus.value = null
+    hostedRechargeUnavailable.value = false
     loading.value = true
     // 重新经过路由鉴权，并丢弃旧账号的页面状态。
     window.location.reload()
@@ -246,6 +257,37 @@ export function useOrderDetail() {
     ))
   })
 
+  watch([hostedRechargeOrderNo, hostedRechargeRefresh], ([number], [previousNumber], onCleanup) => {
+    if (number !== previousNumber) {
+      hostedRechargeStatus.value = null
+      hostedRechargeUnavailable.value = false
+    }
+    if (!number) return
+    onCleanup(startHostedRechargePolling(
+      async () => {
+        if (!isCurrentSession()) return null
+        const response = await userOrderAPI.hostedRechargeStatus(number)
+        return response.data.data
+      },
+      (status) => {
+        if (!isCurrentSession() || number !== hostedRechargeOrderNo.value) return
+        hostedRechargeUnavailable.value = status === null
+        if (!status) return
+        hostedRechargeStatus.value = status
+      },
+      document,
+      async (stage) => {
+        const expected = stage === 'succeeded' ? 'completed' : stage === 'refunded' ? 'refunded' : ''
+        if (!isCurrentSession() || number !== hostedRechargeOrderNo.value) return true
+        if (expected && order.value?.status === expected) return true
+        await loadOrder('sync')
+        if (!expected) return true
+        return !isCurrentSession() || number !== hostedRechargeOrderNo.value || order.value?.status === expected
+      },
+      { isOnline: () => navigator.onLine, events: window },
+    ))
+  })
+
   watch(orderNo, (number) => {
     resetOrderLoad()
     order.value = null
@@ -313,6 +355,10 @@ export function useOrderDetail() {
     directStatus,
     directStatusUnavailable,
     refreshDirectStatus: () => { directStatusRefresh.value++ },
+    hostedRechargeOrderNo,
+    hostedRechargeStatus,
+    hostedRechargeUnavailable,
+    refreshHostedRechargeStatus: () => { hostedRechargeRefresh.value++ },
     debouncedLoadOrder,
     cancelOrder,
     fulfillmentDownloading,

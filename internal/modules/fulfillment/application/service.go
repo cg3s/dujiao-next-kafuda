@@ -124,7 +124,7 @@ func (s *Service) CreateManual(input CreateManualInput) (*fulfillmentdomain.Fulf
 		if err != nil {
 			return err
 		}
-		if locked == nil || locked.HasDirectRecharge() || (locked.Status != constants.OrderStatusPaid && locked.Status != constants.OrderStatusFulfilling) {
+		if locked == nil || locked.HasDirectRecharge() || locked.HasQuefaHosted() || (locked.Status != constants.OrderStatusPaid && locked.Status != constants.OrderStatusFulfilling) {
 			return ErrOrderStatusInvalid
 		}
 		if _, found, err := tx.Fulfillments().FindByOrderIDForUpdate(input.OrderID); err != nil {

@@ -17,6 +17,7 @@ import (
 	"github.com/dujiao-next/internal/constants"
 	"github.com/dujiao-next/internal/logger"
 	orderpresenter "github.com/dujiao-next/internal/modules/order/transport/presenter"
+	quefacontract "github.com/dujiao-next/internal/modules/quefa/contract"
 	reseller "github.com/dujiao-next/internal/modules/reseller/contract"
 	"github.com/dujiao-next/internal/platform/http/ginutil"
 	"github.com/dujiao-next/internal/platform/http/response"
@@ -82,6 +83,65 @@ type UserHandler struct {
 	users           UserLookup
 	direct          DirectStatusReader
 	authorizeDirect DirectAuthorizer
+	hostedStatus    HostedRechargeStatusReader
+	hostedEntry     HostedRechargeEntryOpener
+}
+
+type HostedRechargeStatusReader func(ctx context.Context, orderNo string, userID uint) (*quefacontract.BuyerStatus, error)
+type HostedRechargeEntryOpener func(ctx context.Context, orderNo string, userID uint) (*quefacontract.FulfillmentEntryResult, error)
+
+func (h *UserHandler) SetHostedRecharge(status HostedRechargeStatusReader, entry HostedRechargeEntryOpener) {
+	if h != nil {
+		h.hostedStatus = status
+		h.hostedEntry = entry
+	}
+}
+
+func (h *UserHandler) GetHostedRechargeStatus(c *gin.Context) {
+	uid, ok := ginutil.GetUserID(c)
+	if !ok {
+		return
+	}
+	tenant := tenantFromRequest(c)
+	orderNo := strings.TrimSpace(c.Param("order_no"))
+	if h.hostedStatus == nil || orderNo == "" || !tenant.IsMain || tenant.ResellerID != nil || tenant.Unavailable {
+		ginutil.RespondError(c, response.CodeNotFound, "error.order_not_found", nil)
+		return
+	}
+	st, err := h.hostedStatus(c.Request.Context(), orderNo, uid)
+	if err != nil {
+		ginutil.RespondError(c, response.CodeInternal, "error.order_fetch_failed", nil)
+		return
+	}
+	if st == nil {
+		ginutil.RespondError(c, response.CodeNotFound, "error.order_not_found", nil)
+		return
+	}
+	response.Success(c, st)
+}
+
+func (h *UserHandler) OpenHostedRechargeEntry(c *gin.Context) {
+	uid, ok := ginutil.GetUserID(c)
+	if !ok {
+		return
+	}
+	tenant := tenantFromRequest(c)
+	orderNo := strings.TrimSpace(c.Param("order_no"))
+	if h.hostedEntry == nil || orderNo == "" || !tenant.IsMain || tenant.ResellerID != nil || tenant.Unavailable {
+		ginutil.RespondError(c, response.CodeNotFound, "error.order_not_found", nil)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	entry, err := h.hostedEntry(c.Request.Context(), orderNo, uid)
+	if err != nil {
+		if errors.Is(err, ErrOrderNotFound) {
+			ginutil.RespondError(c, response.CodeNotFound, "error.order_not_found", nil)
+			return
+		}
+		ginutil.RespondError(c, response.CodeBadRequest, "error.hosted_recharge_entry_unavailable", nil)
+		return
+	}
+	response.Success(c, entry)
 }
 
 type DirectStatus struct {

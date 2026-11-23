@@ -35,6 +35,33 @@ type Config struct {
 	Web          WebConfig          `mapstructure:"web"`
 	Reseller     ResellerConfig     `mapstructure:"reseller"`
 	KafudaGPT    KafudaGPTConfig    `mapstructure:"kafuda_gpt"`
+	Quefa        QuefaConfig        `mapstructure:"quefa"`
+}
+
+// QuefaConfig is deployment-side fallback configuration for Quefa hosted direct recharge.
+// Runtime settings are persisted encrypted in database and override these defaults.
+type QuefaConfig struct {
+	APIBaseURL             string   `mapstructure:"api_base_url"`
+	PartnerID              string   `mapstructure:"partner_id"`
+	KeyID                  string   `mapstructure:"key_id"`
+	ClientSecret           string   `mapstructure:"client_secret" json:"-"`
+	WebhookSecret          string   `mapstructure:"webhook_secret" json:"-"`
+	CollectionMode         string   `mapstructure:"collection_mode"`
+	SalesEnabled           bool     `mapstructure:"sales_enabled"`
+	AllowedPayDomains      []string `mapstructure:"allowed_pay_domains"`
+	CatalogTTLSeconds      int      `mapstructure:"catalog_ttl_seconds"`
+	PollIntervalSeconds    int      `mapstructure:"poll_interval_seconds"`
+	PollReviewAfterSeconds int      `mapstructure:"poll_review_after_seconds"`
+	WebhookMaxSkewSeconds  int      `mapstructure:"webhook_max_skew_seconds"`
+}
+
+// QuefaPollInterval is the minimum delay between scheduled Quefa status lookups.
+func (c *Config) QuefaPollInterval() time.Duration {
+	if c == nil || c.Quefa.PollIntervalSeconds <= 0 {
+		return 10 * time.Second
+	}
+	seconds := max(5, min(900, c.Quefa.PollIntervalSeconds))
+	return time.Duration(seconds) * time.Second
 }
 
 // KafudaGPTConfig is deployment-only merchant configuration. Closing sales does

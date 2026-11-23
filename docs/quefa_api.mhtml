@@ -1,0 +1,767 @@
+From: <Saved by Blink>
+Snapshot-Content-Location: https://tibo.ink/developers
+Subject: =?utf-8?Q?Quefa=20=E5=BC=80=E5=8F=91=E8=80=85=E4=B8=AD=E5=BF=83?=
+Date: Mon, 23 Nov 2026 04:28:19 GMT
+MIME-Version: 1.0
+Content-Type: multipart/related;
+	type="text/html";
+	boundary="----MultipartBoundary--VNqiPsaYX0lCyKJLGaHlQpsKHCh8Rg113ppgH1Edv8----"
+
+
+------MultipartBoundary--VNqiPsaYX0lCyKJLGaHlQpsKHCh8Rg113ppgH1Edv8----
+Content-Type: text/html
+Content-ID: <frame-77B4C9D83063657315617CC700C9B01A@mhtml.blink>
+Content-Transfer-Encoding: quoted-printable
+Content-Location: https://tibo.ink/developers
+
+<!DOCTYPE html><html lang=3D"zh-CN"><head><meta http-equiv=3D"Content-Type"=
+ content=3D"text/html; charset=3DUTF-8"><meta name=3D"viewport" content=3D"=
+width=3Ddevice-width,initial-scale=3D1">
+<title>Quefa =E5=BC=80=E5=8F=91=E8=80=85=E4=B8=AD=E5=BF=83</title><link rel=
+=3D"icon" href=3D"https://tibo.ink/favicon.ico" sizes=3D"any"><link rel=3D"=
+icon" href=3D"https://tibo.ink/favicon.svg" type=3D"image/svg+xml"><link re=
+l=3D"stylesheet" href=3D"https://tibo.ink/developers/assets/portal.css"></h=
+ead>
+<body><header class=3D"top"><div class=3D"portal-top-start"><a class=3D"bac=
+k-workspace" href=3D"https://tibo.ink/workspace/app?view=3Ddocs">=E2=86=90 =
+=E8=BF=94=E5=9B=9E=E5=B7=A5=E4=BD=9C=E5=8F=B0</a><a class=3D"brand brand-in=
+line" href=3D"https://tibo.ink/developers"><svg class=3D"brand-mark" viewBo=
+x=3D"0 0 32 32" fill=3D"none" xmlns=3D"http://www.w3.org/2000/svg" role=3D"=
+img" aria-hidden=3D"true"><defs><linearGradient id=3D"quefa-q-portal" x1=3D=
+"4" y1=3D"4" x2=3D"28" y2=3D"28" gradientUnits=3D"userSpaceOnUse"><stop sto=
+p-color=3D"#40342d"></stop><stop offset=3D".58" stop-color=3D"#8f4a39"></st=
+op><stop offset=3D"1" stop-color=3D"#e66b50"></stop></linearGradient></defs=
+><rect width=3D"32" height=3D"32" rx=3D"9" fill=3D"url(#quefa-q-portal)"></=
+rect><circle cx=3D"24" cy=3D"8" r=3D"2" fill=3D"#f2c79c"></circle><path d=
+=3D"M10.5 16a5.5 5.5 0 1 1 11 0 5.5 5.5 0 0 1-11 0" stroke=3D"#fff" stroke-=
+width=3D"2.25" stroke-linecap=3D"round"></path><path d=3D"M19.5 19.5 23.5 2=
+3.5" stroke=3D"#ffd0be" stroke-width=3D"2.25" stroke-linecap=3D"round"></pa=
+th></svg><span>Quefa<small>=E5=BC=80=E5=8F=91=E8=80=85=E4=B8=AD=E5=BF=83</s=
+mall></span></a></div><nav aria-label=3D"=E5=BC=80=E5=8F=91=E8=80=85=E8=B5=
+=84=E6=BA=90"><a href=3D"https://tibo.ink/developers#quickstart">=E5=BF=AB=
+=E9=80=9F=E5=BC=80=E5=A7=8B</a><a href=3D"https://tibo.ink/developers#auth"=
+>=E8=AF=B7=E6=B1=82=E7=AD=BE=E5=90=8D</a><a href=3D"https://tibo.ink/develo=
+pers#orders">=E8=AE=A2=E5=8D=95</a><a href=3D"https://tibo.ink/developers#r=
+edemption">=E5=85=91=E6=8D=A2</a><a href=3D"https://tibo.ink/developers#web=
+hooks">=E5=9B=9E=E8=B0=83</a></nav><div class=3D"top-actions"><a class=3D"q=
+uiet" href=3D"https://tibo.ink/developers/quefa-partner-integration-kit.zip=
+" download=3D"">=E5=AE=8C=E6=95=B4=E6=8E=A5=E5=85=A5=E5=8C=85</a><a class=
+=3D"button" href=3D"https://tibo.ink/workspace/app?view=3Ddocs">=E8=BF=9B=
+=E5=85=A5=E5=B7=A5=E4=BD=9C=E5=8F=B0</a></div></header>
+<div class=3D"layout"><aside><div class=3D"environment"><span></span><stron=
+g>=E7=94=9F=E4=BA=A7=E6=8E=A5=E5=8F=A3=E8=A7=84=E8=8C=83</strong><small>=E6=
+=B2=99=E7=AE=B1=E4=B8=8E=E7=94=9F=E4=BA=A7=E5=87=AD=E8=AF=81=E9=9A=94=E7=A6=
+=BB</small></div><a href=3D"https://tibo.ink/developers#quickstart" class=
+=3D"">01 =C2=B7 =E6=8E=A5=E5=85=A5=E8=88=AA=E9=81=93</a><a href=3D"https://=
+tibo.ink/developers#auth" class=3D"">02 =C2=B7 HMAC =E7=AD=BE=E5=90=8D</a><=
+a href=3D"https://tibo.ink/developers#orders" class=3D"">03 =C2=B7 =E5=88=
+=9B=E5=BB=BA=E8=AE=A2=E5=8D=95</a><a href=3D"https://tibo.ink/developers#re=
+demption" class=3D"">04 =C2=B7 =E5=85=85=E5=80=BC=E4=B8=8E CDK</a><a href=
+=3D"https://tibo.ink/developers#webhooks" class=3D"">05 =C2=B7 Webhook</a><=
+a href=3D"https://tibo.ink/developers#progress" class=3D"">06 =C2=B7 =E8=BF=
+=9B=E5=BA=A6=E4=B8=8E=E5=A4=B1=E8=B4=A5=E6=81=A2=E5=A4=8D</a><a href=3D"htt=
+ps://tibo.ink/developers#errors" class=3D"is-active" aria-current=3D"locati=
+on">07 =C2=B7 =E9=94=99=E8=AF=AF=E4=B8=8E=E9=87=8D=E8=AF=95</a><div class=
+=3D"side-files"><span>=E5=AE=8C=E6=95=B4=E6=96=87=E6=A1=A3</span><a href=3D=
+"https://tibo.ink/developers/doc/integration">=E5=AE=8C=E6=95=B4=E6=8E=A5=
+=E5=85=A5=E6=96=87=E6=A1=A3 =E2=86=97</a><a href=3D"https://tibo.ink/develo=
+pers/doc/redemption">=E8=87=AA=E5=BB=BA=E5=85=91=E6=8D=A2=E6=8C=87=E5=8D=97=
+ =E2=86=97</a><a href=3D"https://tibo.ink/developers/doc/payment-channels">=
+=E6=94=AF=E4=BB=98=E9=80=9A=E9=81=93=E8=AF=B4=E6=98=8E =E2=86=97</a></div><=
+/aside>
+<main><section class=3D"hero"><p class=3D"eyebrow">PARTNER API =C2=B7 V1</p=
+><h1>=E4=BB=8E=E4=B8=80=E7=AC=94=E6=B5=8B=E8=AF=95=E8=AE=A2=E5=8D=95=EF=BC=
+=8C<br>=E5=88=B0=E7=A8=B3=E5=AE=9A=E7=9A=84=E5=85=85=E5=80=BC=E4=BA=A4=E4=
+=BB=98=E3=80=82</h1><p>=E5=BC=80=E6=94=BE API =E6=98=AF=E4=BB=A3=E7=90=86=
+=E5=B7=A5=E4=BD=9C=E5=8F=B0=E4=B9=8B=E5=A4=96=E7=9A=84=E5=8F=AF=E9=80=89=E6=
+=8E=A5=E5=85=A5=E6=96=B9=E5=BC=8F=EF=BC=8C=E4=B8=8D=E6=98=AF=E4=BD=BF=E7=94=
+=A8 Quefa =E7=9A=84=E5=89=8D=E7=BD=AE=E6=9D=A1=E4=BB=B6=E3=80=82=E9=80=89=
+=E6=8B=A9=E8=87=AA=E5=BB=BA=E6=97=B6=EF=BC=8C=E6=94=AF=E4=BB=98=E3=80=81=E5=
+=85=85=E5=80=BC=E3=80=81CDK=E3=80=81=E8=AE=A2=E5=8D=95=E7=8A=B6=E6=80=81=E4=
+=B8=8E=E9=80=9A=E7=9F=A5=E4=BD=BF=E7=94=A8=E5=90=8C=E4=B8=80=E5=A5=97=E4=B8=
+=9A=E5=8A=A1=E7=BC=96=E5=8F=B7=EF=BC=9B=E5=B9=B3=E5=8F=B0=E5=86=85=E9=83=A8=
+=E5=B1=A5=E7=BA=A6=E7=BB=86=E8=8A=82=E4=B8=8D=E4=BC=9A=E8=BF=9B=E5=85=A5=E4=
+=BD=A0=E7=9A=84=E5=89=8D=E7=AB=AF=E3=80=81=E6=97=A5=E5=BF=97=E6=88=96=E5=AE=
+=A2=E6=88=B7=E9=A1=B5=E9=9D=A2=E3=80=82</p><p class=3D"contact-line">=E6=8E=
+=A5=E5=85=A5=E6=88=96=E6=95=85=E9=9A=9C=E8=81=94=E7=B3=BB=EF=BC=9A<a href=
+=3D"https://t.me/bugan8" target=3D"_blank" rel=3D"noopener noreferrer">Tele=
+gram =C2=B7 bugan8 =E2=86=97</a></p><div class=3D"hero-actions"><a class=3D=
+"button" href=3D"https://tibo.ink/developers#quickstart">=E5=BC=80=E5=A7=8B=
+=E6=8E=A5=E5=85=A5</a><a class=3D"quiet" href=3D"https://tibo.ink/developer=
+s/quefa-partner-integration-kit.zip" download=3D"">=E4=B8=8B=E8=BD=BD=E5=AE=
+=8C=E6=95=B4=E6=8E=A5=E5=85=A5=E5=8C=85</a></div><div class=3D"base"><span>=
+API Base</span><code id=3D"api-base">https://tibo.ink/v1</code><button clas=
+s=3D"copy" data-copy=3D"api-base">=E5=A4=8D=E5=88=B6</button></div><p class=
+=3D"muted domain-note">=E8=AF=B7=E4=BD=BF=E7=94=A8 <code>https://tibo.ink</=
+code> =E4=BD=9C=E4=B8=BA Partner API =E5=9F=9F=E5=90=8D=EF=BC=9B<code>api.t=
+ibo.ink</code> =E4=B8=8E=E4=B8=BB=E7=AB=99=E7=AD=89=E4=BB=B7=EF=BC=8C=E5=8B=
+=BF=E6=B7=B7=E7=94=A8=E4=B8=8D=E5=90=8C=E5=9F=9F=E5=90=8D=E7=9A=84 POST =E7=
+=AD=BE=E5=90=8D=E8=B7=AF=E5=BE=84=E3=80=82</p></section>
+
+<section aria-label=3D"=E6=96=87=E6=A1=A3=E4=B8=8B=E8=BD=BD"><div class=3D"=
+section-head"><h2>=E4=B8=80=E6=AC=A1=E4=B8=8B=E8=BD=BD=EF=BC=8C=E5=AE=8C=E6=
+=95=B4=E6=8E=A5=E5=85=A5</h2><p>=E6=97=A0=E9=9C=80=E5=88=A4=E6=96=AD=E8=AF=
+=A5=E4=B8=8B=E8=BD=BD=E5=93=AA=E4=B8=80=E4=B8=AA=E3=80=82=E5=8E=8B=E7=BC=A9=
+=E5=8C=85=E5=B7=B2=E5=8C=85=E5=90=AB=E5=AE=8C=E6=95=B4=E6=8E=A5=E5=85=A5=E6=
+=96=87=E6=A1=A3=E3=80=81=E5=85=91=E6=8D=A2=E4=B8=8E=E8=87=AA=E5=BB=BA=E7=AB=
+=99=E6=8C=87=E5=8D=97=E3=80=81=E6=94=AF=E4=BB=98=E6=B8=A0=E9=81=93=E8=AF=B4=
+=E6=98=8E=E3=80=81OpenAPI=EF=BC=8C=E4=BB=A5=E5=8F=8A Node.js=E3=80=81Python=
+ =E7=AD=BE=E5=90=8D=E7=A4=BA=E4=BE=8B=E3=80=82</p></div><div class=3D"hero-=
+actions"><a class=3D"button" href=3D"https://tibo.ink/developers/quefa-part=
+ner-integration-kit.zip" download=3D"">=E4=B8=8B=E8=BD=BD=E4=BB=A3=E7=90=86=
+=E5=95=86=E5=AE=8C=E6=95=B4=E6=8E=A5=E5=85=A5=E5=8C=85</a></div></section>
+<section id=3D"quickstart"><div class=3D"section-head"><div><p class=3D"eye=
+brow">01 =C2=B7 QUICKSTART</p><h2>=E5=9B=9B=E6=AE=B5=E6=8E=A5=E5=85=A5=E8=
+=88=AA=E9=81=93</h2></div><p>=E6=9C=AC=E9=A1=B5=E5=8F=AA=E9=9D=A2=E5=90=91=
+=E9=80=89=E6=8B=A9 API =E8=87=AA=E5=BB=BA=E7=9A=84=E4=BB=A3=E7=90=86=E5=95=
+=86=E3=80=82=E6=97=A0=E9=9C=80=E5=BC=80=E5=8F=91=E6=97=B6=E7=9B=B4=E6=8E=A5=
+=E8=BF=94=E5=9B=9E=E4=BB=A3=E7=90=86=E5=B7=A5=E4=BD=9C=E5=8F=B0=E6=93=8D=E4=
+=BD=9C=EF=BC=9B=E4=B8=A4=E7=A7=8D=E5=85=A5=E5=8F=A3=E5=85=B1=E7=94=A8=E8=AE=
+=A2=E5=8D=95=E5=92=8C=E8=B5=84=E9=87=91=E6=95=B0=E6=8D=AE=E3=80=82</p></div=
+><div class=3D"route">
+<article class=3D"route-step"><b>1</b><div><strong>=E9=80=89=E6=8B=A9=E6=A8=
+=A1=E5=BC=8F</strong><p>=E9=9B=B6=E9=87=87=E8=B4=AD=E4=BD=99=E9=A2=9D=E4=BD=
+=BF=E7=94=A8=E5=B9=B3=E5=8F=B0=E6=94=B6=E6=AC=BE=EF=BC=9B=E5=8F=AA=E6=9C=89=
+=E4=BD=99=E9=A2=9D=E5=AE=9E=E9=99=85=E5=88=B0=E8=B4=A6=E4=B8=94=E5=B7=B2=E6=
+=8E=88=E6=9D=83=E6=97=B6=E6=89=8D=E4=BD=BF=E7=94=A8=E4=BB=A3=E7=90=86=E8=87=
+=AA=E6=94=B6=E6=AC=BE=E3=80=82</p><small>=E5=AE=8C=E6=88=90=E4=BF=A1=E5=8F=
+=B7=EF=BC=9A=E7=A1=AE=E5=AE=9A collection_mode</small></div></article>
+<article class=3D"route-step"><b>2</b><div><strong>=E5=88=9B=E5=BB=BA=E5=AF=
+=86=E9=92=A5</strong><p>=E4=BB=A3=E7=90=86=E8=B4=A6=E5=8F=B7=E9=BB=98=E8=AE=
+=A4=E5=BC=80=E6=94=BE API=EF=BC=8C=E5=8F=AF=E5=9C=A8=E5=B7=A5=E4=BD=9C=E5=
+=8F=B0=E5=88=9B=E5=BB=BA=E5=BA=94=E7=94=A8=E5=AF=86=E9=92=A5=EF=BC=9BSecret=
+ =E5=8F=AA=E6=98=BE=E7=A4=BA=E4=B8=80=E6=AC=A1=E3=80=82</p><small>=E5=AE=8C=
+=E6=88=90=E4=BF=A1=E5=8F=B7=EF=BC=9A=E5=AE=89=E5=85=A8=E4=BF=9D=E5=AD=98=E6=
+=9C=8D=E5=8A=A1=E7=AB=AF=E5=AF=86=E9=92=A5</small></div></article>
+<article class=3D"route-step"><b>3</b><div><strong>=E5=88=9B=E5=BB=BA=E8=AE=
+=A2=E5=8D=95</strong><p>=E8=AF=BB=E5=8F=96=E5=95=86=E5=93=81=E5=AE=9E=E6=97=
+=B6=E4=BE=9B=E8=B4=A7=E4=BB=B7=EF=BC=8C=E9=80=89=E6=8B=A9=E5=B9=B3=E5=8F=B0=
+=E4=BB=A3=E6=94=B6=E6=88=96=E4=BD=99=E9=A2=9D=E9=87=87=E8=B4=AD=E3=80=82</p=
+><small>=E5=AE=8C=E6=88=90=E4=BF=A1=E5=8F=B7=EF=BC=9A=E8=8E=B7=E5=BE=97 ord=
+er_id</small></div></article>
+<article class=3D"route-step"><b>4</b><div><strong>=E5=9B=9E=E8=B0=83=E9=AA=
+=8C=E6=94=B6</strong><p>=E9=AA=8C=E7=AD=BE Webhook=EF=BC=8C=E5=B9=B6=E7=94=
+=A8=E6=9F=A5=E5=8D=95=E6=8E=A5=E5=8F=A3=E7=A1=AE=E8=AE=A4=E6=94=AF=E4=BB=98=
+=E4=B8=8E=E5=85=85=E5=80=BC=E7=BB=88=E6=80=81=E3=80=82</p><small>=E5=AE=8C=
+=E6=88=90=E4=BF=A1=E5=8F=B7=EF=BC=9A=E6=B5=8B=E8=AF=95=E9=80=9A=E7=9F=A5 2x=
+x</small></div></article></div>
+<div class=3D"callout"><strong>=E5=B7=A5=E4=BD=9C=E5=8F=B0=E4=B8=8E API =E5=
+=B9=B6=E5=AD=98</strong><p>=E4=B8=8D=E5=BC=80=E5=8F=91=E7=BD=91=E7=AB=99=E4=
+=B9=9F=E5=8F=AF=E4=BB=A5=E7=9B=B4=E6=8E=A5=E5=9C=A8=E4=BB=A3=E7=90=86=E5=B7=
+=A5=E4=BD=9C=E5=8F=B0=E4=B8=8B=E5=8D=95=E3=80=81=E6=94=B6=E6=AC=BE=E3=80=81=
+=E4=BA=A4=E4=BB=98 CDK =E6=88=96=E6=8F=90=E4=BA=A4=E8=87=AA=E5=8A=A8=E7=9B=
+=B4=E5=85=85=E3=80=82=E9=80=89=E6=8B=A9 API =E5=90=8E=E4=BB=8D=E5=8F=AF=E7=
+=BB=A7=E7=BB=AD=E4=BD=BF=E7=94=A8=E5=B7=A5=E4=BD=9C=E5=8F=B0=EF=BC=9B=E4=B8=
+=A4=E8=BE=B9=E5=85=B1=E7=94=A8=E5=90=8C=E4=B8=80=E8=AE=A2=E5=8D=95=E3=80=81=
+=E4=BD=99=E9=A2=9D=E3=80=81=E4=BD=A3=E9=87=91=E3=80=81=E9=80=80=E6=AC=BE=E3=
+=80=81=E5=BC=80=E7=A5=A8=E5=92=8C=E5=B7=A5=E5=8D=95=E6=95=B0=E6=8D=AE=E3=80=
+=82</p></div><div class=3D"callout"><strong>=E4=B8=A4=E7=A7=8D=E6=94=B6=E6=
+=AC=BE=E6=A8=A1=E5=BC=8F=E5=B9=B6=E5=AD=98</strong><p><code>platform_collec=
+t</code>=EF=BC=9AQuefa =E5=90=91=E5=AE=A2=E6=88=B7=E6=94=B6=E6=AC=BE=EF=BC=
+=8C=E4=B8=8D=E6=89=A3=E4=BB=A3=E7=90=86=E9=87=87=E8=B4=AD=E4=BD=99=E9=A2=9D=
+=EF=BC=8C=E9=9B=B6=E9=87=87=E8=B4=AD=E4=BD=99=E9=A2=9D=E4=B9=9F=E5=8F=AF=E4=
+=BD=BF=E7=94=A8=E3=80=82<code>agent_collect</code>=EF=BC=9A=E4=BB=A3=E7=90=
+=86=E8=87=AA=E8=A1=8C=E6=94=B6=E5=AE=A2=E6=88=B7=E6=AC=BE=EF=BC=8CQuefa =E6=
+=8C=89=E4=BE=9B=E8=B4=A7=E4=BB=B7=E6=89=A3=E9=87=87=E8=B4=AD=E4=BD=99=E9=A2=
+=9D=EF=BC=8C=E5=BF=85=E9=A1=BB=E6=9C=89=E8=B6=B3=E9=A2=9D=E9=87=87=E8=B4=AD=
+=E4=BD=99=E9=A2=9D=E5=92=8C=E5=AF=B9=E5=BA=94=E6=8E=88=E6=9D=83=E3=80=82</p=
+></div></section>
+
+<section id=3D"auth"><div class=3D"section-head"><div><p class=3D"eyebrow">=
+02 =C2=B7 AUTHENTICATION</p><h2>=E6=9C=8D=E5=8A=A1=E7=AB=AF HMAC =E7=AD=BE=
+=E5=90=8D</h2></div><p>=E5=AF=86=E9=92=A5=E5=8F=AA=E8=83=BD=E6=94=BE=E5=9C=
+=A8=E4=BB=A3=E7=90=86=E5=95=86=E6=9C=8D=E5=8A=A1=E7=AB=AF=E3=80=82=E6=B5=8F=
+=E8=A7=88=E5=99=A8=E3=80=81=E7=A7=BB=E5=8A=A8=E7=AB=AF=E5=92=8C=E5=85=AC=E5=
+=BC=80=E4=BB=93=E5=BA=93=E4=B8=8D=E5=BE=97=E4=BF=9D=E5=AD=98 <code>client_s=
+ecret</code>=E3=80=82</p></div><div class=3D"split"><div><h3>=E6=AF=8F=E6=
+=AC=A1=E8=AF=B7=E6=B1=82=E6=90=BA=E5=B8=A6</h3><ul class=3D"checklist"><li>=
+<code>X-Partner-Id</code> =E7=A7=9F=E6=88=B7=E6=A0=87=E8=AF=86</li><li><cod=
+e>X-Key-Id</code> =E5=BA=94=E7=94=A8=E5=AF=86=E9=92=A5=E6=A0=87=E8=AF=86</l=
+i><li><code>X-Timestamp</code> =E5=BD=93=E5=89=8D Unix =E7=A7=92</li><li><c=
+ode>X-Nonce</code> =E6=AF=8F=E6=AC=A1=E8=AF=B7=E6=B1=82=E5=94=AF=E4=B8=80</=
+li><li><code>X-Signature</code> 64 =E4=BD=8D=E5=B0=8F=E5=86=99=E5=8D=81=E5=
+=85=AD=E8=BF=9B=E5=88=B6</li><li>=E5=86=99=E8=AF=B7=E6=B1=82=E5=86=8D=E5=B8=
+=A6 <code>Idempotency-Key</code></li></ul><p>Node.js =E4=B8=8E Python =E7=
+=AD=BE=E5=90=8D=E7=A4=BA=E4=BE=8B=E5=B7=B2=E5=8C=85=E5=90=AB=E5=9C=A8<a hre=
+f=3D"https://tibo.ink/developers/quefa-partner-integration-kit.zip" downloa=
+d=3D"">=E5=AE=8C=E6=95=B4=E6=8E=A5=E5=85=A5=E5=8C=85</a>=E4=B8=AD=E3=80=82<=
+/p></div><div class=3D"code-card"><div class=3D"code-head"><span>Canonical =
+string</span><button class=3D"copy" data-copy=3D"canonical">=E5=A4=8D=E5=88=
+=B6</button></div><pre id=3D"canonical"><code>METHOD
+PATH
+CANONICAL_QUERY
+TIMESTAMP
+NONCE
+KEY_ID
+IDEMPOTENCY_KEY
+SHA256_HEX(RAW_BODY)</code></pre></div></div></section>
+
+<section id=3D"orders"><div class=3D"section-head"><div><p class=3D"eyebrow=
+">03 =C2=B7 ORDERS</p><h2>=E5=88=9B=E5=BB=BA=E7=AC=AC=E4=B8=80=E7=AC=94=E8=
+=AE=A2=E5=8D=95</h2></div><p>=E4=B8=8B=E5=8D=95=E5=89=8D=E5=85=88=E8=B0=83=
+=E7=94=A8 <code>GET /v1/products</code>=E3=80=82=E4=BB=B7=E6=A0=BC=E3=80=81=
+=E5=8F=AF=E5=94=AE=E7=8A=B6=E6=80=81=E5=92=8C=E5=B1=A5=E7=BA=A6=E6=96=B9=E5=
+=BC=8F=E4=BB=A5=E5=AE=9E=E6=97=B6=E5=93=8D=E5=BA=94=E4=B8=BA=E5=87=86=EF=BC=
+=8C=E4=B8=8D=E8=83=BD=E5=86=99=E6=AD=BB=E3=80=82</p></div><div class=3D"cod=
+e-card"><div class=3D"code-head"><span>POST /v1/orders</span><button class=
+=3D"copy" data-copy=3D"order-example">=E5=A4=8D=E5=88=B6</button></div><pre=
+ id=3D"order-example"><code>{
+  "merchant_order_no": "SHOP-20260927-0001",
+  "product_code": "chatgpt_plus_cdk_1m",
+  "quantity": 1,
+  "sale_amount": "135.00",
+  "collection_mode": "platform_collect",
+  "delivery_mode": "auto_recharge"
+}</code></pre></div><div class=3D"state-row"><div><span>pending</span><stro=
+ng>=E7=AD=89=E5=BE=85=E4=BB=98=E6=AC=BE</strong></div><i></i><div><span>pai=
+d</span><strong>=E6=94=AF=E4=BB=98=E5=B7=B2=E7=A1=AE=E8=AE=A4</strong></div=
+><i></i><div><span>running</span><strong>=E5=85=85=E5=80=BC=E5=A4=84=E7=90=
+=86=E4=B8=AD</strong></div><i></i><div><span>succeeded</span><strong>=E5=85=
+=85=E5=80=BC=E6=88=90=E5=8A=9F</strong></div></div></section>
+
+<section id=3D"redemption"><div class=3D"section-head"><div><p class=3D"eye=
+brow">04 =C2=B7 REDEMPTION</p><h2>=E5=B7=A5=E4=BD=9C=E5=8F=B0=E3=80=81=E6=
+=89=98=E7=AE=A1=E5=85=A5=E5=8F=A3=E6=88=96=E8=87=AA=E5=BB=BA=E9=A1=B5=E9=9D=
+=A2</h2></div><p>=E4=BB=A3=E7=90=86=E5=95=86=E5=8F=AF=E4=BB=A5=E7=9B=B4=E6=
+=8E=A5=E5=9C=A8=E5=B7=A5=E4=BD=9C=E5=8F=B0=E6=8F=90=E4=BA=A4=E8=87=AA=E5=8A=
+=A8=E7=9B=B4=E5=85=85=EF=BC=8C=E4=B9=9F=E5=8F=AF=E4=BB=A5=E4=BD=BF=E7=94=A8=
+ <code>fulfillment_url</code> =E6=89=98=E7=AE=A1=E5=85=A5=E5=8F=A3=EF=BC=9B=
+=E5=8F=AA=E6=9C=89=E9=80=89=E6=8B=A9=E8=87=AA=E5=BB=BA=E5=93=81=E7=89=8C=E5=
+=95=86=E5=9F=8E=E6=97=B6=EF=BC=8C=E6=89=8D=E9=9C=80=E8=A6=81=E7=94=B1=E4=BB=
+=A3=E7=90=86=E5=90=8E=E7=AB=AF=E7=AD=BE=E5=90=8D=E8=B0=83=E7=94=A8=E5=85=91=
+=E6=8D=A2=E6=8E=A5=E5=8F=A3=E3=80=82</p></div><div class=3D"choice-grid"><a=
+rticle><span class=3D"choice-no">A</span><h3>=E5=B7=A5=E4=BD=9C=E5=8F=B0=E6=
+=88=96=E6=89=98=E7=AE=A1=E5=85=A5=E5=8F=A3</h3><p>=E4=BB=A3=E7=90=86=E5=95=
+=86=E5=9C=A8=E5=B7=A5=E4=BD=9C=E5=8F=B0=E6=93=8D=E4=BD=9C=EF=BC=8C=E6=88=96=
+=E8=AE=A9=E5=AE=A2=E6=88=B7=E5=87=AD=E6=8D=AE=E7=9B=B4=E6=8E=A5=E6=8F=90=E4=
+=BA=A4=E7=BB=99 Quefa=EF=BC=9B=E6=97=A0=E9=9C=80=E5=BC=80=E5=8F=91=EF=BC=8C=
+=E4=BB=A3=E7=90=86=E5=95=86=E4=B8=8D=E6=8E=A5=E8=A7=A6=E6=95=8F=E6=84=9F=E8=
+=B5=84=E6=96=99=E3=80=82</p><code>=E5=B7=A5=E4=BD=9C=E5=8F=B0 / fulfillment=
+_url</code></article><article><span class=3D"choice-no">B</span><h3>=E4=BB=
+=A3=E7=90=86=E5=95=86=E8=87=AA=E5=BB=BA=E9=A1=B5=E9=9D=A2</h3><p>=E6=B5=8F=
+=E8=A7=88=E5=99=A8=E5=8F=AA=E8=AF=B7=E6=B1=82=E4=BB=A3=E7=90=86=E8=87=AA=E5=
+=B7=B1=E7=9A=84=E5=90=8E=E7=AB=AF=EF=BC=8C=E7=94=B1=E5=90=8E=E7=AB=AF=E7=AD=
+=BE=E5=90=8D=E8=B0=83=E7=94=A8 Quefa=E3=80=82=E4=B8=8D=E5=BE=97=E8=AE=A9=E6=
+=B5=8F=E8=A7=88=E5=99=A8=E7=9B=B4=E8=BF=9E=E6=8E=A5=E5=8F=A3=E3=80=82</p><c=
+ode>POST /v1/redemptions</code></article></div><div class=3D"privacy"><stro=
+ng>=E7=99=BD=E6=A0=87=E8=BE=B9=E7=95=8C</strong><p>=E5=85=85=E5=80=BC=E6=8C=
+=89=E8=AE=A2=E5=8D=95=E5=86=BB=E7=BB=93=E6=B8=A0=E9=81=93=E5=A4=84=E7=90=86=
+=EF=BC=9B=E5=8E=9F=E8=8F=B2=E5=BE=8B=E5=AE=BE=E5=9B=9B=E6=A1=A3=E6=89=80=E6=
+=9C=89=E6=96=B0=E8=AE=A2=E5=8D=95=E8=B7=9F=E9=9A=8F=E5=90=8E=E5=8F=B0=E6=B8=
+=A0=E9=81=93=E5=BC=80=E5=85=B3=EF=BC=8C=E5=8C=85=E5=90=AB CDK=E3=80=81=E8=
+=87=AA=E5=8A=A8=E7=9B=B4=E5=85=85=E5=92=8C=E7=9C=81=E7=95=A5=E4=BA=A4=E4=BB=
+=98=E6=96=B9=E5=BC=8F=E7=9A=84=E8=AF=B7=E6=B1=82=EF=BC=8C=E4=BB=A3=E7=90=86=
+=E6=97=A0=E9=9C=80=E6=9B=B4=E6=8D=A2 SKU =E6=88=96=E5=8E=9F=E5=85=91=E6=8D=
+=A2=E6=8E=A5=E5=8F=A3=E3=80=82CDK =E4=BA=A4=E4=BB=98=E5=AF=B9=E5=A4=96=E4=
+=BB=8D=E4=B8=BA cdk=EF=BC=8C=E8=BF=94=E5=9B=9E=E4=BB=A3=E7=90=86=E9=85=8D=
+=E7=BD=AE=E7=9A=84=E5=93=81=E7=89=8C=E5=85=AC=E5=BC=80=E5=8F=B7=EF=BC=9B=E6=
+=B8=A0=E9=81=93=E4=BA=8C=E4=BD=BF=E7=94=A8=E5=B9=B3=E5=8F=B0=E6=9C=AC=E5=9C=
+=B0 CDK =E7=BB=91=E5=AE=9A=E7=9B=B4=E5=85=85=E4=BB=BB=E5=8A=A1=EF=BC=8C=E6=
+=97=A0=E9=9C=80=E4=B8=8A=E6=B8=B8=E5=8D=A1=E5=AF=86=E3=80=82=E5=B7=B2=E6=9C=
+=89=E8=AE=A2=E5=8D=95=E4=B8=8D=E8=BF=81=E7=A7=BB=EF=BC=8C=E5=85=B6=E4=BB=96=
+=E5=93=81=E7=B1=BB=E4=B8=8D=E5=9C=A8=E6=9C=AC=E6=AC=A1=E5=88=87=E6=8D=A2=E8=
+=8C=83=E5=9B=B4=E3=80=82=E6=B8=A0=E9=81=93=E4=BA=8C=E5=AF=B9=E8=B4=A6=E5=8F=
+=B7=E8=B5=84=E6=96=99=E4=B8=8D=E5=81=9A=E6=9C=AC=E5=9C=B0=E8=B5=84=E6=A0=BC=
+=E5=88=A4=E6=96=AD=EF=BC=8C=E6=97=A7 session=E3=80=81session_json=E3=80=81a=
+ccess_token =E5=92=8C=E9=82=AE=E7=AE=B1=E6=A8=A1=E5=BC=8F=E5=9C=A8=E9=80=9A=
+=E8=BF=87=E9=89=B4=E6=9D=83=E3=80=81=E9=95=BF=E5=BA=A6=E5=8F=8A=E5=B9=82=E7=
+=AD=89=E6=A0=A1=E9=AA=8C=E5=90=8E=E5=8E=9F=E6=A0=B7=E4=BA=A4=E7=94=B1=E4=B8=
+=8A=E6=B8=B8=E5=A4=84=E7=90=86=EF=BC=9B=E6=88=90=E5=8A=9F=E3=80=81=E5=A4=B1=
+=E8=B4=A5=E6=88=96=E5=A4=84=E7=90=86=E4=B8=AD=E7=8A=B6=E6=80=81=E4=BB=A5=E4=
+=B8=8A=E6=B8=B8=E4=BB=BB=E5=8A=A1=E7=BB=93=E6=9E=9C=E4=B8=BA=E5=87=86=E3=80=
+=82=E6=B8=A0=E9=81=93=E4=BA=8C=E6=8F=90=E4=BA=A4=E4=B8=8D=E5=8F=91=E8=B5=B7=
+=E8=B4=A6=E5=8F=B7=E9=A2=84=E6=A3=80=EF=BC=9B=E6=97=A7=E9=A2=84=E6=A3=80=E5=
+=85=A5=E5=8F=A3=E8=BF=94=E5=9B=9E <code>preflight_skipped=3Dtrue</code>=E3=
+=80=81<code>account_verified=3Dfalse</code>=EF=BC=8C=E5=95=86=E5=93=81=E9=
+=A2=84=E6=A3=80=E7=9A=84 <code>check_id</code> =E5=8F=AA=E6=98=AF=E5=8A=A0=
+=E5=AF=86=E8=B5=84=E6=96=99=E6=9A=82=E5=AD=98=E5=BC=95=E7=94=A8=EF=BC=8C=E4=
+=B8=8D=E8=83=BD=E6=98=BE=E7=A4=BA=E8=B4=A6=E5=8F=B7=E5=B7=B2=E9=AA=8C=E8=AF=
+=81=E3=80=82=E6=97=A7=E8=AE=A2=E5=8D=95=E5=8F=8A=E4=B8=8A=E6=B8=B8 CDK =E7=
+=AD=BE=E5=8F=91=E3=80=81=E6=9F=A5=E7=A0=81=E3=80=81=E5=81=9C=E7=A0=81=E5=9D=
+=87=E5=86=BB=E7=BB=93=E5=8E=9F=E4=BE=9B=E5=BA=94=E8=BF=9E=E6=8E=A5=E5=92=8C=
+=E9=85=8D=E7=BD=AE=E7=89=88=E6=9C=AC=EF=BC=8C=E5=88=87=E6=8D=A2=E9=BB=98=E8=
+=AE=A4=E6=B8=A0=E9=81=93=E4=B8=8D=E8=BF=81=E7=A7=BB=E5=8E=86=E5=8F=B2=E8=B5=
+=84=E6=BA=90=E3=80=82=E6=98=8E=E7=A1=AE=E6=9C=AA=E6=89=A3=E6=AC=BE=E4=B8=94=
+=E5=85=81=E8=AE=B8=E9=87=8D=E8=AF=95=E6=97=B6=E6=89=8D=E8=83=BD=E5=8E=9F=E5=
+=8D=95=E9=87=8D=E8=AF=95=EF=BC=9B=E7=BB=93=E6=9E=9C=E6=9C=AA=E7=9F=A5=E5=8F=
+=AA=E6=9F=A5=E5=8E=9F=E4=BB=BB=E5=8A=A1=EF=BC=8C=E4=B8=8D=E8=87=AA=E5=8A=A8=
+=E9=87=8D=E5=85=85=E6=88=96=E5=88=87=E6=B8=A0=E9=81=93=E3=80=82=E5=93=81=E7=
+=89=8C=E5=89=8D=E7=BC=80=E5=92=8C=E5=8F=97=E6=8E=A7=E5=88=86=E7=BB=84=E6=A8=
+=A1=E6=9D=BF=E5=8F=AF=E5=9C=A8=E4=BB=A3=E7=90=86=E5=90=8E=E5=8F=B0=E8=B0=83=
+=E6=95=B4=EF=BC=8C=E6=8E=A5=E5=85=A5=E6=96=B9=E9=A1=BB=E6=8A=8A <code>vouch=
+er_code</code> =E5=BD=93=E4=BD=9C=E4=B8=8D=E9=80=8F=E6=98=8E=E5=AD=97=E7=AC=
+=A6=E4=B8=B2=E3=80=82=E8=87=AA=E5=BB=BA=E6=A8=A1=E5=BC=8F=E7=9A=84=E5=AE=A2=
+=E6=88=B7=E5=85=A5=E5=8F=A3=E5=92=8C=E5=93=81=E7=89=8C=E7=94=B1=E4=BB=A3=E7=
+=90=86=E5=95=86=E5=AE=9E=E7=8E=B0=E3=80=82=E5=86=85=E9=83=A8=E5=8E=9F=E5=A7=
+=8B=E7=A0=81=E3=80=81=E5=AE=8C=E6=95=B4=E5=8D=A1=E5=8F=B7=E3=80=81=E5=87=AD=
+=E6=8D=AE=E3=80=81=E5=A4=84=E7=90=86=E6=96=B9=E4=BF=A1=E6=81=AF=E3=80=81=E5=
+=86=85=E9=83=A8=E5=8F=82=E8=80=83=E5=8F=B7=E5=92=8C=E8=AF=8A=E6=96=AD=E6=97=
+=A5=E5=BF=97=E5=A7=8B=E7=BB=88=E4=B8=8D=E4=BC=9A=E8=BF=94=E5=9B=9E=E3=80=82=
+</p></div></section>
+
+<section id=3D"webhooks"><div class=3D"section-head"><div><p class=3D"eyebr=
+ow">05 =C2=B7 WEBHOOKS</p><h2>=E9=80=9A=E7=9F=A5=E7=94=A8=E4=BA=8E=E5=8A=A0=
+=E9=80=9F=EF=BC=8C=E6=9F=A5=E5=8D=95=E7=94=A8=E4=BA=8E=E7=A1=AE=E8=AE=A4</h=
+2></div><p>=E5=85=88=E4=BB=A5=E5=8E=9F=E5=A7=8B=E8=AF=B7=E6=B1=82=E4=BD=93=
+=E9=AA=8C=E7=AD=BE=EF=BC=8C=E5=86=8D=E6=8C=89 <code>event_id</code> =E5=B9=
+=82=E7=AD=89=E5=85=A5=E5=BA=93=EF=BC=8C=E6=9C=80=E5=90=8E=E5=BF=AB=E9=80=9F=
+=E8=BF=94=E5=9B=9E 2xx=E3=80=82=E9=80=9A=E7=9F=A5=E5=8F=AF=E8=83=BD=E9=87=
+=8D=E5=A4=8D=E4=B8=94=E4=B8=8D=E4=BF=9D=E8=AF=81=E4=B8=A5=E6=A0=BC=E9=A1=BA=
+=E5=BA=8F=E3=80=82=E4=BB=A5=E4=B8=8B=E4=B8=BA=E5=BD=93=E5=89=8D=E5=B7=B2=E5=
+=AE=9E=E7=8E=B0=E4=BA=8B=E4=BB=B6=EF=BC=9B=E9=80=80=E6=AC=BE=E9=A9=B3=E5=9B=
+=9E=E3=80=81=E6=A0=B8=E7=AE=97=E7=94=9F=E6=88=90=E5=92=8C=E7=99=BB=E8=AE=B0=
+=E6=89=93=E6=AC=BE=E9=A1=BB=E9=80=9A=E8=BF=87=E6=9F=A5=E8=AF=A2=E6=88=96=E5=
+=B7=A5=E4=BD=9C=E5=8F=B0=E6=9F=A5=E7=9C=8B=EF=BC=8C=E4=B8=8D=E6=8F=90=E4=BE=
+=9B=E7=8B=AC=E7=AB=8B=E9=80=9A=E7=9F=A5=E3=80=82</p></div><div class=3D"eve=
+nt-grid"><code>order.paid</code><code>order.expired</code><code>order.close=
+d</code><code>cdk.issued</code><code>cdk.failed</code><code>cdk.disabled</c=
+ode><code>fulfillment.updated</code><code>fulfillment.succeeded</code><code=
+>fulfillment.failed</code><code>fulfillment.cancelled</code><code>refund.su=
+cceeded</code><code>procurement.refunded</code><code>wallet.deposit.credite=
+d</code><code>webhook.test</code></div><div class=3D"code-card"><div class=
+=3D"code-head"><span>Webhook signature</span><button class=3D"copy" data-co=
+py=3D"webhook-signature">=E5=A4=8D=E5=88=B6</button></div><pre id=3D"webhoo=
+k-signature"><code>signed =3D timestamp + "." + RAW_BODY
+signature =3D HMAC_SHA256(webhook_secret, signed)</code></pre></div></secti=
+on>
+
+<section id=3D"progress"><div class=3D"section-head"><div><p class=3D"eyebr=
+ow">06 =C2=B7 PROGRESS &amp; RECOVERY</p><h2>=E5=90=8C=E6=AD=A5=E8=BF=9B=E5=
+=BA=A6=EF=BC=8C=E6=81=A2=E5=A4=8D=E5=8E=9F=E8=AE=A2=E5=8D=95</h2></div><p>=
+=E8=87=AA=E5=BB=BA=E6=A8=A1=E5=BC=8F=E6=8E=A5=E6=94=B6 <code>fulfillment.up=
+dated</code>=EF=BC=8C=E7=94=A8 <code>GET /v1/redemptions/{id}</code> =E6=9F=
+=A5=E8=AF=A2=E8=BF=9B=E5=BA=A6=E3=80=82=E5=93=8D=E5=BA=94=E5=90=AB <code>la=
+test_redemption_id</code> =E6=97=B6=EF=BC=8C=E6=94=B9=E6=9F=A5=E8=AF=A5=E4=
+=BB=BB=E5=8A=A1=E8=8E=B7=E5=8F=96=E5=8E=9F=E8=AE=A2=E5=8D=95=E7=9A=84=E6=9C=
+=80=E6=96=B0=E7=BB=93=E6=9E=9C=E4=B8=8E=E9=87=8D=E8=AF=95=E6=9D=83=E9=99=90=
+=EF=BC=8C=E5=B9=B6=E6=8A=8A=E9=98=B6=E6=AE=B5=E3=80=81=E5=A4=B1=E8=B4=A5=E5=
+=8E=9F=E5=9B=A0=E5=92=8C=E6=93=8D=E4=BD=9C=E5=85=A5=E5=8F=A3=E5=90=8C=E6=AD=
+=A5=E5=88=B0=E8=87=AA=E5=B7=B1=E7=9A=84=E5=93=81=E7=89=8C=E8=AE=A2=E5=8D=95=
+=E9=A1=B5=EF=BC=9B=E5=B7=A5=E4=BD=9C=E5=8F=B0=E6=A8=A1=E5=BC=8F=E7=94=B1 Qu=
+efa =E7=9B=B4=E6=8E=A5=E5=B1=95=E7=A4=BA=E3=80=82</p></div><table><thead><t=
+r><th>=E5=AD=97=E6=AE=B5</th><th>=E7=94=A8=E9=80=94</th></tr></thead><tbody=
+><tr><td><code>attempt_no</code></td><td>=E5=8E=9F=E8=AE=A2=E5=8D=95=E7=9A=
+=84=E5=B0=9D=E8=AF=95=E5=BA=8F=E5=8F=B7=EF=BC=8C=E6=96=B0=E5=B0=9D=E8=AF=95=
+=E4=BC=98=E5=85=88</td></tr><tr><td><code>progress_stage / message</code></=
+td><td>=E7=BB=9F=E4=B8=80=E5=85=AC=E5=BC=80=E9=98=B6=E6=AE=B5=E5=92=8C=E5=
+=AE=89=E5=85=A8=E8=AF=B4=E6=98=8E=EF=BC=8C=E4=B8=8D=E7=BC=96=E9=80=A0=E7=99=
+=BE=E5=88=86=E6=AF=94</td></tr><tr><td><code>progress_version / progress_up=
+dated_at</code></td><td>=E5=90=8C=E4=BB=BB=E5=8A=A1=E5=8E=BB=E6=97=A7=E5=92=
+=8C=E6=9B=B4=E6=96=B0=E6=97=B6=E9=97=B4=EF=BC=9B=E7=9B=B8=E5=90=8C=E8=BD=AE=
+=E8=AF=A2=E4=B8=8D=E5=A2=9E=E5=8A=A0=E7=89=88=E6=9C=AC</td></tr><tr><td><co=
+de>retry_allowed / next_action</code></td><td>=E5=8F=AA=E8=83=BD=E6=A0=B9=
+=E6=8D=AE=E6=9C=80=E6=96=B0=E6=9F=A5=E8=AF=A2=E5=BC=80=E6=94=BE=E9=87=8D=E6=
+=8F=90=EF=BC=8C=E4=B8=8D=E8=83=BD=E4=BB=85=E5=87=AD failed =E5=88=A4=E5=AE=
+=9A</td></tr><tr><td><code>recovery_action</code></td><td>=E5=B9=B3=E5=8F=
+=B0=E9=80=89=E6=8B=A9 retry =E6=88=96 refund=EF=BC=9B=E9=80=80=E6=AC=BE=E6=
+=97=B6=E5=85=B3=E9=97=AD=E8=BE=93=E5=85=A5=E5=85=A5=E5=8F=A3</td></tr></tbo=
+dy></table><div class=3D"callout"><strong>=E6=98=8E=E7=A1=AE=E5=A4=B1=E8=B4=
+=A5=E6=89=8D=E5=85=81=E8=AE=B8=E9=87=8D=E6=96=B0=E6=8F=90=E4=BA=A4</strong>=
+<p>=E6=9C=80=E8=BF=91=E4=BB=BB=E5=8A=A1 <code>retry_allowed=3Dtrue</code>=
+=E3=80=81<code>next_action=3Dresubmit</code>=EF=BC=8C=E4=B8=94=E5=8E=9F=E8=
+=AE=A2=E5=8D=95=E4=BB=8D=E5=85=81=E8=AE=B8=E5=B1=A5=E7=BA=A6=E6=97=B6=EF=BC=
+=88CDK =E8=87=AA=E5=8A=A8=E7=9B=B4=E5=85=85=E6=81=A2=E5=A4=8D=E8=BF=98=E9=
+=9C=80 <code>fallback_recharge_available=3Dtrue</code>=EF=BC=89=EF=BC=8C=E4=
+=BF=AE=E6=AD=A3=E8=B5=84=E6=96=99=E5=90=8E=E8=B0=83=E7=94=A8 <code>POST /v1=
+/redemptions</code>=EF=BC=9A=E4=BB=8D=E4=BD=BF=E7=94=A8=E5=8E=9F <code>orde=
+r_id</code>=EF=BC=8C=E6=96=B0=E5=B0=9D=E8=AF=95=E4=BD=BF=E7=94=A8=E6=96=B0=
+=E5=B9=82=E7=AD=89=E9=94=AE=E3=80=82=E4=B8=8D=E8=A6=81=E9=87=8D=E6=96=B0=E5=
+=BC=80=E5=8D=95=E3=80=81=E9=87=8D=E6=96=B0=E4=BB=98=E6=AC=BE=E6=88=96=E5=90=
+=91=E5=AE=A2=E6=88=B7=E6=98=BE=E7=A4=BA CDK=E3=80=82=E7=BD=91=E7=BB=9C=E9=
+=87=8D=E4=BC=A0=E4=BB=8D=E4=BD=BF=E7=94=A8=E5=8E=9F=E9=94=AE=E5=92=8C=E5=8E=
+=9F=E8=AF=B7=E6=B1=82=E4=BD=93=E3=80=82</p></div><div class=3D"callout"><st=
+rong>=E7=AE=A1=E7=90=86=E5=91=98=E5=8F=96=E6=B6=88=E5=90=8E=E7=9A=84=E4=B8=
+=A4=E6=9D=A1=E8=B7=AF=E5=BE=84</strong><p>=E5=B9=B3=E5=8F=B0=E9=80=89=E6=8B=
+=A9 <code>retry</code>=EF=BC=9A=E5=B7=A5=E4=BD=9C=E5=8F=B0=E9=87=8D=E6=96=
+=B0=E5=BC=80=E6=94=BE=E5=8E=9F=E8=AE=A2=E5=8D=95=EF=BC=8C=E6=88=96=E7=94=B1=
+=E8=87=AA=E5=BB=BA=E7=BD=91=E7=AB=99=E6=8C=89=E6=9C=80=E6=96=B0=E6=9D=A1=E4=
+=BB=B6=E5=BC=80=E6=94=BE=E8=87=AA=E5=B7=B1=E7=9A=84=E5=85=A5=E5=8F=A3=E3=80=
+=82=E5=B9=B3=E5=8F=B0=E9=80=89=E6=8B=A9 <code>refund</code>=EF=BC=9A=E5=85=
+=B3=E9=97=AD=E5=85=A5=E5=8F=A3=E5=B9=B6=E6=98=BE=E7=A4=BA=E9=80=80=E6=AC=BE=
+=E5=A4=84=E7=90=86=E4=B8=AD=EF=BC=8C=E6=A0=B8=E9=AA=8C <code>refund.succeed=
+ed</code> =E6=89=8D=E6=98=BE=E7=A4=BA=E5=AE=A2=E6=88=B7=E9=80=80=E6=AC=BE=
+=E5=AE=8C=E6=88=90=EF=BC=9B<code>procurement.refunded</code> =E5=8F=AA=E4=
+=BB=A3=E8=A1=A8=E4=BB=A3=E7=90=86=E9=87=87=E8=B4=AD=E4=BD=99=E9=A2=9D=E9=80=
+=80=E5=9B=9E=E3=80=82=E4=BB=A3=E7=90=86=E6=97=A0=E4=B8=BB=E5=8A=A8=E5=8F=96=
+=E6=B6=88=E6=9D=83=E9=99=90=EF=BC=8C=E6=9C=AA=E7=9F=A5=E7=BB=93=E6=9E=9C=E5=
+=8F=AA=E8=83=BD=E6=9F=A5=E8=AF=A2=E5=8E=9F=E4=BB=BB=E5=8A=A1=E3=80=82</p></=
+div><p><a class=3D"quiet" href=3D"https://tibo.ink/developers/doc/integrati=
+on">=E5=AE=8C=E6=95=B4=E6=8E=A5=E5=85=A5=E6=96=87=E6=A1=A3=EF=BC=9AWebhook =
+=E6=AD=A3=E6=96=87=E4=B8=8E=E9=87=8D=E6=8F=90=E8=AF=B7=E6=B1=82=E7=A4=BA=E4=
+=BE=8B</a> <a class=3D"quiet" href=3D"https://tibo.ink/developers/doc/redem=
+ption">=E8=87=AA=E6=9C=89=E5=93=81=E7=89=8C=E9=A1=B5=E9=9D=A2=E5=AE=9E=E7=
+=8E=B0=E6=8C=87=E5=8D=97</a></p></section>
+
+<section id=3D"errors"><div class=3D"section-head"><div><p class=3D"eyebrow=
+">07 =C2=B7 RELIABILITY</p><h2>=E9=87=8D=E8=AF=95=E5=89=8D=E5=85=88=E5=88=
+=A4=E6=96=AD=E7=BB=93=E6=9E=9C=E6=98=AF=E5=90=A6=E6=9C=AA=E7=9F=A5</h2></di=
+v><p>=E6=94=AF=E4=BB=98=E3=80=81=E5=85=85=E5=80=BC=E5=92=8C=E9=80=80=E6=AC=
+=BE=E7=9A=84=E7=BD=91=E7=BB=9C=E8=B6=85=E6=97=B6=E4=B8=8D=E7=AD=89=E4=BA=8E=
+=E5=A4=B1=E8=B4=A5=E3=80=82=E7=A8=B3=E5=AE=9A=E7=8A=B6=E6=80=81=E7=9C=8B <c=
+ode>status</code>=EF=BC=8C=E5=AE=9E=E9=99=85=E4=B8=9A=E5=8A=A1=E7=BB=93=E6=
+=9E=9C=E7=9C=8B <code>result_code</code>=EF=BC=9B=E9=9C=80=E8=A6=81=E9=87=
+=8D=E8=AF=95=E5=86=99=E8=AF=B7=E6=B1=82=E6=97=B6=E4=BF=9D=E6=8C=81=E7=9B=B8=
+=E5=90=8C=E4=B8=9A=E5=8A=A1=E5=B9=82=E7=AD=89=E9=94=AE=E3=80=82</p></div><t=
+able><thead><tr><th>=E5=9C=BA=E6=99=AF</th><th>=E5=8A=A8=E4=BD=9C</th><th>=
+=E7=A6=81=E6=AD=A2=E5=8A=A8=E4=BD=9C</th></tr></thead><tbody><tr><td>HTTP 2=
+02 / queued</td><td>=E8=BD=AE=E8=AF=A2=E6=88=96=E7=AD=89=E5=BE=85 Webhook</=
+td><td>=E6=98=BE=E7=A4=BA=E2=80=9C=E5=85=85=E5=80=BC=E6=88=90=E5=8A=9F=E2=
+=80=9D</td></tr><tr><td>review / pending</td><td>=E7=BB=A7=E7=BB=AD=E6=9F=
+=A5=E8=AF=A2=E5=8E=9F=E4=BB=BB=E5=8A=A1</td><td>=E7=BB=9F=E4=B8=80=E6=98=BE=
+=E7=A4=BA=E5=A4=B1=E8=B4=A5</td></tr><tr><td>409 / idempotency_in_progress<=
+/td><td>=E5=85=88=E6=9F=A5=E5=8E=9F=E4=B8=9A=E5=8A=A1=EF=BC=8C=E5=86=8D=E7=
+=94=A8=E5=8E=9F=E9=94=AE=E5=92=8C=E6=96=B0 Nonce =E9=80=80=E9=81=BF</td><td=
+>=E6=8D=A2=E4=B8=9A=E5=8A=A1=E9=94=AE=E9=87=8D=E5=A4=8D=E6=89=A7=E8=A1=8C</=
+td></tr><tr><td>429 / 503</td><td>=E5=8E=9F=E5=B9=82=E7=AD=89=E9=94=AE=E6=
+=8C=87=E6=95=B0=E9=80=80=E9=81=BF</td><td>=E6=8D=A2=E8=AE=A2=E5=8D=95=E5=8F=
+=B7=E9=87=8D=E5=A4=8D=E6=8F=90=E4=BA=A4</td></tr><tr><td>=E8=AF=B7=E6=B1=82=
+=E8=B6=85=E6=97=B6</td><td>=E5=85=88=E6=9F=A5=E5=8E=9F=E8=AE=A2=E5=8D=95</t=
+d><td>=E7=9B=B4=E6=8E=A5=E5=88=A4=E5=A4=B1=E8=B4=A5</td></tr><tr><td>=E6=98=
+=8E=E7=A1=AE=E5=A4=B1=E8=B4=A5=E4=B8=94=E5=85=81=E8=AE=B8=E9=87=8D=E6=8F=90=
+</td><td>=E5=8E=9F=E8=AE=A2=E5=8D=95=E3=80=81=E6=96=B0=E5=B0=9D=E8=AF=95=E3=
+=80=81=E6=96=B0=E5=B9=82=E7=AD=89=E9=94=AE</td><td>=E9=87=8D=E6=96=B0=E5=BC=
+=80=E5=8D=95=E6=88=96=E5=86=8D=E6=AC=A1=E6=94=B6=E6=AC=BE</td></tr><tr><td>=
+=E5=B9=B3=E5=8F=B0=E9=80=89=E6=8B=A9=E9=80=80=E6=AC=BE</td><td>=E5=85=B3=E9=
+=97=AD=E9=87=8D=E6=8F=90=EF=BC=8C=E6=9F=A5=E8=AF=A2=E5=8E=9F=E9=80=80=E6=AC=
+=BE=E7=BB=93=E6=9E=9C</td><td>=E5=90=8C=E5=8D=95=E5=90=8C=E6=97=B6=E9=80=80=
+=E6=AC=BE=E5=92=8C=E9=87=8D=E6=8F=90</td></tr><tr><td>completed / succeeded=
+</td><td>=E5=B1=95=E7=A4=BA=E7=BB=88=E6=80=81=E5=B9=B6=E5=81=9C=E6=AD=A2=E8=
+=BD=AE=E8=AF=A2</td><td>=E8=A2=AB=E6=97=A7=E7=9A=84 running =E8=A6=86=E7=9B=
+=96</td></tr></tbody></table><div class=3D"callout"><strong>=E6=8C=89 API K=
+ey =E9=99=90=E6=B5=81</strong><p>=E6=AF=8F=E4=B8=AA=E8=AE=A4=E8=AF=81=E6=88=
+=90=E5=8A=9F=E7=9A=84=E5=93=8D=E5=BA=94=E9=83=BD=E4=BC=9A=E8=BF=94=E5=9B=9E=
+ <code>X-RateLimit-Limit</code>=E3=80=81<code>X-RateLimit-Remaining</code> =
+=E4=B8=8E <code>X-RateLimit-Reset</code>=E3=80=82=E6=94=B6=E5=88=B0 <code>4=
+29 rate_limited</code> =E5=90=8E=E6=8C=89 <code>Retry-After</code> =E7=AD=
+=89=E5=BE=85=EF=BC=9B=E5=86=99=E8=AF=B7=E6=B1=82=E4=BF=9D=E7=95=99=E5=8E=9F=
+=E4=B8=9A=E5=8A=A1=E5=B9=82=E7=AD=89=E9=94=AE=EF=BC=8C=E4=BD=86=E9=87=8D=E6=
+=96=B0=E7=94=9F=E6=88=90=E6=97=B6=E9=97=B4=E6=88=B3=E4=B8=8E Nonce=E3=80=82=
+</p></div></section>
+
+<footer><div><strong>=E5=87=86=E5=A4=87=E8=81=94=E8=B0=83=EF=BC=9F</strong>=
+<p>=E4=BB=A3=E7=90=86=E8=B4=A6=E5=8F=B7=E9=BB=98=E8=AE=A4=E5=8F=AF=E5=88=9B=
+=E5=BB=BA=E6=9C=8D=E5=8A=A1=E7=AB=AF=E5=AF=86=E9=92=A5=EF=BC=9B=E9=9B=B6=E9=
+=87=87=E8=B4=AD=E4=BD=99=E9=A2=9D=E5=85=88=E4=BD=BF=E7=94=A8=E5=B9=B3=E5=8F=
+=B0=E6=94=B6=E6=AC=BE=EF=BC=8CSecret =E5=8F=AA=E6=98=BE=E7=A4=BA=E4=B8=80=
+=E6=AC=A1=E3=80=82=E9=9C=80=E8=A6=81=E5=8D=8F=E5=8A=A9=E5=8F=AF=E8=81=94=E7=
+=B3=BB <a href=3D"https://t.me/bugan8" target=3D"_blank" rel=3D"noopener no=
+referrer">Telegram =C2=B7 bugan8</a>=E3=80=82</p></div><a class=3D"button" =
+href=3D"https://tibo.ink/workspace/app?view=3Ddocs">=E2=86=90 =E8=BF=94=E5=
+=9B=9E=E5=B7=A5=E4=BD=9C=E5=8F=B0</a></footer></main></div></body></html>
+------MultipartBoundary--VNqiPsaYX0lCyKJLGaHlQpsKHCh8Rg113ppgH1Edv8----
+Content-Type: text/css
+Content-Transfer-Encoding: quoted-printable
+Content-Location: https://tibo.ink/developers/assets/portal.css
+
+@charset "utf-8";
+
+:root { --night: #10243d; --ocean: #173f71; --signal: #246bfd; --cyan: #168=
+db8; --mint: #0d8f6d; --amber: #b76a0a; --paper: #fff; --canvas: #f4f7fa; -=
+-mist: #e7edf3; --line: rgba(16,36,61,.12); --muted: #637386; --code: #0b1d=
+31; font-family: Aptos, "Microsoft YaHei UI", "Microsoft YaHei", sans-serif=
+; color: var(--night); background: var(--canvas); font-size: 15px; font-var=
+iant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; scroll-beh=
+avior: smooth; }
+
+* { box-sizing: border-box; }
+
+html, body { max-width: 100%; overflow-x: clip; }
+
+body { margin: 0px; }
+
+a { color: inherit; text-decoration: none; }
+
+button { font: inherit; }
+
+.top { height: 68px; display: flex; align-items: center; gap: 30px; padding=
+: 0px 34px; background: rgba(255, 255, 255, 0.94); border-bottom: 1px solid=
+ var(--line); position: sticky; top: 0px; z-index: 10; backdrop-filter: blu=
+r(16px); min-width: 0px; }
+
+.portal-top-start { display: flex; align-items: center; gap: 16px; min-widt=
+h: 0px; flex-wrap: wrap; }
+
+.back-workspace { display: inline-flex; align-items: center; min-height: 38=
+px; padding: 0px 14px; border: 1px solid rgba(36, 107, 253, 0.24); border-r=
+adius: 7px; background: rgb(238, 242, 255); color: var(--signal); font-size=
+: 13px; font-weight: 700; white-space: nowrap; }
+
+.back-workspace:hover { background: rgb(224, 231, 255); color: var(--signal=
+-deep); }
+
+.brand { display: flex; align-items: center; gap: 11px; font-size: 19px; fo=
+nt-weight: 750; letter-spacing: -0.4px; flex: 0 0 auto; }
+
+.brand.brand-inline .brand-mark { width: 32px; height: 32px; display: block=
+; flex: 0 0 auto; }
+
+.brand small { display: block; font-size: 10px; letter-spacing: 0.12em; col=
+or: var(--muted); font-weight: 600; text-transform: uppercase; }
+
+.brand-mark { display: flex; gap: 3px; align-items: end; width: 25px; heigh=
+t: 25px; padding: 5px; background: var(--night); border-radius: 7px; }
+
+.brand-mark i { display: block; width: 3px; border-radius: 2px; background:=
+ rgb(255, 255, 255); }
+
+.brand-mark i:nth-child(1) { height: 7px; }
+
+.brand-mark i:nth-child(2) { height: 14px; background: rgb(117, 214, 243); =
+}
+
+.brand-mark i:nth-child(3) { height: 10px; }
+
+.top nav { display: flex; gap: 24px; font-size: 13px; color: var(--muted); =
+}
+
+.top nav a:hover { color: var(--signal); }
+
+.top-actions { margin-left: auto; display: flex; gap: 9px; align-items: cen=
+ter; min-width: 0px; }
+
+.button, .quiet { display: inline-flex; align-items: center; justify-conten=
+t: center; min-height: 38px; border-radius: 7px; padding: 0px 15px; font-we=
+ight: 650; font-size: 13px; white-space: nowrap; }
+
+.button { background: var(--signal); color: white; box-shadow: rgba(17, 76,=
+ 164, 0.24) 0px 1px 2px; }
+
+.button:hover { background: rgb(25, 89, 216); }
+
+.quiet { border: 1px solid var(--line); background: white; }
+
+.layout { display: grid; grid-template-columns: 250px minmax(0px, 1fr); ali=
+gn-items: start; max-width: 1460px; margin: auto; }
+
+aside { position: sticky; top: 68px; align-self: start; height: calc(-68px =
++ 100vh); padding: 30px 24px; border-right: 1px solid var(--line); display:=
+ flex; flex-direction: column; gap: 4px; overflow-y: auto; overscroll-behav=
+ior: contain; scrollbar-gutter: stable; }
+
+aside > a { padding: 10px 12px; border-radius: 6px; color: var(--muted); fo=
+nt-size: 13px; }
+
+aside > a:hover { background: rgb(234, 240, 246); color: var(--night); }
+
+aside > a.is-active { background: rgb(234, 240, 246); color: var(--night); =
+font-weight: 650; box-shadow: inset 3px 0 var(--signal); }
+
+aside > a:focus-visible { outline: 2px solid var(--signal); outline-offset:=
+ 2px; }
+
+.environment { padding: 14px 12px 22px; display: grid; grid-template-column=
+s: 9px 1fr; gap: 2px 9px; }
+
+.environment span { width: 8px; height: 8px; border-radius: 50%; background=
+: var(--mint); box-shadow: rgba(13, 143, 109, 0.12) 0px 0px 0px 4px; margin=
+-top: 5px; }
+
+.environment strong { font-size: 13px; }
+
+.environment small { grid-column: 2; color: var(--muted); font-size: 11px; =
+}
+
+.side-files { margin-top: auto; border-top: 1px solid var(--line); padding:=
+ 18px 12px 0px; display: grid; gap: 9px; }
+
+.side-files span { font-size: 10px; color: var(--muted); letter-spacing: 0.=
+12em; }
+
+.side-files a { font-size: 12px; color: var(--ocean); }
+
+main { min-width: 0px; padding: 0px clamp(32px, 6vw, 88px) 80px; background=
+: var(--paper); overflow: hidden; }
+
+main > section { padding: 76px 0px; border-bottom: 1px solid var(--line); s=
+croll-margin-top: 84px; min-width: 0px; }
+
+.hero { min-height: 620px; display: flex; flex-direction: column; justify-c=
+ontent: center; background: radial-gradient(circle at 88% 22%, rgba(36, 107=
+, 253, 0.08), transparent 31%); }
+
+.eyebrow { font: 700 11px / 1.2 ui-monospace, SFMono-Regular, Consolas, mon=
+ospace; letter-spacing: 0.14em; color: var(--signal); margin: 0px 0px 16px;=
+ }
+
+.hero h1 { font-size: clamp(44px, 5.2vw, 72px); line-height: 1.02; letter-s=
+pacing: -0.055em; margin: 0px; max-width: 850px; text-wrap: balance; }
+
+.hero > p:not(.eyebrow) { font-size: 18px; line-height: 1.75; color: var(--=
+muted); max-width: 750px; margin: 28px 0px; text-wrap: pretty; }
+
+.hero > p.domain-note { margin-top: 14px; }
+
+.hero-actions { display: flex; gap: 10px; }
+
+.base { margin-top: 56px; max-width: 720px; min-width: 0px; background: var=
+(--canvas); border-radius: 9px; padding: 12px 12px 12px 16px; display: grid=
+; grid-template-columns: auto minmax(0px, 1fr) auto; align-items: center; g=
+ap: 16px; }
+
+.base span { font-size: 11px; text-transform: uppercase; letter-spacing: 0.=
+1em; color: var(--muted); }
+
+code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace;=
+ }
+
+.base code { min-width: 0px; overflow: auto; color: var(--ocean); }
+
+.copy { border: 0px; background: white; color: var(--ocean); border-radius:=
+ 6px; padding: 8px 11px; cursor: pointer; font-size: 12px; }
+
+.copy:hover { color: var(--signal); }
+
+.section-head { display: grid; grid-template-columns: minmax(280px, 1fr) mi=
+nmax(260px, 480px); gap: 42px; align-items: end; margin-bottom: 36px; min-w=
+idth: 0px; }
+
+.section-head h2 { font-size: 34px; letter-spacing: -0.035em; margin: 0px; =
+}
+
+.section-head p:last-child { margin: 0px; color: var(--muted); line-height:=
+ 1.75; text-wrap: pretty; }
+
+.route { position: relative; display: grid; grid-template-columns: repeat(4=
+, minmax(0px, 1fr)); border-block: 1px solid var(--line); }
+
+.route::before { content: ""; position: absolute; left: 0px; right: 0px; to=
+p: 35px; height: 1px; background: var(--mist); }
+
+.route-step { position: relative; padding: 26px 24px 28px 0px; min-width: 0=
+px; }
+
+.route-step b { display: grid; place-items: center; width: 20px; height: 20=
+px; border-radius: 50%; background: var(--signal); color: white; font-size:=
+ 10px; margin-bottom: 23px; position: relative; z-index: 1; box-shadow: whi=
+te 0px 0px 0px 6px; }
+
+.route-step strong { font-size: 15px; }
+
+.route-step p { color: var(--muted); font-size: 13px; line-height: 1.65; mi=
+n-height: 64px; }
+
+.route-step small { color: var(--mint); font-size: 11px; }
+
+.callout, .privacy { margin-top: 28px; padding: 20px 22px; background: rgb(=
+241, 246, 253); border-left: 3px solid var(--signal); }
+
+.callout p, .privacy p { margin: 8px 0px 0px; color: var(--muted); line-hei=
+ght: 1.7; }
+
+.split { display: grid; grid-template-columns: minmax(0px, 0.75fr) minmax(0=
+px, 1.25fr); gap: 28px; }
+
+.split h3 { margin-top: 0px; }
+
+.checklist { list-style: none; padding: 0px; margin: 20px 0px; display: gri=
+d; gap: 13px; color: var(--muted); }
+
+.checklist li::before { content: "=E2=9C=93"; color: var(--mint); font-weig=
+ht: 700; margin-right: 10px; }
+
+.code-card { min-width: 0px; background: var(--code); border-radius: 10px; =
+color: rgb(220, 233, 248); overflow: hidden; box-shadow: rgba(7, 21, 37, 0.=
+15) 0px 1px 2px, rgba(7, 21, 37, 0.12) 0px 12px 40px; }
+
+.code-head { display: flex; justify-content: space-between; align-items: ce=
+nter; padding: 12px 15px; border-bottom: 1px solid rgba(255, 255, 255, 0.08=
+); font-size: 11px; color: rgb(143, 168, 195); }
+
+.code-card .copy { background: rgba(255, 255, 255, 0.08); color: rgb(220, 2=
+33, 248); }
+
+.code-card pre { max-width: 100%; padding: 22px; margin: 0px; overflow: aut=
+o; font-size: 13px; line-height: 1.75; }
+
+.state-row { display: grid; grid-template-columns: minmax(0px, 1fr) 36px mi=
+nmax(0px, 1fr) 36px minmax(0px, 1fr) 36px minmax(0px, 1fr); align-items: ce=
+nter; margin-top: 28px; }
+
+.state-row > div { padding: 16px; border-top: 2px solid var(--mist); min-wi=
+dth: 0px; }
+
+.state-row > div:last-child { border-color: var(--mint); }
+
+.state-row span { display: block; font: 600 11px ui-monospace, Consolas, mo=
+nospace; color: var(--muted); }
+
+.state-row strong { display: block; font-size: 13px; margin-top: 6px; }
+
+.state-row i { height: 1px; background: var(--mist); }
+
+.choice-grid { display: grid; grid-template-columns: minmax(0px, 1fr) minma=
+x(0px, 1fr); gap: 18px; }
+
+.choice-grid article { border: 1px solid var(--line); padding: 26px; border=
+-radius: 10px; min-width: 0px; }
+
+.choice-grid h3 { margin: 22px 0px 10px; }
+
+.choice-grid p { color: var(--muted); line-height: 1.7; min-height: 75px; }
+
+.choice-grid code { display: block; margin-top: 20px; color: var(--signal);=
+ overflow-wrap: anywhere; }
+
+.choice-no { display: grid; place-items: center; width: 28px; height: 28px;=
+ border-radius: 7px; background: var(--night); color: white; font-weight: 7=
+00; }
+
+.event-grid { display: grid; grid-template-columns: repeat(3, minmax(0px, 1=
+fr)); gap: 10px; margin-bottom: 20px; }
+
+.event-grid code { padding: 14px; background: var(--canvas); border-radius:=
+ 7px; color: var(--ocean); font-size: 12px; overflow-wrap: anywhere; }
+
+table { width: 100%; border-collapse: collapse; text-align: left; }
+
+th { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; co=
+lor: var(--muted); font-weight: 600; }
+
+th, td { padding: 15px 12px; border-bottom: 1px solid var(--line); }
+
+td { font-size: 13px; }
+
+footer { display: flex; justify-content: space-between; align-items: center=
+; gap: 30px; margin-top: 52px; padding: 30px; background: var(--night); col=
+or: white; border-radius: 12px; }
+
+footer strong { font-size: 20px; }
+
+footer p { margin: 7px 0px 0px; color: rgb(185, 201, 218); }
+
+footer .button { background: white; color: var(--night); flex: 0 0 auto; }
+
+@media (max-width: 940px) {
+  .top nav { display: none; }
+  .layout { display: block; }
+  aside { display: none; }
+  main { padding: 0px 24px 60px; }
+  .hero { min-height: 540px; }
+  .section-head { grid-template-columns: 1fr; gap: 12px; }
+  .route { grid-template-columns: 1fr 1fr; }
+  .split { grid-template-columns: 1fr; }
+  .event-grid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 620px) {
+  .top { padding: 0px 16px; gap: 10px; }
+  .top-actions { display: none; }
+  .hero h1 { font-size: 40px; overflow-wrap: anywhere; }
+  .hero > p:not(.eyebrow) { font-size: 16px; overflow-wrap: anywhere; }
+  .base { grid-template-columns: minmax(0px, 1fr) auto; }
+  .base span { grid-column: 1 / -1; }
+  .route, .choice-grid { grid-template-columns: 1fr; }
+  .route::before { display: none; }
+  .route-step { border-bottom: 1px solid var(--line); }
+  .state-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; }
+  .state-row i { display: none; }
+  .event-grid { grid-template-columns: 1fr; }
+  .section-head h2 { font-size: 29px; }
+  table { display: block; overflow-x: auto; }
+  footer { align-items: flex-start; flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { scroll-behavior: auto; }
+}
+------MultipartBoundary--VNqiPsaYX0lCyKJLGaHlQpsKHCh8Rg113ppgH1Edv8------

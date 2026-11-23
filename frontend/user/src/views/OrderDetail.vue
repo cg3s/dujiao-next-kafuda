@@ -82,6 +82,15 @@
         <DirectOrderStatus v-if="directOrderNo" :status="directStatus" :unavailable="directStatusUnavailable" :format-date="formatDate" />
         <DirectOrderAuthorization v-if="directOrderNo" :key="directOrderNo" :order-no="directOrderNo"
           :available="directStatus?.stage === 'waiting_session' && !directStatusUnavailable" @submitted="refreshDirectStatus" />
+        <HostedRechargePanel
+          v-if="hostedRechargeOrderNo"
+          :key="`hosted-${hostedRechargeOrderNo}`"
+          :order-no="hostedRechargeOrderNo"
+          :status="hostedRechargeStatus"
+          :unavailable="hostedRechargeUnavailable"
+          :format-date="formatDate"
+          @refresh="refreshHostedRechargeStatus"
+        />
 
         <div v-if="order.children && order.children.length > 0"
           class="theme-float rounded-[22px] bg-card p-5 md:p-6">
@@ -164,7 +173,7 @@
                 <div class="flex items-center justify-between mb-3">
                   <h3 class="text-sm font-semibold text-foreground">{{
                     t('orderDetail.childFulfillmentTitle') }}</h3>
-                  <Button v-if="child.fulfillment?.status === 'delivered' && !isDirectOrderFulfillment(child.items, child.fulfillment.type)" size="sm"
+                  <Button v-if="child.fulfillment?.status === 'delivered' && !isDirectOrderFulfillment(child.items, child.fulfillment.type) && !isHostedRechargeOrderFulfillment(child.items, child.fulfillment.type)" size="sm"
                     @click="handleCopyFulfillment(child.fulfillment)">
                     <Copy v-if="!fulfillmentCopied" class="w-3.5 h-3.5" :stroke-width="2" />
                     <Check v-else class="w-3.5 h-3.5" :stroke-width="2" />
@@ -176,7 +185,7 @@
                     fulfillmentTypeLabelText(child.fulfillment.type) }}</div>
                   <div class="text-sm text-muted-foreground">{{ t('orderDetail.fulfillmentStatus') }}：{{
                     fulfillmentStatusLabelText(child.fulfillment.status) }}</div>
-                  <template v-if="!isDirectOrderFulfillment(child.items, child.fulfillment.type)">
+                  <template v-if="!isDirectOrderFulfillment(child.items, child.fulfillment.type) && !isHostedRechargeOrderFulfillment(child.items, child.fulfillment.type)">
                     <div v-if="isFulfillmentTruncated(child.fulfillment)" class="mt-3">
                       <div class="flex items-center justify-between mb-2">
                         <span class="text-sm text-muted-foreground">{{ t('orderDetail.fulfillmentTotalLines', { count: child.fulfillment.payload_line_count }) }}</span>
@@ -446,8 +455,10 @@ import BreadcrumbNav from '../components/BreadcrumbNav.vue'
 import SmartImage from '../components/SmartImage.vue'
 import { useOrderDetail } from '../composables/useOrderDetail'
 import { isDirectOrderFulfillment } from '../utils/directOrderStatus'
+import { isHostedRechargeOrderFulfillment } from '../utils/hostedRechargeStatus'
 import DirectOrderAuthorization from '../components/DirectOrderAuthorization.vue'
 import DirectOrderStatus from '../components/DirectOrderStatus.vue'
+import HostedRechargePanel from '../components/HostedRechargePanel.vue'
 
 const { t } = useI18n()
 
@@ -461,5 +472,6 @@ const {
   fulfillmentDeliveryLines, instructionBlocks, isFulfillmentTruncated,
   fulfillmentCopied, handleCopyFulfillment, fulfillmentDownloading, handleDownloadFulfillment,
   directOrderNo, directStatus, directStatusUnavailable, refreshDirectStatus,
+  hostedRechargeOrderNo, hostedRechargeStatus, hostedRechargeUnavailable, refreshHostedRechargeStatus,
 } = useOrderDetail()
 </script>

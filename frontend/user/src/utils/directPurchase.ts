@@ -2,6 +2,7 @@ import type { CartItem } from '../stores/cart'
 import { amountToCents } from './money.ts'
 
 export const GPT_DIRECT = 'gpt_direct'
+export const HOSTED_RECHARGE = 'hosted_recharge'
 export const UNKNOWN_DIRECT_SKU_REGION = '__unknown__'
 
 export interface DirectSkuRegionOption {
@@ -17,6 +18,12 @@ export interface DirectSkuSpecOption {
 // Older checkout drafts and storefront APIs used a provider-prefixed value.
 export const isDirectFulfillmentType = (type: unknown): boolean =>
   typeof type === 'string' && (type === GPT_DIRECT || type.endsWith(`_${GPT_DIRECT}`))
+
+export const isHostedRechargeType = (type: unknown): boolean =>
+  typeof type === 'string' && (type === HOSTED_RECHARGE || type === 'quefa_hosted')
+
+export const isSingleItemDirectType = (type: unknown): boolean =>
+  isDirectFulfillmentType(type) || isHostedRechargeType(type)
 
 export const getDirectSkuRegion = (sku?: {
   spec_values?: Record<string, unknown> | null
@@ -213,7 +220,7 @@ export const directCheckoutRestriction = (
   authenticated: boolean,
   reseller: boolean,
 ) => {
-  const direct = items.find((item) => isDirectFulfillmentType(item.fulfillmentType))
+  const direct = items.find((item) => isSingleItemDirectType(item.fulfillmentType))
   if (!direct) return ''
   if (!buyNow || reseller || items.length !== 1 || !isPositiveSkuId(direct.skuId) || direct.quantity !== 1) {
     return 'directPurchase.checkoutRestricted'

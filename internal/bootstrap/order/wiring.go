@@ -13,6 +13,7 @@ import (
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderqueue "github.com/dujiao-next/internal/modules/order/infrastructure/queueadapter"
 	ordertransport "github.com/dujiao-next/internal/modules/order/transport/http"
+	quefacontract "github.com/dujiao-next/internal/modules/quefa/contract"
 	kafudaworkflow "github.com/dujiao-next/internal/workflows/kafudagpt/application"
 )
 
@@ -109,6 +110,48 @@ func New(c *container.Container) Handlers {
 	handlers.User.SetDirectAuthorizer(newDirectAuthorizer(c))
 	handlers.Guest.SetDirectStatusReader(newGuestDirectStatusReader(c))
 	handlers.Guest.SetDirectAuthorizer(newGuestDirectAuthorizer(c))
+	if c.Quefa != nil && c.Quefa.Orders != nil && c.OrderStore != nil {
+		qOrders := c.Quefa.Orders
+		oStore := c.OrderStore
+		handlers.User.SetHostedRecharge(
+			func(ctx context.Context, orderNo string, userID uint) (*quefacontract.BuyerStatus, error) {
+				order, err := oStore.GetByOrderNoAndUser(orderNo, userID)
+				if err != nil || order == nil || !order.HasQuefaHosted() {
+					return nil, err
+				}
+				return qOrders.GetBuyerStatusByParentOrder(ctx, order.ID)
+			},
+			func(ctx context.Context, orderNo string, userID uint) (*quefacontract.FulfillmentEntryResult, error) {
+				order, err := oStore.GetByOrderNoAndUser(orderNo, userID)
+				if err != nil {
+					return nil, err
+				}
+				if order == nil || !order.HasQuefaHosted() {
+					return nil, ordertransport.ErrOrderNotFound
+				}
+				return qOrders.OpenFulfillmentEntry(ctx, order.ID)
+			},
+		)
+		handlers.Guest.SetHostedRecharge(
+			func(ctx context.Context, orderNo, email, password string) (*quefacontract.BuyerStatus, error) {
+				order, err := oStore.GetByOrderNoAndGuest(orderNo, email, password)
+				if err != nil || order == nil || !order.HasQuefaHosted() {
+					return nil, err
+				}
+				return qOrders.GetBuyerStatusByParentOrder(ctx, order.ID)
+			},
+			func(ctx context.Context, orderNo, email, password string) (*quefacontract.FulfillmentEntryResult, error) {
+				order, err := oStore.GetByOrderNoAndGuest(orderNo, email, password)
+				if err != nil {
+					return nil, err
+				}
+				if order == nil || !order.HasQuefaHosted() {
+					return nil, ordertransport.ErrGuestOrderNotFound
+				}
+				return qOrders.OpenFulfillmentEntry(ctx, order.ID)
+			},
+		)
+	}
 	return handlers
 }
 

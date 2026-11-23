@@ -81,6 +81,10 @@ func (c *Consumer) Register(mux *asynq.ServeMux) {
 		mux.HandleFunc(queue.TaskKafudaRecoverChecks, withPanicRecovery(queue.TaskKafudaRecoverChecks, c.handleKafudaRecoverChecks))
 		mux.HandleFunc(queue.TaskKafudaRefreshCatalog, withPanicRecovery(queue.TaskKafudaRefreshCatalog, c.handleKafudaRefreshCatalog))
 	}
+	if c.Quefa != nil {
+		mux.HandleFunc(queue.TaskQuefaSyncOrder, withPanicRecovery(queue.TaskQuefaSyncOrder, c.handleQuefaSyncOrder))
+		mux.HandleFunc(queue.TaskQuefaPollOrders, withPanicRecovery(queue.TaskQuefaPollOrders, c.handleQuefaPollOrders))
+	}
 	mux.HandleFunc(queue.TaskDownstreamCallback, withPanicRecovery(queue.TaskDownstreamCallback, c.handleDownstreamCallback))
 	mux.HandleFunc(queue.TaskReconciliationRun, withPanicRecovery(queue.TaskReconciliationRun, c.handleReconciliationRun))
 	mux.HandleFunc(queue.TaskBotNotify, withPanicRecovery(queue.TaskBotNotify, c.handleBotNotify))

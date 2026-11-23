@@ -18,6 +18,8 @@ import {
   getDirectSkuRegion,
   isDirectFulfillmentType,
   isDirectSkuAvailable,
+  isHostedRechargeType,
+  isSingleItemDirectType,
   resolveDirectSkuIdForSpec,
   sortDirectSkusByPrice,
 } from '../utils/directPurchase'
@@ -72,7 +74,9 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
 
   const loading = ref(true)
   const product = ref<any>(null)
-const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillment_type))
+  const isGptDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillment_type))
+  const isHostedRecharge = computed(() => isHostedRechargeType(product.value?.fulfillment_type))
+  const isDirect = computed(() => isSingleItemDirectType(product.value?.fulfillment_type))
   const relatedPosts = computed<any[]>(() => product.value?.related_posts || [])
   const formatRelatedPostDate = (dateString: string) => {
     if (!dateString) return ''
@@ -397,7 +401,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
   const skuDisplayText = (sku: any) => {
     const localized = resolveLocalizedSpecName(sku?.spec_values, appStore.locale)
     if (localized) return localized
-    if (isDirect.value) {
+    if (isGptDirect.value) {
       const plan = typeof sku?.spec_values?.plan === 'string' ? sku.spec_values.plan.trim() : ''
       if (plan) return plan
     }
@@ -426,7 +430,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
   }
 
   const directSkuSpecs = computed(() => {
-    if (!isDirect.value) return []
+    if (!isGptDirect.value) return []
     return buildDirectSkuSpecs(activeSkus.value, skuDisplayText)
   })
 
@@ -440,13 +444,13 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
   ))
 
   const skuButtonLabel = (sku: any) => (
-    isDirect.value
+    isGptDirect.value
       ? formatDirectSkuRegionLabel(getDirectSkuRegion(sku), appStore.locale, t('directPurchase.unknownRegion'))
       : skuDisplayText(sku)
   )
 
   const lowestPriceSkuIds = computed(() => {
-    if (!isDirect.value) return new Set<number>()
+    if (!isGptDirect.value) return new Set<number>()
     return findLowestPriceDirectSkuIds(activeSkus.value, {
       getSpecName: skuDisplayText,
       getPriceCents: getSkuComparablePriceCents,
@@ -838,7 +842,7 @@ const isDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillme
     formatPromotionRule, formatWholesaleTier, formatRelatedPostDate,
     normalizeSkuId,
     // 状态
-    loading, product, isDirect, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
+    loading, product, isDirect, isHostedRecharge, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
     activeSkus, directSkuSpecs, visibleSkus, selectedSku,
     // 价格计算
     selectedSkuMemberPrice, hasMemberPrice,

@@ -1784,6 +1784,50 @@
     "loginRequired": "请先登录，再继续直充结算。",
     "checkoutRestricted": "请在主站商品详情选择单一直充规格，通过立即购买结算。"
   },
+  "hostedRecharge": {
+    "label": "托管直充",
+    "notice": "每单限购一个规格，数量为 1。付款后请在订单详情点击前往充值，按页面指引完成直充。",
+    "walletOnlyUnavailable": "当前仅余额支付模式下暂不支持托管直充商品。",
+    "entry": {
+      "openButton": "前往充值",
+      "resubmitButton": "重新前往充值",
+      "opening": "正在打开充值页…",
+      "hint": "将在新窗口打开安全托管充值页面，请按提示完成提交。",
+      "popupBlocked": "浏览器拦截了新窗口，请点击下方链接手动打开：",
+      "openManually": "手动打开充值页",
+      "failed": "暂时无法获取充值入口，请稍后重试。"
+    },
+    "progress": {
+      "title": "直充状态",
+      "refresh": "刷新状态",
+      "waiting_payment": "待付款",
+      "waiting_procurement": "准备充值中",
+      "procurement_blocked": "通道繁忙",
+      "waiting_submit": "待提交充值",
+      "recharging": "充值处理中",
+      "resubmit_required": "需要重新提交",
+      "manual_review": "人工核对中",
+      "refunding": "退款处理中",
+      "succeeded": "充值完成",
+      "closed": "已关闭",
+      "refunded": "已退款",
+      "updated": "更新于 {time}",
+      "retrying": "暂时无法刷新状态，稍后会自动重试。"
+    },
+    "stageHints": {
+      "waiting_payment": "订单尚未支付，请先完成付款。",
+      "waiting_procurement": "付款已确认，正在为您准备充值入口，请稍候。",
+      "procurement_blocked": "当前充值通道繁忙，系统正在处理，如有疑问请联系客服。",
+      "waiting_submit": "充值入口已就绪，请点击下方按钮前往完成账号充值。",
+      "recharging": "您的充值请求正在处理中，状态将自动刷新，请耐心等待。",
+      "resubmit_required": "上次提交未通过校验，请点击下方按钮重新前往提交。",
+      "manual_review": "订单正在人工核对中，请稍候或联系客服协助。",
+      "refunding": "订单正在办理退款，请稍候查看结果。",
+      "succeeded": "恭喜，本次充值已顺利完成。",
+      "closed": "本次充值订单已关闭。",
+      "refunded": "订单已完成退款。"
+    }
+  },
   "productPurchase": {
     "label": "购买身份",
     "member": "会员购买",

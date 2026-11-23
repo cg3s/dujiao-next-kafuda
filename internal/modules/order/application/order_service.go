@@ -18,6 +18,7 @@ import (
 	orderdomain "github.com/dujiao-next/internal/modules/order/domain"
 	orderriskcontract "github.com/dujiao-next/internal/modules/orderrisk/contract"
 	promotioncontract "github.com/dujiao-next/internal/modules/promotion/contract"
+	quefacontract "github.com/dujiao-next/internal/modules/quefa/contract"
 	resellercontract "github.com/dujiao-next/internal/modules/reseller/contract"
 	settingsapp "github.com/dujiao-next/internal/modules/settings/application"
 	walletapp "github.com/dujiao-next/internal/modules/wallet/application"
@@ -37,6 +38,7 @@ import (
 // OrderService 订单服务
 type OrderService struct {
 	directCatalog           kafudacontract.CommercePolicy
+	quefaCatalog            quefacontract.CommercePolicy
 	orderStore              ordercontract.Store
 	userRepo                usercontract.Store
 	productRepo             productcontract.Repository
@@ -54,7 +56,18 @@ type OrderService struct {
 	resellerAccounting      resellerAccountingTransactions
 	riskControlSvc          orderriskcontract.Controller
 	productMappingService   upstreamStockEnsurer
+	quefaCancelGuard        func(parentOrderID uint) bool
+	quefaLazyExpireHook     func(parentOrderID uint) bool
 	expireMinutes           int
+}
+
+// SetQuefaCancelHooks injects upstream verification for Quefa cancel/expire and non-blocking lazy-expire.
+func (s *OrderService) SetQuefaCancelHooks(canClose func(parentOrderID uint) bool, deferLazyExpire func(parentOrderID uint) bool) {
+	if s == nil {
+		return
+	}
+	s.quefaCancelGuard = canClose
+	s.quefaLazyExpireHook = deferLazyExpire
 }
 
 type OrderMemberLevelService interface {
@@ -89,6 +102,7 @@ type upstreamStockEnsurer interface {
 // OrderServiceOptions 订单服务构造参数
 type OrderServiceOptions struct {
 	DirectCatalog           kafudacontract.CommercePolicy
+	QuefaCatalog            quefacontract.CommercePolicy
 	OrderStore              ordercontract.Store
 	UserStore               usercontract.Store
 	ProductStore            productcontract.Repository
@@ -122,6 +136,7 @@ func (s *OrderService) SetProductMappingService(svc upstreamStockEnsurer) {
 func NewOrderService(opts OrderServiceOptions) *OrderService {
 	return &OrderService{
 		directCatalog:           opts.DirectCatalog,
+		quefaCatalog:            opts.QuefaCatalog,
 		orderStore:              opts.OrderStore,
 		userRepo:                opts.UserStore,
 		productRepo:             opts.ProductStore,
@@ -186,6 +201,7 @@ type CreateOrderItem struct {
 // childOrderPlan 子订单计划数据
 type childOrderPlan struct {
 	DirectTerms       *kafudacontract.PurchaseTerms
+	QuefaTerms        *quefacontract.PurchaseTerms
 	Product           *productdomain.Product
 	SKU               *productdomain.ProductSKU
 	Item              orderdomain.OrderItem
@@ -590,6 +606,11 @@ func (s *OrderService) createOrder(input orderCreateParams) (*orderdomain.Order,
 						return err
 					}
 				}
+				if plan.Item.FulfillmentType == constants.FulfillmentTypeQuefaHosted {
+					if err := validateQuefaCheckout(plan, product, sku); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		if s.riskControlSvc != nil && !input.SkipRiskControl {
@@ -662,6 +683,25 @@ func (s *OrderService) createOrder(input orderCreateParams) (*orderdomain.Order,
 						PayMode: terms.PayMode, ProductCode: terms.ProductCode, PaymentProfile: terms.PaymentProfile, MaxCostCents: terms.MaxCostCents, AllowedKinds: append([]string(nil), terms.AllowedKinds...),
 						CatalogRevision: plan.SKU.DirectCatalogRevision, Currency: plan.Currency, CostPrice: plan.Item.CostPrice, SellPrice: childOrder.TotalAmount}}
 				if err := tx.KafudaGPT().CreateCheckout(recharge); err != nil {
+					return err
+				}
+			}
+			if plan.Item.FulfillmentType == constants.FulfillmentTypeQuefaHosted && plan.QuefaTerms != nil {
+				terms := plan.QuefaTerms
+				qInput := quefacontract.CheckoutInput{
+					OrderID:            childOrder.ID,
+					ParentOrderID:      order.ID,
+					ProductID:          plan.Item.ProductID,
+					SKUID:              plan.Item.SKUID,
+					ProductCode:        terms.ProductCode,
+					CollectionMode:     terms.CollectionMode,
+					DeliveryMode:       terms.DeliveryMode,
+					CostFloorAmount:    money.FromDecimal(terms.CostFloor),
+					SettlementCurrency: terms.SettlementCurrency,
+					MerchantOrderNo:    childOrder.OrderNo,
+					CreatedAt:          now,
+				}
+				if err := tx.Quefa().CreateCheckout(qInput); err != nil {
 					return err
 				}
 			}

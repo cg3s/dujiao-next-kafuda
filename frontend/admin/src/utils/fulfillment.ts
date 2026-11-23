@@ -5,6 +5,7 @@ export type FulfillmentLabelScope = 'orderDetail' | 'admin.orders'
 export const fulfillmentTypeLabel = (t: TranslateFn, type?: string, scope: FulfillmentLabelScope = 'orderDetail') => {
   if (!type) return '-'
   if (type === 'kafuda_gpt_direct') return t('kafuda.type')
+  if (type === 'quefa_hosted') return t('quefa.type')
   const baseKey = `${scope}.fulfillmentTypes`
   const map: Record<string, string> = {
     manual: t(`${baseKey}.manual`),
