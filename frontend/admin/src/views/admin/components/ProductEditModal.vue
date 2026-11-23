@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { adminAPI } from '@/api/admin'
+import { adminAPI, type QuefaCatalogProduct } from '@/api/admin'
 import type { AdminProduct, AdminCategory, AdminProductSKU, AdminPaymentChannel, LocalizedText } from '@/api/types'
 import MediaPicker from '@/components/admin/MediaPicker.vue'
 import RichEditor from '@/components/RichEditor.vue'
@@ -527,6 +527,7 @@ const normalizeSKUsForSubmit = () => {
     return []
   }
 
+  const isDirectOrQuefa = isDirect.value || isQuefa.value
   const seenCode = new Set<string>()
   const normalized = form.skus.map((item, index) => {
     const skuCode = String(item.sku_code || '').trim()
@@ -542,14 +543,14 @@ const normalizeSKUsForSubmit = () => {
     seenCode.add(codeKey)
 
     const priceAmount = Number(item.price_amount)
-    if (!Number.isFinite(priceAmount) || (priceAmount <= 0 && !(isDirect.value && !item.is_active && priceAmount === 0))) {
+    if (!Number.isFinite(priceAmount) || (priceAmount <= 0 && !(isDirectOrQuefa && !item.is_active && priceAmount === 0))) {
       if (isDirect.value) activeSKURegion.value = skuRegion(item)
       throw new Error(t('admin.products.errors.skuPriceInvalid', { index: index + 1 }))
     }
 
     const isActive = Boolean(item.is_active)
-    const costPriceAmount = isDirect.value && item.cost_price_amount === '' ? undefined : Number(item.cost_price_amount)
-    if ((isDirect.value && isActive && costPriceAmount === undefined) ||
+    const costPriceAmount = isDirectOrQuefa && item.cost_price_amount === '' ? undefined : Number(item.cost_price_amount)
+    if ((isDirectOrQuefa && isActive && costPriceAmount === undefined) ||
         (costPriceAmount !== undefined && (!Number.isFinite(costPriceAmount) || costPriceAmount < 0))) {
       if (isDirect.value) activeSKURegion.value = skuRegion(item)
       throw new Error(t('admin.products.errors.skuCostPriceInvalid', { index: index + 1 }))
@@ -571,7 +572,7 @@ const normalizeSKUsForSubmit = () => {
     }
   })
 
-  if (!isDirect.value && !normalized.some((item) => item.is_active)) {
+  if (!isDirectOrQuefa && !normalized.some((item) => item.is_active)) {
     throw new Error(t('admin.products.errors.skuNeedActive'))
   }
   return normalized
@@ -720,47 +721,150 @@ const populateForm = (product: AdminProduct) => {
 
 const isDirect = computed(() => form.fulfillment_type === 'kafuda_gpt_direct')
 const isQuefa = computed(() => form.fulfillment_type === 'quefa_hosted')
-const quefaCatalogProducts = ref<Array<{ product_code: string; title: string; supply_price: string; min_sale_price: string; currency: string; available: boolean }>>([])
-const quefaCatalogLoading = ref(false)
-const loadQuefaCatalogForProduct = async (sync = false) => {
-  quefaCatalogLoading.value = true
+
+let quefaCatalogRequest = 0
+const quefaCatalogBusy = ref(false)
+const quefaCatalogStale = ref<boolean | null>(null)
+const quefaCatalogError = ref('')
+const quefaCatalogSyncedAt = ref('')
+const quefaBlockReasons = ref<string[]>([])
+const quefaAvailability = ref<Record<string, boolean>>({})
+const quefaQuoteRequired = ref<Record<string, boolean>>({})
+const quefaSupplyCostCNY = ref<Record<string, number>>({})
+const quefaFloorCNY = ref<Record<string, number>>({})
+
+const quefaSKUKey = (sku: Pick<SKUFormItem, 'sku_code' | 'spec_values'>) =>
+  String(sku.spec_values?.product_code || sku.sku_code || '').trim().toLowerCase()
+
+const resetQuefaCatalog = () => {
+  quefaCatalogRequest++
+  quefaCatalogBusy.value = false
+  quefaCatalogStale.value = null
+  quefaCatalogError.value = ''
+  quefaCatalogSyncedAt.value = ''
+  quefaBlockReasons.value = []
+  quefaAvailability.value = {}
+  quefaQuoteRequired.value = {}
+  quefaSupplyCostCNY.value = {}
+  quefaFloorCNY.value = {}
+}
+
+const buildQuefaSpecValues = (
+  productCode: string,
+  title: string,
+  existing?: Record<string, string>,
+): Record<string, string> => {
+  const fallback = String(title || productCode).trim()
+  return {
+    ...(existing || {}),
+    product_code: productCode,
+    'zh-CN': String(existing?.['zh-CN'] || '').trim() || fallback,
+    'zh-TW': String(existing?.['zh-TW'] || '').trim() || fallback,
+    'en-US': String(existing?.['en-US'] || '').trim() || fallback,
+  }
+}
+
+const applyQuefaMarkupToAllSKUs = () => {
+  const markup = Number(directMarkupPercent.value)
+  if (!Number.isFinite(markup) || markup < 0) {
+    notifyError(t('kafuda.markupInvalid'))
+    return
+  }
+  const multiplier = 1 + markup / 100
+  for (const sku of form.skus) {
+    const key = quefaSKUKey(sku)
+    const presetCost = quefaSupplyCostCNY.value[key]
+    let cost = sku.cost_price_amount === '' ? Number.NaN : Number(sku.cost_price_amount)
+    if ((!Number.isFinite(cost) || cost <= 0) && typeof presetCost === 'number' && presetCost > 0) {
+      cost = presetCost
+      sku.cost_price_amount = presetCost
+    }
+    if (Number.isFinite(cost) && cost > 0) {
+      const floor = quefaFloorCNY.value[key] ?? cost
+      sku.price_amount = Math.max(floor, roundCurrencyAmount(cost * multiplier))
+    }
+  }
+}
+
+const loadQuefaCatalog = async (sync: boolean) => {
+  const request = ++quefaCatalogRequest
+  const productId = props.productId
+  const isCurrent = () => request === quefaCatalogRequest && props.modelValue && props.productId === productId && isQuefa.value
+  quefaCatalogBusy.value = true
+  quefaCatalogError.value = ''
   try {
     const res = sync ? await adminAPI.syncQuefaCatalog() : await adminAPI.getQuefaCatalog()
-    const list = res.data?.data?.products
-    quefaCatalogProducts.value = Array.isArray(list) ? list : []
-  } catch {
-    quefaCatalogProducts.value = []
+    if (!isCurrent()) return
+    const payload = res.data?.data
+    const products: QuefaCatalogProduct[] = Array.isArray(payload?.products) ? payload.products : []
+    const old = new Map(
+      form.skus
+        .filter((item) => {
+          const code = quefaSKUKey(item)
+          return Boolean(code && code !== 'default')
+        })
+        .map((item) => [quefaSKUKey(item), item]),
+    )
+    const availableMap: Record<string, boolean> = {}
+    const quoteReqMap: Record<string, boolean> = {}
+    const supplyMap: Record<string, number> = {}
+    const floorMap: Record<string, number> = {}
+
+    const merged: SKUFormItem[] = products.map((item, idx) => {
+      const productCode = String(item.product_code || '').trim()
+      const key = productCode.toLowerCase()
+      const supply = Number(item.supply_price || 0)
+      const minSale = Number(item.min_sale_price || 0)
+      const quoteRequired = Boolean(item.quote_required)
+      const sellable = Boolean(item.available && !quoteRequired && Number.isFinite(supply) && supply > 0)
+      availableMap[key] = sellable
+      quoteReqMap[key] = quoteRequired
+      const presetCost = Number.isFinite(supply) && supply > 0 ? roundCurrencyAmount(supply) : undefined
+      if (presetCost !== undefined) {
+        supplyMap[key] = presetCost
+        floorMap[key] = roundCurrencyAmount(Math.max(supply, Number.isFinite(minSale) ? minSale : 0))
+      }
+
+      const existing = old.get(key)
+      old.delete(key)
+      const specValues = buildQuefaSpecValues(productCode, item.title, existing?.spec_values)
+      const defaults = createSKUFormItem({ sku_code: productCode, spec_values: specValues, is_active: false, sort_order: idx }, true)
+      const resolvedCost = existing && existing.cost_price_amount !== ''
+        ? existing.cost_price_amount
+        : (presetCost ?? defaults.cost_price_amount)
+      return {
+        ...defaults,
+        ...existing,
+        sku_code: existing?.sku_code || productCode,
+        spec_values: specValues,
+        cost_price_amount: resolvedCost,
+        manual_stock_total: 0,
+        is_active: Boolean(existing?.is_active && sellable),
+        sort_order: existing ? existing.sort_order : idx,
+      }
+    })
+    for (const item of old.values()) {
+      merged.push({ ...item, manual_stock_total: 0, is_active: false })
+    }
+
+    form.skus = merged
+    quefaAvailability.value = availableMap
+    quefaQuoteRequired.value = quoteReqMap
+    quefaSupplyCostCNY.value = supplyMap
+    quefaFloorCNY.value = floorMap
+    quefaCatalogStale.value = Boolean(payload?.stale)
+    quefaBlockReasons.value = Array.isArray(payload?.readiness?.block_reasons) ? payload.readiness.block_reasons : []
+    quefaCatalogSyncedAt.value = payload?.synced_at ? new Date(payload.synced_at).toLocaleString() : ''
+  } catch (error) {
+    if (isCurrent()) {
+      quefaCatalogError.value = error instanceof Error && isNotifiedError(error) && error.message
+        ? error.message
+        : t('quefa.catalogReadFailed')
+    }
   } finally {
-    quefaCatalogLoading.value = false
+    if (request === quefaCatalogRequest) quefaCatalogBusy.value = false
   }
 }
-const addQuefaSKUFromCatalog = (item: { product_code: string; title: string; supply_price: string; min_sale_price: string }) => {
-  const exists = form.skus.some((s) => s.sku_code === item.product_code || s.spec_values?.product_code === item.product_code)
-  if (exists) return
-  const floor = Math.max(Number(item.supply_price || 0), Number(item.min_sale_price || 0))
-  const supply = Number(item.supply_price || 0)
-  form.skus.push({
-    id: 0,
-    sku_code: item.product_code,
-    spec_values: { product_code: item.product_code, 'zh-CN': item.title, 'zh-TW': item.title, 'en-US': item.title },
-    price_amount: floor > 0 ? Number(floor.toFixed(2)) : 0,
-    cost_price_amount: supply > 0 ? Number(supply.toFixed(2)) : '',
-    direct_catalog_revision: 0,
-    direct_cost_configured: supply > 0,
-    manual_stock_total: 0,
-    original_manual_stock_total: null,
-    is_active: true,
-    sort_order: form.skus.length,
-  })
-}
-watch(isQuefa, (active) => {
-  if (active) {
-    form.stock_display_mode = 'hidden'
-    form.min_purchase_quantity = 1
-    form.max_purchase_quantity = 1
-    if (quefaCatalogProducts.value.length === 0) void loadQuefaCatalogForProduct(false)
-  }
-})
 
 const unknownSKURegion = '__unknown__'
 const skuRegion = (sku: SKUFormItem) => sku.spec_values.country?.trim().toUpperCase() || unknownSKURegion
@@ -907,12 +1011,23 @@ const loadDirectCatalog = async (sync: boolean) => {
 watch(() => form.fulfillment_type, () => {
   if (!isDirect.value) {
     resetDirectCatalog()
+  }
+  if (!isQuefa.value) {
+    resetQuefaCatalog()
+  }
+  if (isDirect.value) {
+    form.min_purchase_quantity = 1
+    form.max_purchase_quantity = 1
+    form.stock_display_mode = 'hidden'
+    void loadDirectCatalog(false)
     return
   }
-  form.min_purchase_quantity = 1
-  form.max_purchase_quantity = 1
-  form.stock_display_mode = 'hidden'
-  void loadDirectCatalog(false)
+  if (isQuefa.value) {
+    form.min_purchase_quantity = 1
+    form.max_purchase_quantity = 1
+    form.stock_display_mode = 'hidden'
+    void loadQuefaCatalog(false)
+  }
 })
 
 const closeModal = () => {
@@ -1022,6 +1137,7 @@ watch(
   [() => props.modelValue, () => props.productId],
   async ([open, productId], _, onCleanup) => {
     resetDirectCatalog()
+    resetQuefaCatalog()
     productLoading.value = false
     if (!open) return
     currentLang.value = 'zh-CN'
@@ -1164,7 +1280,7 @@ watch(
             <p class="mt-1 text-xs text-muted-foreground">{{ t('admin.products.form.maxPurchaseQuantityTip') }}</p>
           </div>
 
-          <div v-if="!isDirect" class="col-span-1">
+          <div v-if="!isDirect && !isQuefa" class="col-span-1">
             <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.stockDisplayMode') }}</label>
             <Select v-model="form.stock_display_mode">
               <SelectTrigger class="h-9 w-full">
@@ -1193,31 +1309,6 @@ watch(
               </SelectContent>
             </Select>
             <p v-if="editingIsMapped" class="mt-1 text-xs text-indigo-600">{{ t('admin.products.mappedFulfillmentLocked') }}</p>
-          </div>
-
-          <div v-if="isQuefa" class="col-span-1 md:col-span-2 rounded-xl border border-border bg-muted/20 p-4 space-y-3">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div class="text-sm font-medium">{{ t('quefa.catalogBindTitle') }}</div>
-                <p class="text-xs text-muted-foreground">{{ t('quefa.catalogBindHint') }}</p>
-              </div>
-              <Button type="button" size="sm" variant="outline" :disabled="quefaCatalogLoading" @click="loadQuefaCatalogForProduct(true)">
-                {{ quefaCatalogLoading ? t('quefa.syncing') : t('quefa.syncCatalog') }}
-              </Button>
-            </div>
-            <div v-if="quefaCatalogProducts.length > 0" class="flex flex-wrap gap-2">
-              <Button
-                v-for="qItem in quefaCatalogProducts"
-                :key="qItem.product_code"
-                type="button"
-                size="sm"
-                variant="secondary"
-                :disabled="!qItem.available"
-                @click="addQuefaSKUFromCatalog(qItem)"
-              >
-                + {{ qItem.title }} ({{ qItem.product_code }} · {{ qItem.supply_price }} {{ qItem.currency }})
-              </Button>
-            </div>
           </div>
 
           <div v-if="!isDirect && !isQuefa" class="col-span-1">
@@ -1348,6 +1439,25 @@ watch(
                 </Button>
                 <Button type="button" size="sm" variant="outline" :disabled="catalogBusy" @click="loadDirectCatalog(true)">{{ t('kafuda.sync') }}</Button>
               </div>
+              <div v-else-if="isQuefa" class="flex flex-wrap items-center gap-2">
+                <label class="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span>{{ t('kafuda.markupLabel') }}</span>
+                  <Input
+                    v-model.number="directMarkupPercent"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    class="h-8 w-20 text-xs"
+                    :aria-label="t('kafuda.markupLabel')"
+                  />
+                </label>
+                <Button type="button" size="sm" variant="outline" :disabled="!form.skus.length" @click="applyQuefaMarkupToAllSKUs">
+                  {{ t('kafuda.applyMarkup') }}
+                </Button>
+                <Button type="button" size="sm" variant="outline" :disabled="quefaCatalogBusy" @click="loadQuefaCatalog(true)">
+                  {{ quefaCatalogBusy ? t('quefa.syncing') : t('quefa.syncCatalog') }}
+                </Button>
+              </div>
               <Button v-else-if="!editingIsMapped" type="button" size="sm" variant="outline" @click="addSKU">
                 {{ t('admin.products.form.skuAdd') }}
               </Button>
@@ -1366,6 +1476,18 @@ watch(
                 {{ t(`kafuda.salesBlockReasons.${catalogSalesBlockReason}`) }}
               </p>
             </div>
+            <div v-else-if="isQuefa" class="text-xs text-muted-foreground space-y-2">
+              <p>{{ t('quefa.skuSyncTip') }}</p>
+              <p v-if="quefaCatalogError" class="text-amber-600" role="alert">{{ quefaCatalogError }}</p>
+              <Button v-if="quefaCatalogError && quefaCatalogStale === null" type="button" size="sm" variant="outline" :disabled="quefaCatalogBusy" @click="loadQuefaCatalog(false)">
+                {{ t('quefa.retryRead') }}
+              </Button>
+              <p v-if="quefaCatalogStale !== null">{{ t('quefa.lastSynced') }}: {{ quefaCatalogSyncedAt || t('quefa.neverSynced') }}</p>
+              <p v-if="quefaCatalogStale && !quefaBlockReasons.includes('catalog_stale')" class="text-amber-600">{{ t('quefa.blockReasons.catalog_stale') }}</p>
+              <p v-for="code in quefaBlockReasons" :key="code" class="text-amber-600" role="status">
+                {{ t(`quefa.blockReasons.${code}`) }}
+              </p>
+            </div>
             <div v-if="!form.skus.length" class="rounded-lg border border-dashed border-border p-4 text-xs text-muted-foreground">
               {{ t('admin.products.form.skuEmpty') }}
             </div>
@@ -1380,7 +1502,7 @@ watch(
                 <div v-for="{ sku, index } in visibleSKUs" :key="`sku-${index}-${sku.id || 0}`" class="rounded-lg border border-border bg-background p-4 space-y-3">
                   <div class="flex items-center justify-between">
                     <div class="text-xs font-medium text-muted-foreground">{{ t('admin.products.form.skuItemTitle', { index: index + 1 }) }}</div>
-                    <Button v-if="!editingIsMapped && !isDirect" type="button" size="sm" variant="destructive" @click="removeSKU(index)">
+                    <Button v-if="!editingIsMapped && !isDirect && !isQuefa" type="button" size="sm" variant="destructive" @click="removeSKU(index)">
                       {{ t('admin.products.form.skuRemove') }}
                     </Button>
                   </div>
@@ -1398,6 +1520,13 @@ watch(
                         <p v-if="catalogStale !== null && !directAvailability[directSKUKey(sku)]" class="text-xs text-amber-600">{{ t('kafuda.unavailable') }}</p>
                         <p v-else-if="directReviewRequired[directSKUKey(sku)]" class="text-xs text-amber-600">{{ t('kafuda.review') }}</p>
                       </template>
+                      <template v-else-if="isQuefa">
+                        <p class="mt-1 text-xs text-muted-foreground">
+                          {{ sku.spec_values.product_code || sku.sku_code }}<template v-if="quefaSupplyCostCNY[quefaSKUKey(sku)] !== undefined"> · ¥{{ quefaSupplyCostCNY[quefaSKUKey(sku)]?.toFixed(2) }}</template>
+                        </p>
+                        <p v-if="quefaCatalogStale !== null && quefaQuoteRequired[quefaSKUKey(sku)]" class="text-xs text-amber-600">{{ t('quefa.skuQuoteRequired') }}</p>
+                        <p v-else-if="quefaCatalogStale !== null && !quefaAvailability[quefaSKUKey(sku)]" class="text-xs text-amber-600">{{ t('quefa.skuUnavailable') }}</p>
+                      </template>
                     </div>
                     <div class="md:col-span-1">
                       <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuPrice') }}</label>
@@ -1414,6 +1543,9 @@ watch(
                           <Button type="button" size="sm" variant="outline" @click="confirmDirectCost(sku)">{{ t('kafuda.confirmCost') }}</Button>
                         </div>
                       </template>
+                      <template v-else-if="isQuefa && sku.is_active">
+                        <p v-if="sku.cost_price_amount === ''" class="mt-1 text-xs text-amber-600">{{ t('kafuda.costMissing') }}</p>
+                      </template>
                     </div>
                     <div v-if="form.fulfillment_type === 'manual'" class="md:col-span-1">
                       <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuManualStock') }}</label>
@@ -1427,7 +1559,10 @@ watch(
                       </div>
                       <div class="flex items-end">
                         <div class="inline-flex items-center gap-2">
-                          <Switch v-model="sku.is_active" :disabled="isDirect && (!directAvailability[directSKUKey(sku)] || sku.price_amount <= 0)" />
+                          <Switch
+                            v-model="sku.is_active"
+                            :disabled="(isDirect && (!directAvailability[directSKUKey(sku)] || sku.price_amount <= 0)) || (isQuefa && (!quefaAvailability[quefaSKUKey(sku)] || sku.price_amount <= 0))"
+                          />
                           <Label class="text-sm text-muted-foreground">{{ t('admin.products.form.skuActive') }}</Label>
                         </div>
                       </div>

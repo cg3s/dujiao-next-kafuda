@@ -432,7 +432,12 @@ export interface QuefaCatalogProduct {
   title: string
   supply_price: string
   min_sale_price: string
+  quote_required?: boolean
   currency: string
+  fulfillment_mode?: string
+  payment_country?: string
+  payment_currency?: string
+  max_quantity?: number
   collection_modes?: string[]
   delivery_modes?: string[]
   available: boolean

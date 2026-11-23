@@ -7,6 +7,8 @@ const api = vi.hoisted(() => ({
   getPaymentChannels: vi.fn(),
   getKafudaCatalog: vi.fn(),
   syncKafudaCatalog: vi.fn(),
+  getQuefaCatalog: vi.fn(),
+  syncQuefaCatalog: vi.fn(),
   updateProduct: vi.fn(),
 }))
 const notifyError = vi.hoisted(() => vi.fn())
@@ -454,6 +456,118 @@ describe('ProductEditModal Direct SKU edits', () => {
     expect(payload.skus[1]).toMatchObject({
       sku_code: 'CUSTOM-GPT-US',
       spec_values: expect.objectContaining({ plan: 'pro_monthly', country: 'US', 'zh-CN': 'ChatGPT Pro (US)' }),
+    })
+  })
+})
+
+describe('ProductEditModal Quefa Hosted SKU auto-sync', () => {
+  it('auto-syncs Quefa catalog into SKUs on edit, preserves saved prices, blocks quote_required, and supports batch markup', async () => {
+    api.getProduct.mockResolvedValue({
+      data: {
+        data: {
+          id: 9,
+          slug: 'quefa-plus',
+          title: { 'zh-CN': 'Quefa Plus' },
+          category_id: 1,
+          fulfillment_type: 'quefa_hosted',
+          skus: [{
+            id: 91,
+            sku_code: 'chatgpt_plus_cdk_1m',
+            spec_values: { product_code: 'chatgpt_plus_cdk_1m', 'zh-CN': 'Plus 月卡自定义' },
+            price_amount: 145,
+            cost_price_amount: 112,
+            is_active: true,
+            sort_order: 0,
+          }],
+        },
+      },
+    })
+    api.getQuefaCatalog.mockResolvedValue({
+      data: {
+        data: {
+          stale: false,
+          synced_at: '2026-11-24T00:00:00Z',
+          readiness: { ready: true, block_reasons: [] },
+          products: [
+            {
+              product_code: 'chatgpt_plus_cdk_1m',
+              title: 'ChatGPT Plus 月卡',
+              supply_price: '110.00',
+              min_sale_price: '115.00',
+              quote_required: false,
+              currency: 'CNY',
+              available: true,
+            },
+            {
+              product_code: 'chatgpt_pro_cdk_1m',
+              title: 'ChatGPT Pro 月卡',
+              supply_price: '1000.00',
+              min_sale_price: '1050.00',
+              quote_required: false,
+              currency: 'CNY',
+              available: true,
+            },
+            {
+              product_code: 'chatgpt_plus_us_direct_1m',
+              title: 'ChatGPT Plus US 直充',
+              supply_price: '0.00',
+              min_sale_price: '0.00',
+              quote_required: true,
+              currency: 'CNY',
+              available: true,
+            },
+          ],
+        },
+      },
+    })
+
+    const context = mountModal()
+    context.productId = 9
+    context.open = true
+    await flushRequests()
+
+    expect(api.getQuefaCatalog).toHaveBeenCalledTimes(1)
+    const codeInputs = [...host.querySelectorAll<HTMLInputElement>('input[placeholder="admin.products.form.skuCodePlaceholder"]')]
+    expect(codeInputs.map((el) => el.value)).toEqual([
+      'chatgpt_plus_cdk_1m',
+      'chatgpt_pro_cdk_1m',
+      'chatgpt_plus_us_direct_1m',
+    ])
+
+    const priceInputs = [...host.querySelectorAll<HTMLInputElement>('input[placeholder="admin.products.form.skuPricePlaceholder"]')]
+    const costInputs = [...host.querySelectorAll<HTMLInputElement>('input[placeholder="admin.products.form.skuCostPricePlaceholder"]')]
+    // Existing SKU preserves saved price & cost; newly synced fixed-price SKU prefills supply cost and starts at price 0 (inactive)
+    expect(priceInputs[0]?.value).toBe('145')
+    expect(costInputs[0]?.value).toBe('112')
+    expect(priceInputs[1]?.value).toBe('0')
+    expect(costInputs[1]?.value).toBe('1000')
+    expect(host.textContent).toContain('quefa.skuQuoteRequired')
+
+    // Apply 10% markup to all SKUs with cost
+    const markupBtn = [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'kafuda.applyMarkup')
+    expect(markupBtn).toBeTruthy()
+    markupBtn!.click()
+    await nextTick()
+
+    const payload = submitUpdate()
+    expect(payload.skus).toHaveLength(3)
+    expect(payload.skus[0]).toMatchObject({
+      id: 91,
+      sku_code: 'chatgpt_plus_cdk_1m',
+      price_amount: 123.2,
+      cost_price_amount: 112,
+      is_active: true,
+    })
+    expect(payload.skus[1]).toMatchObject({
+      sku_code: 'chatgpt_pro_cdk_1m',
+      price_amount: 1100,
+      cost_price_amount: 1000,
+      is_active: false,
+    })
+    expect(payload.skus[2]).toMatchObject({
+      sku_code: 'chatgpt_plus_us_direct_1m',
+      price_amount: 0,
+      is_active: false,
     })
   })
 })
