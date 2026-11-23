@@ -161,6 +161,8 @@ type CreateOrderInput struct {
 
 // CreateGuestOrderInput 游客创建订单输入
 type CreateGuestOrderInput struct {
+	// StorefrontRequest is set by main-site adapters, never request JSON.
+	StorefrontRequest   bool `json:"-"`
 	Email               string
 	OrderPassword       string
 	Locale              string
@@ -265,6 +267,7 @@ func (s *OrderService) CreateGuestOrder(input CreateGuestOrderInput) (*orderdoma
 	}
 	locale := strings.TrimSpace(input.Locale)
 	return s.createOrder(orderCreateParams{
+		StorefrontRequest:   input.StorefrontRequest,
 		UserID:              0,
 		GuestEmail:          email,
 		GuestPassword:       password,
@@ -374,6 +377,7 @@ func (s *OrderService) PreviewOrder(input CreateOrderInput) (*OrderPreview, erro
 // PreviewGuestOrder 游客订单金额预览
 func (s *OrderService) PreviewGuestOrder(input CreateGuestOrderInput) (*OrderPreview, error) {
 	params := orderCreateParams{
+		StorefrontRequest:   input.StorefrontRequest,
 		GuestEmail:          input.Email,
 		GuestPassword:       input.OrderPassword,
 		GuestLocale:         input.Locale,

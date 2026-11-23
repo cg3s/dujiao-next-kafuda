@@ -533,6 +533,7 @@ func (a orderCreateAdapter) CreateOrder(input ordertransport.CreateOrderInput) (
 
 func (a orderCreateAdapter) CreateGuestOrder(input ordertransport.CreateGuestOrderInput) (*orderdomain.Order, error) {
 	order, err := a.orders.CreateGuestOrder(orderapp.CreateGuestOrderInput{
+		StorefrontRequest:   true,
 		Email:               input.Email,
 		OrderPassword:       input.OrderPassword,
 		Locale:              input.Locale,
@@ -609,6 +610,7 @@ func (a orderPreviewAdapter) PreviewOrder(input ordertransport.CreateOrderInput)
 
 func (a orderPreviewAdapter) PreviewGuestOrder(input ordertransport.CreateGuestOrderInput) (*ordertransport.OrderPreview, error) {
 	preview, err := a.orders.PreviewGuestOrder(orderapp.CreateGuestOrderInput{
+		StorefrontRequest:   true,
 		Email:               input.Email,
 		OrderPassword:       input.OrderPassword,
 		Locale:              input.Locale,

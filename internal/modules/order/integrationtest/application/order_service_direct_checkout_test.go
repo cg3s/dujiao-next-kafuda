@@ -2717,3 +2717,122 @@ func TestDirectCheckoutRejectsUnsupportedInputsBeforePersistence(t *testing.T) {
 		})
 	}
 }
+
+func TestDirectGuestPreviewAndCheckoutHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Run("guest_purchase_type_allowed_on_main_storefront", func(t *testing.T) {
+		f := newDirectCheckoutFixture(t)
+		if err := f.db.Model(&f.product).Update("purchase_type", constants.ProductPurchaseGuest).Error; err != nil {
+			t.Fatal(err)
+		}
+		svc := orderapp.NewOrderService(f.options)
+		payments := paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{ProductRepo: productstore.NewProductStore(f.db)})
+		handlers := orderwiring.New(&container.Container{OrderService: svc, PaymentService: payments})
+
+		// Non-storefront direct guest calls remain rejected even when product allows guest purchase.
+		guestInput := orderapp.CreateGuestOrderInput{
+			Email:         "guest@example.test",
+			OrderPassword: "password123",
+			Tenant:        f.input.Tenant,
+			Items:         f.input.Items,
+		}
+		if _, err := svc.PreviewGuestOrder(guestInput); !errors.Is(err, orderapp.ErrProductPurchaseNotAllowed) {
+			t.Fatalf("expected ErrProductPurchaseNotAllowed for non-storefront guest preview, got %v", err)
+		}
+		if _, err := svc.CreateGuestOrder(guestInput); !errors.Is(err, orderapp.ErrProductPurchaseNotAllowed) {
+			t.Fatalf("expected ErrProductPurchaseNotAllowed for non-storefront guest create, got %v", err)
+		}
+
+		// Main storefront HTTP guest preview succeeds.
+		previewRecorder := httptest.NewRecorder()
+		previewCtx, _ := gin.CreateTestContext(previewRecorder)
+		body := fmt.Sprintf(`{"email":"guest@example.test","order_password":"password123","items":[{"product_id":%d,"sku_id":%d,"quantity":1,"fulfillment_type":"manual"}]}`, f.product.ID, f.sku.ID)
+		previewCtx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/guest/orders/preview", strings.NewReader(body))
+		previewCtx.Request.Header.Set("Content-Type", "application/json")
+		previewCtx.Request.Header.Set("X-Lang", "zh-CN")
+		handlers.Preview.PreviewGuestOrder(previewCtx)
+		var previewResp response.Response
+		if err := json.Unmarshal(previewRecorder.Body.Bytes(), &previewResp); err != nil {
+			t.Fatal(err)
+		}
+		if previewResp.StatusCode != 0 || !strings.Contains(previewRecorder.Body.String(), `"fulfillment_type":"gpt_direct"`) {
+			t.Fatalf("main guest preview failed: %s", previewRecorder.Body.String())
+		}
+
+		// Reseller tenant HTTP guest preview remains rejected.
+		resellerRecorder := httptest.NewRecorder()
+		resellerCtx, _ := gin.CreateTestContext(resellerRecorder)
+		resellerCtx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/guest/orders/preview", strings.NewReader(body))
+		resellerCtx.Request.Header.Set("Content-Type", "application/json")
+		resellerCtx.Request.Header.Set("X-Lang", "zh-CN")
+		resellerCtx.Request = resellerCtx.Request.WithContext(resellercontract.WithTenantContext(resellerCtx.Request.Context(), resellercontract.ResellerTenantContext("reseller.example", 7, 1, "")))
+		handlers.Preview.PreviewGuestOrder(resellerCtx)
+		var resellerResp response.Response
+		if err := json.Unmarshal(resellerRecorder.Body.Bytes(), &resellerResp); err != nil {
+			t.Fatal(err)
+		}
+		if resellerResp.StatusCode != response.CodeBadRequest {
+			t.Fatalf("reseller guest preview should fail: %s", resellerRecorder.Body.String())
+		}
+
+		// Main storefront HTTP guest create succeeds and persists recharge snapshot.
+		createRecorder := httptest.NewRecorder()
+		createCtx, _ := gin.CreateTestContext(createRecorder)
+		createCtx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/guest/orders", strings.NewReader(body))
+		createCtx.Request.Header.Set("Content-Type", "application/json")
+		createCtx.Request.Header.Set("X-Lang", "zh-CN")
+		handlers.Create.CreateGuestOrder(createCtx)
+		var createResp response.Response
+		if err := json.Unmarshal(createRecorder.Body.Bytes(), &createResp); err != nil {
+			t.Fatal(err)
+		}
+		if createResp.StatusCode != 0 {
+			t.Fatalf("main guest checkout failed: %s", createRecorder.Body.String())
+		}
+		assertDirectCheckoutPrivate(t, createRecorder.Body.Bytes())
+		var records []kafudadomain.Recharge
+		if err := f.db.Find(&records).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != 1 || records[0].Snapshot.CostPrice.String() != "45.00" || records[0].Snapshot.Plan != "plus" {
+			t.Fatalf("unexpected guest direct recharge snapshot: %+v", records)
+		}
+	})
+
+	t.Run("member_purchase_type_rejected_for_guest_http", func(t *testing.T) {
+		f := newDirectCheckoutFixture(t)
+		svc := orderapp.NewOrderService(f.options)
+		payments := paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{ProductRepo: productstore.NewProductStore(f.db)})
+		handlers := orderwiring.New(&container.Container{OrderService: svc, PaymentService: payments})
+		body := fmt.Sprintf(`{"email":"guest@example.test","order_password":"password123","items":[{"product_id":%d,"sku_id":%d,"quantity":1}]}`, f.product.ID, f.sku.ID)
+
+		previewRecorder := httptest.NewRecorder()
+		previewCtx, _ := gin.CreateTestContext(previewRecorder)
+		previewCtx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/guest/orders/preview", strings.NewReader(body))
+		previewCtx.Request.Header.Set("Content-Type", "application/json")
+		previewCtx.Request.Header.Set("X-Lang", "zh-CN")
+		handlers.Preview.PreviewGuestOrder(previewCtx)
+		var previewResp response.Response
+		if err := json.Unmarshal(previewRecorder.Body.Bytes(), &previewResp); err != nil {
+			t.Fatal(err)
+		}
+		if previewResp.StatusCode != response.CodeBadRequest {
+			t.Fatalf("member-only guest preview should fail: %s", previewRecorder.Body.String())
+		}
+
+		createRecorder := httptest.NewRecorder()
+		createCtx, _ := gin.CreateTestContext(createRecorder)
+		createCtx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/guest/orders", strings.NewReader(body))
+		createCtx.Request.Header.Set("Content-Type", "application/json")
+		createCtx.Request.Header.Set("X-Lang", "zh-CN")
+		handlers.Create.CreateGuestOrder(createCtx)
+		var createResp response.Response
+		if err := json.Unmarshal(createRecorder.Body.Bytes(), &createResp); err != nil {
+			t.Fatal(err)
+		}
+		if createResp.StatusCode != response.CodeBadRequest {
+			t.Fatalf("member-only guest checkout should fail: %s", createRecorder.Body.String())
+		}
+		assertNoDirectCheckoutRows(t, f)
+	})
+}
