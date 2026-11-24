@@ -85,16 +85,102 @@ type UserHandler struct {
 	authorizeDirect DirectAuthorizer
 	hostedStatus    HostedRechargeStatusReader
 	hostedEntry     HostedRechargeEntryOpener
+	hostedSubmit    HostedRechargeSubmitter
 }
 
 type HostedRechargeStatusReader func(ctx context.Context, orderNo string, userID uint) (*quefacontract.BuyerStatus, error)
 type HostedRechargeEntryOpener func(ctx context.Context, orderNo string, userID uint) (*quefacontract.FulfillmentEntryResult, error)
+type HostedRechargeSubmitter func(ctx context.Context, orderNo string, userID uint, input quefacontract.SubmitRedemptionInput) (*quefacontract.BuyerStatus, error)
 
 func (h *UserHandler) SetHostedRecharge(status HostedRechargeStatusReader, entry HostedRechargeEntryOpener) {
 	if h != nil {
 		h.hostedStatus = status
 		h.hostedEntry = entry
 	}
+}
+
+func (h *UserHandler) SetHostedRechargeSubmitter(submit HostedRechargeSubmitter) {
+	if h != nil {
+		h.hostedSubmit = submit
+	}
+}
+
+const maxHostedRechargeSubmitBodyBytes = 320 << 10
+
+func decodeHostedRechargeSubmitRequest(c *gin.Context) (quefacontract.SubmitRedemptionInput, string) {
+	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, maxHostedRechargeSubmitBodyBytes))
+	decoder.DisallowUnknownFields()
+	var body struct {
+		CredentialMode         string `json:"credential_mode"`
+		Session                string `json:"session"`
+		AccessToken            string `json:"access_token"`
+		CustomerConfirmedEmail bool   `json:"customer_confirmed_email"`
+	}
+	decodeErr := decoder.Decode(&body)
+	if decodeErr == nil {
+		decodeErr = decoder.Decode(new(json.RawMessage))
+	} else if decodeErr == io.EOF {
+		decodeErr = io.ErrUnexpectedEOF
+	}
+	if decodeErr != io.EOF {
+		var oversized *http.MaxBytesError
+		if errors.As(decodeErr, &oversized) {
+			return quefacontract.SubmitRedemptionInput{}, "error.request_too_large"
+		}
+		return quefacontract.SubmitRedemptionInput{}, "error.bad_request"
+	}
+	return quefacontract.SubmitRedemptionInput{
+		CredentialMode:         body.CredentialMode,
+		Session:                body.Session,
+		AccessToken:            body.AccessToken,
+		CustomerConfirmedEmail: body.CustomerConfirmedEmail,
+	}, ""
+}
+
+func respondHostedRechargeSubmitError(c *gin.Context, err error, notFoundKey string) {
+	var rejected *quefacontract.RedemptionRejectedError
+	switch {
+	case errors.Is(err, ErrOrderNotFound) || errors.Is(err, ErrGuestOrderNotFound):
+		ginutil.RespondError(c, response.CodeNotFound, notFoundKey, nil)
+	case errors.As(err, &rejected):
+		if strings.TrimSpace(rejected.Message) != "" {
+			response.Error(c, response.CodeBadRequest, rejected.Message)
+			return
+		}
+		ginutil.RespondError(c, response.CodeBadRequest, "error.hosted_recharge_credential_invalid", nil)
+	case errors.Is(err, quefacontract.ErrCredentialInvalid):
+		ginutil.RespondError(c, response.CodeBadRequest, "error.hosted_recharge_credential_invalid", nil)
+	case errors.Is(err, quefacontract.ErrRedemptionNotAllowed):
+		ginutil.RespondError(c, response.CodeBadRequest, "error.hosted_recharge_submit_unavailable", nil)
+	default:
+		ginutil.RespondError(c, response.CodeInternal, "error.hosted_recharge_submit_pending", nil)
+	}
+}
+
+func (h *UserHandler) SubmitHostedRecharge(c *gin.Context) {
+	uid, ok := ginutil.GetUserID(c)
+	if !ok {
+		return
+	}
+	tenant := tenantFromRequest(c)
+	orderNo := strings.TrimSpace(c.Param("order_no"))
+	if h.hostedSubmit == nil || orderNo == "" || len(orderNo) > 64 || !tenant.IsMain || tenant.ResellerID != nil || tenant.Unavailable {
+		ginutil.RespondError(c, response.CodeNotFound, "error.order_not_found", nil)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	input, errKey := decodeHostedRechargeSubmitRequest(c)
+	if errKey != "" {
+		ginutil.RespondError(c, response.CodeBadRequest, errKey, nil)
+		return
+	}
+	// Never log errors or raw body from credential-bearing submissions.
+	status, err := h.hostedSubmit(c.Request.Context(), orderNo, uid, input)
+	if err != nil {
+		respondHostedRechargeSubmitError(c, err, "error.order_not_found")
+		return
+	}
+	response.Success(c, status)
 }
 
 func (h *UserHandler) GetHostedRechargeStatus(c *gin.Context) {

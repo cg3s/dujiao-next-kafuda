@@ -23,6 +23,7 @@ type GuestDirectStatusReader func(ctx context.Context, orderNo, email, password 
 type GuestDirectAuthorizer func(ctx context.Context, orderNo, email, password, session string) error
 type GuestHostedRechargeStatusReader func(ctx context.Context, orderNo, email, password string) (*quefacontract.BuyerStatus, error)
 type GuestHostedRechargeEntryOpener func(ctx context.Context, orderNo, email, password string) (*quefacontract.FulfillmentEntryResult, error)
+type GuestHostedRechargeSubmitter func(ctx context.Context, orderNo, email, password string, input quefacontract.SubmitRedemptionInput) (*quefacontract.BuyerStatus, error)
 
 // GuestOrderQuery 游客订单只读端口。
 type GuestOrderQuery interface {
@@ -40,6 +41,7 @@ type GuestHandler struct {
 	authorizeDirect GuestDirectAuthorizer
 	hostedStatus    GuestHostedRechargeStatusReader
 	hostedEntry     GuestHostedRechargeEntryOpener
+	hostedSubmit    GuestHostedRechargeSubmitter
 }
 
 func (h *GuestHandler) SetHostedRecharge(status GuestHostedRechargeStatusReader, entry GuestHostedRechargeEntryOpener) {
@@ -47,6 +49,43 @@ func (h *GuestHandler) SetHostedRecharge(status GuestHostedRechargeStatusReader,
 		h.hostedStatus = status
 		h.hostedEntry = entry
 	}
+}
+
+func (h *GuestHandler) SetHostedRechargeSubmitter(submit GuestHostedRechargeSubmitter) {
+	if h != nil {
+		h.hostedSubmit = submit
+	}
+}
+
+func (h *GuestHandler) SubmitGuestHostedRecharge(c *gin.Context) {
+	email, password, ok := ginutil.GetGuestCredentials(c)
+	if !ok || email == "" {
+		ginutil.RespondError(c, response.CodeBadRequest, "error.guest_email_required", nil)
+		return
+	}
+	if password == "" {
+		ginutil.RespondError(c, response.CodeBadRequest, "error.guest_password_required", nil)
+		return
+	}
+	tenant := tenantFromRequest(c)
+	orderNo := strings.TrimSpace(c.Param("order_no"))
+	if h.hostedSubmit == nil || orderNo == "" || len(orderNo) > 64 || !tenant.IsMain || tenant.ResellerID != nil || tenant.Unavailable {
+		ginutil.RespondError(c, response.CodeNotFound, "error.guest_order_not_found", nil)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	input, errKey := decodeHostedRechargeSubmitRequest(c)
+	if errKey != "" {
+		ginutil.RespondError(c, response.CodeBadRequest, errKey, nil)
+		return
+	}
+	// Never log errors or raw body from credential-bearing submissions.
+	status, err := h.hostedSubmit(c.Request.Context(), orderNo, email, password, input)
+	if err != nil {
+		respondHostedRechargeSubmitError(c, err, "error.guest_order_not_found")
+		return
+	}
+	response.Success(c, status)
 }
 
 func (h *GuestHandler) GetGuestHostedRechargeStatus(c *gin.Context) {

@@ -53,6 +53,8 @@ export const userOrderAPI = {
     authorizeDirect: (orderNo: string, session: string) => userApi.post(`/orders/${encodeURIComponent(orderNo)}/direct-authorize`, { session }, { sensitiveBody: true, silentBusinessError: true }),
     hostedRechargeStatus: (orderNo: string) => userApi.get(`/orders/${encodeURIComponent(orderNo)}/hosted-recharge/status`, { silentBusinessError: true }),
     openHostedRechargeEntry: (orderNo: string) => userApi.post(`/orders/${encodeURIComponent(orderNo)}/hosted-recharge/entry`, {}, { silentBusinessError: true }),
+    submitHostedRecharge: (orderNo: string, payload: { credential_mode?: string; session?: string; access_token?: string; customer_confirmed_email: boolean }) =>
+        userApi.post(`/orders/${encodeURIComponent(orderNo)}/hosted-recharge/submit`, payload, { sensitiveBody: true, silentBusinessError: true }),
     cancel: (orderNo: string) => userApi.post(`/orders/${encodeURIComponent(orderNo)}/cancel`),
     downloadFulfillment: (orderNo: string) => userApi.get(`/orders/${encodeURIComponent(orderNo)}/fulfillment/download`, { blob: true }),
 }
@@ -84,6 +86,14 @@ export const guestOrderAPI = {
     openHostedRechargeEntry: (orderNo: string, params: GuestAuthInput) => {
         const request = withGuestAuth(params, { silentBusinessError: true })
         return userApi.post(`/guest/orders/${encodeURIComponent(orderNo)}/hosted-recharge/entry`, {}, request.options)
+    },
+    submitHostedRecharge: (
+        orderNo: string,
+        payload: { credential_mode?: string; session?: string; access_token?: string; customer_confirmed_email: boolean },
+        params: GuestAuthInput,
+    ) => {
+        const request = withGuestAuth(params, { sensitiveBody: true, silentBusinessError: true })
+        return userApi.post(`/guest/orders/${encodeURIComponent(orderNo)}/hosted-recharge/submit`, payload, request.options)
     },
     downloadFulfillment: (orderNo: string, params: GuestAuthInput) => {
         const request = withGuestAuth(params, { blob: true })

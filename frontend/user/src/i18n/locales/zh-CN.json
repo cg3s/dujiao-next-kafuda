@@ -1785,25 +1785,73 @@
     "checkoutRestricted": "请在主站商品详情选择单一直充规格，通过立即购买结算。"
   },
   "hostedRecharge": {
-    "label": "托管直充",
-    "notice": "每单限购一个规格，数量为 1。付款后请在订单详情点击前往充值，按页面指引完成直充。",
-    "walletOnlyUnavailable": "当前仅余额支付模式下暂不支持托管直充商品。",
+    "label": "自动直充",
+    "notice": "每单限购 1 件。付款后可直接在订单详情页提交 ChatGPT Session JSON 自动直充，实时查看进度，无需手动兑换卡密。",
+    "walletOnlyUnavailable": "当前仅余额支付模式下暂不支持自动直充商品。",
+    "groups": {
+      "ph": "菲律宾充值",
+      "channel2": "渠道二直充",
+      "egypt": "埃及订阅",
+      "codex": "Codex 点数",
+      "other": "其他地区"
+    },
+    "deliveryTags": {
+      "autoRecharge": "自动直充",
+      "channelDirect": "通道直充 · 免预检"
+    },
+    "steps": {
+      "payment": "订单付款",
+      "account": "填写并确认账号",
+      "fulfillment": "自动充值履约"
+    },
+    "submit": {
+      "title": "提交 ChatGPT 充值资料",
+      "resubmitTitle": "重新提交充值资料（免费重试）",
+      "resubmitBanner": "本次重试沿用原订单，无需重新付款。请先核对下方失败原因，必要时重新登录 ChatGPT 后再获取最新 Session JSON。",
+      "howToTitle": "如何获取完整 Session JSON？",
+      "howToStep1": "1. 在浏览器登录需要充值的 ChatGPT 账号，然后打开：",
+      "howToStep2": "2. 全选并复制页面显示的完整 JSON 文本，原样粘贴到下方输入框（请勿裁剪字段）。",
+      "sessionLabel": "ChatGPT Session JSON",
+      "sessionPlaceholder": "粘贴从 chatgpt.com/api/auth/session 复制的完整 JSON 文本…",
+      "show": "显示内容",
+      "hide": "隐藏内容",
+      "detectedEmail": "已识别到账号邮箱：{email}",
+      "detectedEmailHint": "仅在当前页面本地解析供您核对，不会保存，不代表账号资格预检结果。",
+      "confirmCheckbox": "我已核对并确认上方 ChatGPT 账号无误，授权使用本次凭据执行自动直充",
+      "privacy": "凭据仅用于本次自动直充，提交后立即从浏览器清空，绝不落盘或明文保存；失败不会自动重复扣款。",
+      "submitButton": "确认并提交自动直充",
+      "resubmitButton": "确认并重新提交",
+      "submitting": "正在提交充值请求…",
+      "accepted": "充值资料已受理，正在为您执行自动直充，请耐心等待。",
+      "failed": "提交失败，请检查 Session JSON 后重试。",
+      "tooLarge": "输入内容超出 256 KiB 限制，请确认仅复制了 chatgpt.com/api/auth/session 的完整 JSON 内容。"
+    },
+    "summary": {
+      "targetAccount": "充值账号",
+      "completedAt": "完成时间",
+      "orderNo": "本站订单号",
+      "copyOrderNo": "复制订单号",
+      "orderNoCopied": "已复制",
+      "attempt": "第 {count} 次尝试",
+      "pausedNotice": "当前任务已暂停自动处理，正在核对原任务，请勿重复下单或重复提交。"
+    },
     "entry": {
-      "openButton": "前往充值",
-      "resubmitButton": "重新前往充值",
+      "openButton": "前往托管充值页",
+      "resubmitButton": "前往托管页重新提交",
       "opening": "正在打开充值页…",
       "hint": "将在新窗口打开安全托管充值页面，请按提示完成提交。",
+      "fallbackHint": "如偏好独立页面操作，也可：",
       "popupBlocked": "浏览器拦截了新窗口，请点击下方链接手动打开：",
       "openManually": "手动打开充值页",
       "failed": "暂时无法获取充值入口，请稍后重试。"
     },
     "progress": {
-      "title": "直充状态",
-      "refresh": "刷新状态",
+      "title": "自动直充进度",
+      "refresh": "刷新进度",
       "waiting_payment": "待付款",
       "waiting_procurement": "准备充值中",
       "procurement_blocked": "通道繁忙",
-      "waiting_submit": "待提交充值",
+      "waiting_submit": "待提交账号",
       "recharging": "充值处理中",
       "resubmit_required": "需要重新提交",
       "manual_review": "人工核对中",
@@ -1812,18 +1860,33 @@
       "closed": "已关闭",
       "refunded": "已退款",
       "updated": "更新于 {time}",
-      "retrying": "暂时无法刷新状态，稍后会自动重试。"
+      "retrying": "进度暂未更新，正在核对原任务，稍后会自动重试。"
+    },
+    "progressStages": {
+      "queued": "已受理，等待处理",
+      "logging_in": "正在验证登录资料",
+      "preparing_funds": "正在准备充值资源",
+      "awaiting_card": "正在分配充值通道",
+      "dispatching": "正在安排充值任务",
+      "processing": "正在执行充值",
+      "requires_action": "等待确认处理",
+      "confirming": "充值结果确认中",
+      "review": "订单复核中",
+      "upgrading": "正在升级订阅",
+      "completed": "充值已完成",
+      "failed": "本次充值未成功",
+      "cancelled": "本次任务已取消"
     },
     "stageHints": {
       "waiting_payment": "订单尚未支付，请先完成付款。",
-      "waiting_procurement": "付款已确认，正在为您准备充值入口，请稍候。",
+      "waiting_procurement": "付款已确认，正在为您准备直充通道，请稍候片刻。",
       "procurement_blocked": "当前充值通道繁忙，系统正在处理，如有疑问请联系客服。",
-      "waiting_submit": "充值入口已就绪，请点击下方按钮前往完成账号充值。",
-      "recharging": "您的充值请求正在处理中，状态将自动刷新，请耐心等待。",
-      "resubmit_required": "上次提交未通过校验，请点击下方按钮重新前往提交。",
-      "manual_review": "订单正在人工核对中，请稍候或联系客服协助。",
+      "waiting_submit": "付款已确认，请在下方粘贴完整 ChatGPT Session JSON 并确认账号后提交。",
+      "recharging": "充值任务正在处理中，页面会自动刷新进度，请勿重复下单。",
+      "resubmit_required": "上次充值未成功，请核对下方提示后直接在本页重新提交资料（无需重新付款）。",
+      "manual_review": "订单正在人工核对中，请稍候或携带本站订单号联系客服协助。",
       "refunding": "订单正在办理退款，请稍候查看结果。",
-      "succeeded": "恭喜，本次充值已顺利完成。",
+      "succeeded": "恭喜，本次自动直充已顺利完成。",
       "closed": "本次充值订单已关闭。",
       "refunded": "订单已完成退款。"
     }

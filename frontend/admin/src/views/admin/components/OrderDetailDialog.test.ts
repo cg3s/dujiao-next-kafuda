@@ -20,7 +20,7 @@ vi.mock('@/utils/confirm', () => ({ confirmAction }))
 vi.mock('vue-i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('vue-i18n')>()
   const { ref } = await import('vue')
-  return { ...actual, useI18n: () => ({ t: (key: string) => key, locale: ref('en-US') }) }
+  return { ...actual, useI18n: () => ({ t: (key: string) => key, te: () => true, locale: ref('en-US') }) }
 })
 vi.mock('@/components/ui/dialog', async () => {
   const { defineComponent } = await import('vue')

@@ -134,7 +134,15 @@
 
           <!-- 规格 -->
           <div v-if="activeSkus.length" class="my-5">
-            <div class="mb-2.5 text-[13px] font-bold uppercase tracking-[0.04em] text-muted-foreground">{{ t('productDetail.skuTitle') }}</div>
+            <div class="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+              <div class="text-[13px] font-bold uppercase tracking-[0.04em] text-muted-foreground">{{ t('productDetail.skuTitle') }}</div>
+              <span
+                v-if="hostedDeliveryBadgeKey"
+                class="inline-flex items-center rounded-full bg-[color:var(--teal-soft)] px-2.5 py-0.5 text-[11px] font-bold text-[color:var(--teal-strong)]"
+              >
+                {{ t(hostedDeliveryBadgeKey) }}
+              </span>
+            </div>
             <div
               v-if="directSkuSpecs.length"
               role="tablist"
@@ -312,7 +320,7 @@ const {
   hasSkuPromotionPrice, getSkuPromotionSaveAmount,
   hasPromotionRules, getPromotionRules,
   formatPromotionRule, formatWholesaleTier, formatRelatedPostDate, normalizeSkuId,
-  loading, product, isDirect, isHostedRecharge, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
+  loading, product, isDirect, isHostedRecharge, hostedDeliveryBadgeKey, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
   activeSkus, directSkuSpecs, visibleSkus, selectedSku,
   selectedSkuMemberPrice, hasMemberPrice,
   hasSelectedSkuWholesalePrice, selectedSkuWholesaleFinalIsMember, selectedSkuWholesaleFinalPrice,

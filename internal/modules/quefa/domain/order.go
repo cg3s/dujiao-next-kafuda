@@ -37,6 +37,8 @@ var (
 	ErrOrderNotFound         = errors.New("quefa order not found")
 	ErrInvalidOrderSnapshot  = errors.New("quefa order snapshot invalid")
 	ErrFulfillmentNotAllowed = errors.New("quefa fulfillment entry not allowed")
+	ErrRedemptionNotAllowed  = errors.New("quefa redemption submission not allowed")
+	ErrCredentialInvalid     = errors.New("quefa redemption credential invalid")
 	ErrCancelBlockedByActive = errors.New("quefa order cannot be canceled while upstream is still payable")
 )
 
@@ -48,6 +50,20 @@ func (s Stage) IsTerminal() bool {
 // CanOpenFulfillmentEntry reports whether the buyer is allowed to open the hosted recharge URL.
 func (s Stage) CanOpenFulfillmentEntry() bool {
 	return s == StageWaitingSubmit || s == StageResubmitRequired
+}
+
+// CanSubmitRedemption reports whether the buyer may submit or retry credentials in-page via POST /v1/redemptions.
+func (o *Order) CanSubmitRedemption() bool {
+	if o == nil || o.Paused || o.RecoveryAction == "refund" || o.Stage.IsTerminal() {
+		return false
+	}
+	if o.UpstreamOrderID == nil || strings.TrimSpace(*o.UpstreamOrderID) == "" {
+		return false
+	}
+	if o.Stage == StageWaitingSubmit {
+		return true
+	}
+	return o.Stage == StageResubmitRequired && o.RetryAllowed && o.NextAction == "resubmit"
 }
 
 // Order tracks the Quefa hosted direct-recharge lifecycle bound 1:1 to a shop fulfillment child order.
@@ -74,6 +90,10 @@ type Order struct {
 	ProgressStage          string       `gorm:"type:varchar(64);not null;default:''" json:"progress_stage,omitempty"`
 	ProgressMessage        string       `gorm:"type:varchar(255);not null;default:''" json:"progress_message,omitempty"`
 	ProgressUpdatedAt      *time.Time   `json:"progress_updated_at,omitempty"`
+	AccountEmailMasked     string       `gorm:"type:varchar(160);not null;default:''" json:"account_email_masked,omitempty"`
+	Paused                 bool         `gorm:"not null;default:false" json:"paused"`
+	ErrorCategory          string       `gorm:"type:varchar(64);not null;default:''" json:"error_category,omitempty"`
+	FailureCode            string       `gorm:"type:varchar(64);not null;default:''" json:"failure_code,omitempty"`
 	Stage                  Stage        `gorm:"type:varchar(32);index;not null" json:"stage"`
 	UpstreamStatus         string       `gorm:"type:varchar(64);not null;default:''" json:"upstream_status,omitempty"`
 	ResultCode             string       `gorm:"type:varchar(64);not null;default:''" json:"result_code,omitempty"`

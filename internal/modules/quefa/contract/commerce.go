@@ -9,14 +9,37 @@ import (
 )
 
 var (
-	ErrSalesDisabled      = errors.New("quefa sales disabled")
-	ErrCatalogStale       = errors.New("quefa catalog stale or missing")
-	ErrProductUnavailable = errors.New("quefa product unavailable")
-	ErrCurrencyMismatch   = errors.New("quefa settlement currency mismatch")
-	ErrBelowCostFloor     = errors.New("quefa discounted amount below cost floor")
-	ErrCostNotConfigured  = errors.New("quefa sku cost not configured")
-	ErrWalletOnlyBlocked  = errors.New("quefa product unavailable in wallet-only payment mode")
+	ErrSalesDisabled        = errors.New("quefa sales disabled")
+	ErrCatalogStale         = errors.New("quefa catalog stale or missing")
+	ErrProductUnavailable   = errors.New("quefa product unavailable")
+	ErrCurrencyMismatch     = errors.New("quefa settlement currency mismatch")
+	ErrBelowCostFloor       = errors.New("quefa discounted amount below cost floor")
+	ErrCostNotConfigured    = errors.New("quefa sku cost not configured")
+	ErrWalletOnlyBlocked    = errors.New("quefa product unavailable in wallet-only payment mode")
+	ErrRedemptionNotAllowed = errors.New("quefa redemption submission not allowed")
+	ErrCredentialInvalid    = errors.New("quefa redemption credential invalid")
 )
+
+// RedemptionRejectedError wraps a white-label upstream validation rejection (HTTP 400/422)
+// so buyers receive actionable guidance without exposing internal upstream details.
+type RedemptionRejectedError struct {
+	Code    string
+	Message string
+}
+
+func (e *RedemptionRejectedError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message != "" {
+		return e.Message
+	}
+	return ErrCredentialInvalid.Error()
+}
+
+func (e *RedemptionRejectedError) Unwrap() error {
+	return ErrCredentialInvalid
+}
 
 // PurchaseTerms holds validated purchase eligibility and frozen pricing floor for one Quefa SKU.
 type PurchaseTerms struct {
@@ -46,13 +69,31 @@ type SalesReadiness struct {
 
 // BuyerStatus is the sanitized buyer-facing hosted-recharge status (never exposes cost, secrets, or fulfillment_url).
 type BuyerStatus struct {
-	Stage              string     `json:"stage"`
-	ProgressStage      string     `json:"progress_stage,omitempty"`
-	ProgressMessage    string     `json:"progress_message,omitempty"`
-	ProgressUpdatedAt  *time.Time `json:"progress_updated_at,omitempty"`
-	CanOpenFulfillment bool       `json:"can_open_fulfillment"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	CompletedAt        *time.Time `json:"completed_at,omitempty"`
+	Stage               string     `json:"stage"`
+	ProgressStage       string     `json:"progress_stage,omitempty"`
+	ProgressMessage     string     `json:"progress_message,omitempty"`
+	ProgressUpdatedAt   *time.Time `json:"progress_updated_at,omitempty"`
+	AccountEmailMasked  string     `json:"account_email_masked,omitempty"`
+	AttemptNo           int        `json:"attempt_no,omitempty"`
+	Paused              bool       `json:"paused,omitempty"`
+	RetryAllowed        bool       `json:"retry_allowed,omitempty"`
+	NextAction          string     `json:"next_action,omitempty"`
+	ErrorCategory       string     `json:"error_category,omitempty"`
+	FailureCode         string     `json:"failure_code,omitempty"`
+	CanSubmitRedemption bool       `json:"can_submit_redemption"`
+	CanOpenFulfillment  bool       `json:"can_open_fulfillment"`
+	HasHostedEntry      bool       `json:"has_hosted_entry"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	CompletedAt         *time.Time `json:"completed_at,omitempty"`
+}
+
+// SubmitRedemptionInput carries buyer-supplied credentials for in-page white-label auto-recharge.
+// Credentials must never be persisted or logged.
+type SubmitRedemptionInput struct {
+	CredentialMode         string
+	Session                string
+	AccessToken            string
+	CustomerConfirmedEmail bool
 }
 
 // FulfillmentEntryResult is returned only by authorized buyer actions when opening the hosted page.
@@ -79,6 +120,10 @@ type AdminOrderStatus struct {
 	ProgressStage        string     `json:"progress_stage,omitempty"`
 	ProgressMessage      string     `json:"progress_message,omitempty"`
 	ProgressUpdatedAt    *time.Time `json:"progress_updated_at,omitempty"`
+	AccountEmailMasked   string     `json:"account_email_masked,omitempty"`
+	Paused               bool       `json:"paused"`
+	ErrorCategory        string     `json:"error_category,omitempty"`
+	FailureCode          string     `json:"failure_code,omitempty"`
 	Stage                string     `json:"stage"`
 	UpstreamStatus       string     `json:"upstream_status,omitempty"`
 	ResultCode           string     `json:"result_code,omitempty"`

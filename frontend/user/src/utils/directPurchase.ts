@@ -32,6 +32,92 @@ export const getDirectSkuRegion = (sku?: {
   return raw || UNKNOWN_DIRECT_SKU_REGION
 }
 
+type HostedRechargeSkuLike = {
+  sku_code?: unknown
+  spec_values?: Record<string, unknown> | null
+}
+
+const getHostedProductCode = (sku?: HostedRechargeSkuLike | null): string => {
+  const fromSpec = typeof sku?.spec_values?.product_code === 'string' ? sku.spec_values.product_code.trim() : ''
+  if (fromSpec) return fromSpec.toLowerCase()
+  return typeof sku?.sku_code === 'string' ? sku.sku_code.trim().toLowerCase() : ''
+}
+
+export const isHostedChannel2Sku = (sku?: HostedRechargeSkuLike | null): boolean => {
+  const code = getHostedProductCode(sku)
+  if (code.includes('pro20x')) return true
+  const mode = typeof sku?.spec_values?.fulfillment_mode === 'string' ? sku.spec_values.fulfillment_mode.trim().toLowerCase() : ''
+  const region = getDirectSkuRegion(sku)
+  return mode === 'direct' && region === 'PH' && !code.includes('codex')
+}
+
+export const getHostedRechargeSkuGroup = (sku?: HostedRechargeSkuLike | null): string => {
+  const code = getHostedProductCode(sku)
+  if (code.startsWith('codex') || code.includes('_codex')) return 'codex'
+  if (isHostedChannel2Sku(sku)) return 'channel2'
+  const region = getDirectSkuRegion(sku)
+  if (region === 'PH') return 'ph'
+  if (region === 'EG') return 'egypt'
+  return region
+}
+
+export const buildHostedRechargeSkuGroups = (
+  skus: readonly HostedRechargeSkuLike[],
+  locale: string,
+  labels: { ph: string; channel2: string; egypt: string; codex: string; other: string },
+): DirectSkuSpecOption[] => {
+  const counts = new Map<string, number>()
+  for (const sku of skus) {
+    const group = getHostedRechargeSkuGroup(sku)
+    counts.set(group, (counts.get(group) ?? 0) + 1)
+  }
+  if (counts.size <= 1) return []
+  const order = ['ph', 'channel2', 'codex', 'egypt']
+  const keys = Array.from(counts.keys()).sort((a, b) => {
+    const ia = order.indexOf(a)
+    const ib = order.indexOf(b)
+    if (ia !== -1 || ib !== -1) {
+      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib)
+    }
+    return a.localeCompare(b)
+  })
+  return keys.map((key) => {
+    const count = counts.get(key) ?? 0
+    let name: string
+    if (key === 'ph') name = labels.ph
+    else if (key === 'channel2') name = labels.channel2
+    else if (key === 'egypt') name = labels.egypt
+    else if (key === 'codex') name = labels.codex
+    else name = formatDirectSkuRegionLabel(key, locale, labels.other)
+    return { value: key, label: `${name} (${count})` }
+  })
+}
+
+export const filterHostedRechargeSkusByGroup = <T extends HostedRechargeSkuLike>(
+  skus: readonly T[],
+  group: string,
+): T[] => skus.filter((sku) => getHostedRechargeSkuGroup(sku) === group)
+
+export const resolveHostedRechargeSkuIdForGroup = <T extends HostedRechargeSkuLike & {
+  id?: unknown
+  is_active?: boolean
+  is_sold_out?: boolean
+  stock_status?: string
+  price_amount?: unknown
+}>(
+  skus: readonly T[],
+  group: string,
+  options: {
+    getPriceCents?: (sku: T) => number | null
+    normalizeId: (id: unknown) => number
+  },
+): number => {
+  const inGroup = filterHostedRechargeSkusByGroup(skus, group)
+  if (inGroup.length === 0) return 0
+  const sorted = sortDirectSkusByPrice(inGroup, options.getPriceCents)
+  return options.normalizeId(sorted[0]?.id)
+}
+
 export const formatDirectSkuRegionLabel = (
   region: string,
   locale: string,

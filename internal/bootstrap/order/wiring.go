@@ -132,6 +132,18 @@ func New(c *container.Container) Handlers {
 				return qOrders.OpenFulfillmentEntry(ctx, order.ID)
 			},
 		)
+		handlers.User.SetHostedRechargeSubmitter(
+			func(ctx context.Context, orderNo string, userID uint, input quefacontract.SubmitRedemptionInput) (*quefacontract.BuyerStatus, error) {
+				order, err := oStore.GetByOrderNoAndUser(orderNo, userID)
+				if err != nil {
+					return nil, err
+				}
+				if order == nil || !order.HasQuefaHosted() {
+					return nil, ordertransport.ErrOrderNotFound
+				}
+				return qOrders.SubmitRedemption(ctx, order.ID, input)
+			},
+		)
 		handlers.Guest.SetHostedRecharge(
 			func(ctx context.Context, orderNo, email, password string) (*quefacontract.BuyerStatus, error) {
 				order, err := oStore.GetByOrderNoAndGuest(orderNo, email, password)
@@ -149,6 +161,18 @@ func New(c *container.Container) Handlers {
 					return nil, ordertransport.ErrGuestOrderNotFound
 				}
 				return qOrders.OpenFulfillmentEntry(ctx, order.ID)
+			},
+		)
+		handlers.Guest.SetHostedRechargeSubmitter(
+			func(ctx context.Context, orderNo, email, password string, input quefacontract.SubmitRedemptionInput) (*quefacontract.BuyerStatus, error) {
+				order, err := oStore.GetByOrderNoAndGuest(orderNo, email, password)
+				if err != nil {
+					return nil, err
+				}
+				if order == nil || !order.HasQuefaHosted() {
+					return nil, ordertransport.ErrGuestOrderNotFound
+				}
+				return qOrders.SubmitRedemption(ctx, order.ID, input)
 			},
 		)
 	}

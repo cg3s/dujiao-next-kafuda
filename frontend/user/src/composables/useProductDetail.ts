@@ -12,15 +12,20 @@ import { useUserProfileStore } from '../stores/userProfile'
 import { debounceAsync } from '../utils/debounce'
 import {
   buildDirectSkuSpecs,
+  buildHostedRechargeSkuGroups,
   filterDirectSkusBySpec,
+  filterHostedRechargeSkusByGroup,
   findLowestPriceDirectSkuIds,
   formatDirectSkuRegionLabel,
   getDirectSkuRegion,
+  getHostedRechargeSkuGroup,
   isDirectFulfillmentType,
   isDirectSkuAvailable,
+  isHostedChannel2Sku,
   isHostedRechargeType,
   isSingleItemDirectType,
   resolveDirectSkuIdForSpec,
+  resolveHostedRechargeSkuIdForGroup,
   sortDirectSkusByPrice,
 } from '../utils/directPurchase'
 import { amountToCents } from '../utils/money'
@@ -430,18 +435,43 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
   }
 
   const directSkuSpecs = computed(() => {
-    if (!isGptDirect.value) return []
-    return buildDirectSkuSpecs(activeSkus.value, skuDisplayText)
+    if (isGptDirect.value) {
+      return buildDirectSkuSpecs(activeSkus.value, skuDisplayText)
+    }
+    if (isHostedRecharge.value) {
+      return buildHostedRechargeSkuGroups(activeSkus.value, appStore.locale, {
+        ph: t('hostedRecharge.groups.ph'),
+        channel2: t('hostedRecharge.groups.channel2'),
+        egypt: t('hostedRecharge.groups.egypt'),
+        codex: t('hostedRecharge.groups.codex'),
+        other: t('hostedRecharge.groups.other'),
+      })
+    }
+    return []
   })
 
-  const visibleSkus = computed(() => (
-    directSkuSpecs.value.length
-      ? sortDirectSkusByPrice(
+  const hostedDeliveryBadgeKey = computed(() => {
+    if (!isHostedRecharge.value) return ''
+    return isHostedChannel2Sku(selectedSku.value)
+      ? 'hostedRecharge.deliveryTags.channelDirect'
+      : 'hostedRecharge.deliveryTags.autoRecharge'
+  })
+
+  const visibleSkus = computed(() => {
+    if (isGptDirect.value && directSkuSpecs.value.length) {
+      return sortDirectSkusByPrice(
         filterDirectSkusBySpec(activeSkus.value, activeSkuSpec.value, skuDisplayText),
         getSkuComparablePriceCents,
       )
-      : activeSkus.value
-  ))
+    }
+    if (isHostedRecharge.value) {
+      const scoped = directSkuSpecs.value.length
+        ? filterHostedRechargeSkusByGroup(activeSkus.value, activeSkuSpec.value)
+        : activeSkus.value
+      return sortDirectSkusByPrice(scoped, getSkuComparablePriceCents)
+    }
+    return activeSkus.value
+  })
 
   const skuButtonLabel = (sku: any) => (
     isGptDirect.value
@@ -460,6 +490,10 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
 
   const isLowestPriceSku = (sku: any) => lowestPriceSkuIds.value.has(normalizeSkuId(sku?.id))
 
+  const skuGroupKey = (sku: any) => (
+    isHostedRecharge.value ? getHostedRechargeSkuGroup(sku) : skuDisplayText(sku).trim()
+  )
+
   const syncActiveSkuSpec = () => {
     const specs = directSkuSpecs.value
     if (specs.length === 0) {
@@ -467,7 +501,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
       return
     }
     if (selectedSku.value) {
-      const selectedSpec = skuDisplayText(selectedSku.value).trim()
+      const selectedSpec = skuGroupKey(selectedSku.value)
       if (specs.some(({ value }) => value === selectedSpec)) {
         activeSkuSpec.value = selectedSpec
         return
@@ -481,12 +515,17 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
   const selectSkuSpec = (spec: string) => {
     if (!directSkuSpecs.value.some(({ value }) => value === spec)) return
     activeSkuSpec.value = spec
-    if (!selectedSku.value || skuDisplayText(selectedSku.value).trim() !== spec) {
-      selectedSkuId.value = resolveDirectSkuIdForSpec(activeSkus.value, spec, {
-        getSpecName: skuDisplayText,
-        getPriceCents: getSkuComparablePriceCents,
-        normalizeId: normalizeSkuId,
-      })
+    if (!selectedSku.value || skuGroupKey(selectedSku.value) !== spec) {
+      selectedSkuId.value = isHostedRecharge.value
+        ? resolveHostedRechargeSkuIdForGroup(activeSkus.value, spec, {
+            getPriceCents: getSkuComparablePriceCents,
+            normalizeId: normalizeSkuId,
+          })
+        : resolveDirectSkuIdForSpec(activeSkus.value, spec, {
+            getSpecName: skuDisplayText,
+            getPriceCents: getSkuComparablePriceCents,
+            normalizeId: normalizeSkuId,
+          })
     }
   }
 
@@ -509,14 +548,19 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
     if (isDirect.value && directSkuSpecs.value.length > 0) {
       const firstAvailable = rows.find((sku: any) => isSkuPurchasable(sku))
       const defaultSpec = firstAvailable
-        ? skuDisplayText(firstAvailable).trim()
+        ? skuGroupKey(firstAvailable)
         : (directSkuSpecs.value[0]?.value ?? '')
       if (defaultSpec) {
-        selectedSkuId.value = resolveDirectSkuIdForSpec(rows, defaultSpec, {
-          getSpecName: skuDisplayText,
-          getPriceCents: getSkuComparablePriceCents,
-          normalizeId: normalizeSkuId,
-        })
+        selectedSkuId.value = isHostedRecharge.value
+          ? resolveHostedRechargeSkuIdForGroup(rows, defaultSpec, {
+              getPriceCents: getSkuComparablePriceCents,
+              normalizeId: normalizeSkuId,
+            })
+          : resolveDirectSkuIdForSpec(rows, defaultSpec, {
+              getSpecName: skuDisplayText,
+              getPriceCents: getSkuComparablePriceCents,
+              normalizeId: normalizeSkuId,
+            })
         syncActiveSkuSpec()
         return
       }
@@ -842,7 +886,7 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
     formatPromotionRule, formatWholesaleTier, formatRelatedPostDate,
     normalizeSkuId,
     // 状态
-    loading, product, isDirect, isHostedRecharge, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
+    loading, product, isDirect, isHostedRecharge, hostedDeliveryBadgeKey, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
     activeSkus, directSkuSpecs, visibleSkus, selectedSku,
     // 价格计算
     selectedSkuMemberPrice, hasMemberPrice,

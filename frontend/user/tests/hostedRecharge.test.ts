@@ -2,9 +2,13 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  buildHostedRechargeSkuGroups,
   directCheckoutRestriction,
+  filterHostedRechargeSkusByGroup,
+  getHostedRechargeSkuGroup,
   HOSTED_RECHARGE,
   isDirectFulfillmentType,
+  isHostedChannel2Sku,
   isHostedRechargeType,
   isSingleItemDirectType,
 } from '../src/utils/directPurchase.ts'
@@ -51,7 +55,14 @@ test('hosted recharge order detection and status parser handle all valid stages'
     stage: 'waiting_submit',
     progress_stage: 'ready',
     progress_message: 'Ready for submission',
+    account_email_masked: 'u***@example.com',
+    attempt_no: 1,
+    paused: false,
+    retry_allowed: false,
+    next_action: 'wait',
+    can_submit_redemption: true,
     can_open_fulfillment: true,
+    has_hosted_entry: true,
     updated_at: '2026-11-23T12:00:00Z',
   })
   assert.deepEqual(parsed, {
@@ -59,7 +70,16 @@ test('hosted recharge order detection and status parser handle all valid stages'
     progress_stage: 'ready',
     progress_message: 'Ready for submission',
     progress_updated_at: undefined,
+    account_email_masked: 'u***@example.com',
+    attempt_no: 1,
+    paused: false,
+    retry_allowed: false,
+    next_action: 'wait',
+    error_category: undefined,
+    failure_code: undefined,
+    can_submit_redemption: true,
     can_open_fulfillment: true,
+    has_hosted_entry: true,
     updated_at: '2026-11-23T12:00:00Z',
     completed_at: undefined,
   })
@@ -70,6 +90,33 @@ test('hosted recharge order detection and status parser handle all valid stages'
   assert.equal(isTerminalHostedRechargeStage('closed'), true)
   assert.equal(isTerminalHostedRechargeStage('refunded'), true)
   assert.equal(isTerminalHostedRechargeStage('recharging'), false)
+})
+
+test('hosted recharge SKU grouping mirrors official channel/region categories', () => {
+  const skus = [
+    { id: 1, sku_code: 'chatgpt_plus_cdk_1m', spec_values: { product_code: 'chatgpt_plus_cdk_1m', country: 'PH' } },
+    { id: 2, sku_code: 'chatgpt_plus_pro20x_ph_1m', spec_values: { product_code: 'chatgpt_plus_pro20x_ph_1m', country: 'PH', fulfillment_mode: 'direct' } },
+    { id: 3, sku_code: 'codex_250', spec_values: { product_code: 'codex_250', country: 'PH' } },
+    { id: 4, sku_code: 'codex_500', spec_values: { product_code: 'codex_500', country: 'PH' } },
+  ]
+  assert.equal(getHostedRechargeSkuGroup(skus[0]), 'ph')
+  assert.equal(getHostedRechargeSkuGroup(skus[1]), 'channel2')
+  assert.equal(isHostedChannel2Sku(skus[1]), true)
+  assert.equal(getHostedRechargeSkuGroup(skus[2]), 'codex')
+
+  const groups = buildHostedRechargeSkuGroups(skus, 'zh-CN', {
+    ph: '菲律宾充值',
+    channel2: '渠道二直充',
+    egypt: '埃及订阅',
+    codex: 'Codex 点数',
+    other: '其他地区',
+  })
+  assert.deepEqual(groups, [
+    { value: 'ph', label: '菲律宾充值 (1)' },
+    { value: 'channel2', label: '渠道二直充 (1)' },
+    { value: 'codex', label: 'Codex 点数 (2)' },
+  ])
+  assert.equal(filterHostedRechargeSkusByGroup(skus, 'codex').length, 2)
 })
 
 test('storefront translations are white-labeled and contain no quefa or tibo.ink branding', () => {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -86,15 +88,32 @@ func (s *OrderService) GetBuyerStatusByParentOrder(ctx context.Context, parentOr
 	if err != nil || record == nil {
 		return nil, err
 	}
+	return toBuyerStatus(record), nil
+}
+
+func toBuyerStatus(record *quefadomain.Order) *quefacontract.BuyerStatus {
+	if record == nil {
+		return nil
+	}
+	hasHostedEntry := strings.TrimSpace(record.FulfillmentURL) != "" && quefadomain.ValidateFulfillmentURL(record.FulfillmentURL) == nil
 	return &quefacontract.BuyerStatus{
-		Stage:              string(record.Stage),
-		ProgressStage:      record.ProgressStage,
-		ProgressMessage:    record.ProgressMessage,
-		ProgressUpdatedAt:  record.ProgressUpdatedAt,
-		CanOpenFulfillment: record.Stage.CanOpenFulfillmentEntry() && record.RecoveryAction != "refund",
-		UpdatedAt:          record.UpdatedAt,
-		CompletedAt:        record.CompletedAt,
-	}, nil
+		Stage:               string(record.Stage),
+		ProgressStage:       record.ProgressStage,
+		ProgressMessage:     record.ProgressMessage,
+		ProgressUpdatedAt:   record.ProgressUpdatedAt,
+		AccountEmailMasked:  record.AccountEmailMasked,
+		AttemptNo:           record.AttemptNo,
+		Paused:              record.Paused,
+		RetryAllowed:        record.RetryAllowed,
+		NextAction:          record.NextAction,
+		ErrorCategory:       record.ErrorCategory,
+		FailureCode:         record.FailureCode,
+		CanSubmitRedemption: record.CanSubmitRedemption(),
+		CanOpenFulfillment:  record.Stage.CanOpenFulfillmentEntry() && record.RecoveryAction != "refund" && hasHostedEntry,
+		HasHostedEntry:      hasHostedEntry,
+		UpdatedAt:           record.UpdatedAt,
+		CompletedAt:         record.CompletedAt,
+	}
 }
 
 // GetAdminStatusByParentOrder returns operator-facing Quefa reconciliation status.
@@ -136,6 +155,10 @@ func toAdminStatus(r *quefadomain.Order) *quefacontract.AdminOrderStatus {
 		ProgressStage:        r.ProgressStage,
 		ProgressMessage:      r.ProgressMessage,
 		ProgressUpdatedAt:    r.ProgressUpdatedAt,
+		AccountEmailMasked:   r.AccountEmailMasked,
+		Paused:               r.Paused,
+		ErrorCategory:        r.ErrorCategory,
+		FailureCode:          r.FailureCode,
 		Stage:                string(r.Stage),
 		UpstreamStatus:       r.UpstreamStatus,
 		ResultCode:           r.ResultCode,
@@ -512,6 +535,157 @@ func (s *OrderService) OpenFulfillmentEntry(ctx context.Context, parentOrderID u
 	}, nil
 }
 
+const maxQuefaCredentialBytes = 256 * 1024
+
+// SubmitRedemption submits or retries buyer-supplied credentials in-page via POST /v1/redemptions.
+// Credentials are never persisted or logged, outbound HTTP runs strictly outside DB transactions,
+// and unknown/timeout failures keep the order in recharging state to avoid duplicate blind retries.
+func (s *OrderService) SubmitRedemption(ctx context.Context, parentOrderID uint, input quefacontract.SubmitRedemptionInput) (*quefacontract.BuyerStatus, error) {
+	if !input.CustomerConfirmedEmail {
+		return nil, &quefacontract.RedemptionRejectedError{Code: "confirmation_required"}
+	}
+	mode := strings.ToLower(strings.TrimSpace(input.CredentialMode))
+	if mode == "" {
+		mode = "session"
+	}
+	var cred quefacontract.RedemptionCredential
+	switch mode {
+	case "session", "session_json":
+		raw := strings.TrimSpace(input.Session)
+		if raw == "" || len(raw) > maxQuefaCredentialBytes {
+			return nil, &quefacontract.RedemptionRejectedError{Code: "credential_invalid"}
+		}
+		cred = quefacontract.RedemptionCredential{Mode: mode, Session: raw}
+	case "access_token":
+		raw := strings.TrimSpace(input.AccessToken)
+		if raw == "" {
+			raw = strings.TrimSpace(input.Session)
+		}
+		if raw == "" || len(raw) > maxQuefaCredentialBytes {
+			return nil, &quefacontract.RedemptionRejectedError{Code: "credential_invalid"}
+		}
+		cred = quefacontract.RedemptionCredential{Mode: "access_token", AccessToken: raw}
+	default:
+		return nil, &quefacontract.RedemptionRejectedError{Code: "credential_mode_invalid"}
+	}
+
+	if s.configSvc != nil {
+		s.configSvc.RefreshIfStale(ctx)
+	}
+	cfgSnap := s.currentConfig()
+	if cfgSnap.Gateway == nil || cfgSnap.GatewayConfigInvalid || cfgSnap.LoadError {
+		return nil, ErrGatewayNotConfigured
+	}
+
+	var (
+		childOrderID     uint
+		upstreamOrderID  string
+		idemKey          string
+		prevStage        quefadomain.Stage
+		prevRetryAllowed bool
+		prevNextAction   string
+		prevProgressMsg  string
+		prevFailureCode  string
+		claimedAttemptNo int
+	)
+	now := s.now().UTC()
+
+	err := s.store.WithinTransaction(ctx, func(tx quefacontract.Transaction) error {
+		record, err := tx.GetOrderByParentOrderIDForUpdate(parentOrderID)
+		if err != nil {
+			return err
+		}
+		if record == nil {
+			return quefadomain.ErrOrderNotFound
+		}
+		if !record.CanSubmitRedemption() {
+			return quefacontract.ErrRedemptionNotAllowed
+		}
+		childOrderID = record.OrderID
+		upstreamOrderID = strings.TrimSpace(*record.UpstreamOrderID)
+		prevStage = record.Stage
+		prevRetryAllowed = record.RetryAllowed
+		prevNextAction = record.NextAction
+		prevProgressMsg = record.ProgressMessage
+		prevFailureCode = record.FailureCode
+
+		claimedAttemptNo = record.AttemptNo + 1
+		idemKey = fmt.Sprintf("quefa-redeem-%s-a%d", record.MerchantOrderNo, claimedAttemptNo)
+		record.AttemptNo = claimedAttemptNo
+		record.Stage = quefadomain.StageRecharging
+		record.RetryAllowed = false
+		record.NextAction = "wait"
+		record.ProgressStage = "queued"
+		record.ProgressMessage = ""
+		record.FailureCode = ""
+		record.ErrorCategory = ""
+		record.PollStopped = false
+		nextPoll := now.Add(3 * time.Second)
+		record.NextPollAt = &nextPoll
+		record.UpdatedAt = now
+		return tx.SaveOrder(record)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	req := quefacontract.CreateRedemptionRequest{
+		Mode:                   quefadomain.DeliveryModeAutoRecharge,
+		OrderID:                upstreamOrderID,
+		Credential:             cred,
+		CustomerConfirmedEmail: true,
+	}
+
+	redSnap, submitErr := cfgSnap.Gateway.CreateRedemption(ctx, req, idemKey)
+	if submitErr != nil {
+		var apiErr *quefacontract.APIError
+		if errors.As(submitErr, &apiErr) && (apiErr.StatusCode == http.StatusBadRequest || apiErr.StatusCode == http.StatusUnprocessableEntity) {
+			// Explicit pre-acceptance validation rejection: keep buyer on form without leaving order stuck in recharging.
+			_ = s.store.WithinTransaction(ctx, func(tx quefacontract.Transaction) error {
+				record, txErr := tx.GetOrderByOrderIDForUpdate(childOrderID)
+				if txErr != nil || record == nil || record.Stage.IsTerminal() || record.AttemptNo != claimedAttemptNo {
+					return txErr
+				}
+				record.Stage = prevStage
+				record.RetryAllowed = prevRetryAllowed
+				record.NextAction = prevNextAction
+				if apiErr.Code != "" {
+					record.FailureCode = apiErr.Code
+				} else {
+					record.FailureCode = prevFailureCode
+				}
+				if apiErr.Message != "" {
+					record.ProgressMessage = apiErr.Message
+				} else {
+					record.ProgressMessage = prevProgressMsg
+				}
+				record.UpdatedAt = s.now().UTC()
+				return tx.SaveOrder(record)
+			})
+			return nil, &quefacontract.RedemptionRejectedError{
+				Code:    apiErr.Code,
+				Message: apiErr.Message,
+			}
+		}
+		// Unknown / timeout / 5xx / 409 error: keep recharging stage and poll upstream; never allow blind retry.
+		s.schedulePollAfter(ctx, childOrderID, 3*time.Second)
+		return nil, submitErr
+	}
+
+	if redSnap != nil {
+		if redSnap.AttemptNo == 0 {
+			redSnap.AttemptNo = claimedAttemptNo
+		}
+		if err := s.applyRedemptionSnapshot(ctx, childOrderID, redSnap, cfgSnap.Config); err != nil {
+			return nil, err
+		}
+		if !strings.EqualFold(redSnap.Status, "succeeded") && !strings.EqualFold(redSnap.Status, "completed") {
+			s.schedulePollAfter(ctx, childOrderID, 3*time.Second)
+		}
+	}
+	return s.GetBuyerStatusByParentOrder(ctx, parentOrderID)
+}
+
 // RecordWebhookEvent persists event_id deduplication and resolves the local child order ID for async sync.
 func (s *OrderService) RecordWebhookEvent(ctx context.Context, env quefacontract.WebhookEnvelope) (duplicate bool, childOrderID uint, err error) {
 	now := s.now().UTC()
@@ -773,7 +947,8 @@ func (s *OrderService) applyOrderSnapshot(ctx context.Context, childOrderID uint
 			if snap.ProgressUpdatedAt != nil {
 				record.ProgressUpdatedAt = snap.ProgressUpdatedAt
 			}
-			record.RetryAllowed = snap.RetryAllowed
+			record.Paused = snap.FulfillmentPaused
+			record.RetryAllowed = snap.RetryAllowed && !snap.FulfillmentPaused
 			record.NextAction = snap.NextAction
 			record.RecoveryAction = snap.RecoveryAction
 		}
@@ -970,10 +1145,16 @@ func (s *OrderService) applyRedemptionSnapshot(ctx context.Context, childOrderID
 		if red.ProgressUpdatedAt != nil {
 			record.ProgressUpdatedAt = red.ProgressUpdatedAt
 		}
+		if red.AccountEmailMasked != "" {
+			record.AccountEmailMasked = red.AccountEmailMasked
+		}
 		if red.ResultCode != "" {
 			record.ResultCode = red.ResultCode
 		}
-		record.RetryAllowed = red.RetryAllowed
+		record.Paused = red.Paused
+		record.FailureCode = red.FailureCode
+		record.ErrorCategory = red.ErrorCategory
+		record.RetryAllowed = red.RetryAllowed && !red.Paused
 		record.NextAction = red.NextAction
 		record.RecoveryAction = red.RecoveryAction
 		if strings.TrimSpace(red.FulfillmentURL) != "" && quefadomain.ValidateFulfillmentURL(red.FulfillmentURL) == nil {
@@ -1000,7 +1181,7 @@ func (s *OrderService) applyRedemptionSnapshot(ctx context.Context, childOrderID
 			record.NextPollAt = computeNextPoll(now, red.Hints, cfg.PollInterval())
 			record.PollStopped = red.Hints.PollStop
 		case status == "failed" || status == "cancelled" || status == "canceled":
-			if red.RetryAllowed && red.NextAction == "resubmit" {
+			if !red.Paused && red.RetryAllowed && red.NextAction == "resubmit" {
 				record.Stage = quefadomain.StageResubmitRequired
 				record.NextPollAt = computeNextPoll(now, red.Hints, cfg.PollInterval())
 				record.PollStopped = red.Hints.PollStop

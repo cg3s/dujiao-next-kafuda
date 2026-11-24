@@ -349,6 +349,23 @@ func (c *Client) LookupOrderByMerchantNo(ctx context.Context, merchantOrderNo st
 	return snap, nil
 }
 
+func (c *Client) CreateRedemption(ctx context.Context, req quefacontract.CreateRedemptionRequest, idempotencyKey string) (*quefacontract.RedemptionSnapshot, error) {
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	body, statusCode, hints, err := c.do(ctx, http.MethodPost, redemptionsPath, nil, raw, idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	snap, err := parseRedemptionSnapshot(body)
+	if err != nil {
+		return nil, &quefacontract.APIError{StatusCode: statusCode, Category: "invalid_response", Hints: hints}
+	}
+	snap.Hints = hints
+	return snap, nil
+}
+
 func (c *Client) GetRedemption(ctx context.Context, redemptionID string) (*quefacontract.RedemptionSnapshot, error) {
 	id := strings.TrimSpace(redemptionID)
 	if id == "" {
@@ -714,20 +731,26 @@ func parseRedemptionSnapshot(raw []byte) (*quefacontract.RedemptionSnapshot, err
 		return nil, fmt.Errorf("missing redemption_id and status")
 	}
 	return &quefacontract.RedemptionSnapshot{
-		RedemptionID:       redemptionID,
-		OrderID:            readString(m, "order_id"),
-		LatestRedemptionID: readString(m, "latest_redemption_id"),
-		Status:             status,
-		ResultCode:         readString(m, "result_code"),
-		AttemptNo:          readInt(m, "attempt_no"),
-		ProgressVersion:    readInt64(m, "progress_version"),
-		ProgressStage:      readString(m, "progress_stage"),
-		ProgressMessage:    readString(m, "progress_message", "message"),
-		ProgressUpdatedAt:  readTimePtr(m, "progress_updated_at"),
-		RetryAllowed:       readBool(m, "retry_allowed"),
-		NextAction:         strings.ToLower(readString(m, "next_action")),
-		RecoveryAction:     strings.ToLower(readString(m, "recovery_action")),
-		FulfillmentURL:     readString(m, "fulfillment_url"),
+		RedemptionID:              redemptionID,
+		OrderID:                   readString(m, "order_id"),
+		LatestRedemptionID:        readString(m, "latest_redemption_id"),
+		LatestAttemptNo:           readInt(m, "latest_attempt_no"),
+		Status:                    status,
+		Paused:                    readBool(m, "paused"),
+		FailureCode:               readString(m, "failure_code"),
+		ErrorCategory:             strings.ToLower(readString(m, "error_category")),
+		ResultCode:                readString(m, "result_code"),
+		AttemptNo:                 readInt(m, "attempt_no"),
+		ProgressVersion:           readInt64(m, "progress_version"),
+		ProgressStage:             readString(m, "progress_stage"),
+		ProgressMessage:           readString(m, "progress_message", "message"),
+		ProgressUpdatedAt:         readTimePtr(m, "progress_updated_at"),
+		AccountEmailMasked:        readString(m, "account_email_masked"),
+		FallbackRechargeAvailable: readBool(m, "fallback_recharge_available"),
+		RetryAllowed:              readBool(m, "retry_allowed"),
+		NextAction:                strings.ToLower(readString(m, "next_action")),
+		RecoveryAction:            strings.ToLower(readString(m, "recovery_action")),
+		FulfillmentURL:            readString(m, "fulfillment_url"),
 	}, nil
 }
 

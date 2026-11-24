@@ -70,6 +70,7 @@ func RegisterUserCancelRoute(user gin.IRoutes, handler *UserHandler) {
 func RegisterUserDirectAuthorizationRoute(user gin.IRoutes, handler *UserHandler, limits ...gin.HandlerFunc) {
 	user.POST("/orders/:order_no/direct-authorize", append(limits, handler.AuthorizeDirect)...)
 	user.POST("/orders/:order_no/hosted-recharge/entry", append(limits, handler.OpenHostedRechargeEntry)...)
+	user.POST("/orders/:order_no/hosted-recharge/submit", append(limits, handler.SubmitHostedRecharge)...)
 }
 
 // RegisterGuestReadRoutes 注册前台游客订单只读路由。
@@ -88,6 +89,7 @@ func RegisterGuestReadRoutes(guest gin.IRoutes, handler *GuestHandler) {
 func RegisterGuestDirectAuthorizationRoute(guest gin.IRoutes, handler *GuestHandler, limits ...gin.HandlerFunc) {
 	guest.POST("/orders/:order_no/direct-authorize", append(limits, handler.AuthorizeGuestDirect)...)
 	guest.POST("/orders/:order_no/hosted-recharge/entry", append(limits, handler.OpenGuestHostedRechargeEntry)...)
+	guest.POST("/orders/:order_no/hosted-recharge/submit", append(limits, handler.SubmitGuestHostedRecharge)...)
 }
 
 // RegisterUserPreviewRoute 注册前台用户订单预览路由。

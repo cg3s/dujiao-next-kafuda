@@ -109,7 +109,12 @@
             </div>
 
             <div v-if="activeSkus.length" class="mt-6">
-              <h2 class="mb-2.5 text-[13px] font-semibold text-muted-foreground">{{ t('productDetail.skuTitle') }}</h2>
+              <div class="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+                <h2 class="text-[13px] font-semibold text-muted-foreground">{{ t('productDetail.skuTitle') }}</h2>
+                <Badge v-if="hostedDeliveryBadgeKey" variant="info" size="sm" class="rounded-full">
+                  {{ t(hostedDeliveryBadgeKey) }}
+                </Badge>
+              </div>
               <div
                 v-if="directSkuSpecs.length"
                 role="tablist"
@@ -342,7 +347,7 @@ const {
   hasSkuPromotionPrice, getSkuPromotionSaveAmount,
   hasPromotionRules, getPromotionRules,
   formatPromotionRule, formatWholesaleTier, formatRelatedPostDate, normalizeSkuId,
-  loading, product, isDirect, isHostedRecharge, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
+  loading, product, isDirect, isHostedRecharge, hostedDeliveryBadgeKey, relatedPosts, currentImage, selectedSkuId, activeSkuSpec, quantity, purchaseWarning,
   activeSkus, directSkuSpecs, visibleSkus, selectedSku,
   selectedSkuMemberPrice, hasMemberPrice,
   hasSelectedSkuWholesalePrice, selectedSkuWholesaleFinalIsMember, selectedSkuWholesaleFinalPrice,

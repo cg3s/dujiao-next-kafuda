@@ -18,6 +18,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { notifyError } from '@/utils/notify'
 import { getLocalizedText } from '@/utils/format'
 import { buildAdminCategoryPath, createAdminCategoryChildCountMap, createAdminCategoryMap, flattenAdminCategories, isAdminProductCategorySelectable } from '@/utils/category'
+import {
+  resolveQuefaDeliveryModeKey,
+  resolveQuefaGroupKey,
+  resolveQuefaGroupLabel,
+  sortQuefaGroupKeys,
+} from '@/utils/quefaCatalog'
 
 const props = defineProps<{
   modelValue: boolean
@@ -744,6 +750,9 @@ const quefaAvailability = ref<Record<string, boolean>>({})
 const quefaQuoteRequired = ref<Record<string, boolean>>({})
 const quefaSupplyCostCNY = ref<Record<string, number>>({})
 const quefaFloorCNY = ref<Record<string, number>>({})
+const quefaDeliveryModes = ref<Record<string, string[]>>({})
+const quefaSearchQuery = ref('')
+const quefaOnlySellable = ref(false)
 
 const quefaSKUKey = (sku: Pick<SKUFormItem, 'sku_code' | 'spec_values'>) =>
   String(sku.spec_values?.product_code || sku.sku_code || '').trim().toLowerCase()
@@ -759,16 +768,21 @@ const resetQuefaCatalog = () => {
   quefaQuoteRequired.value = {}
   quefaSupplyCostCNY.value = {}
   quefaFloorCNY.value = {}
+  quefaDeliveryModes.value = {}
+  quefaSearchQuery.value = ''
+  quefaOnlySellable.value = false
 }
 
 const buildQuefaSpecValues = (
   productCode: string,
   title: string,
   paymentCountry?: string,
+  fulfillmentMode?: string,
   existing?: Record<string, string>,
 ): Record<string, string> => {
   const fallback = String(title || productCode).trim()
   const country = String(paymentCountry || existing?.country || '').trim().toUpperCase()
+  const mode = String(fulfillmentMode || existing?.fulfillment_mode || '').trim().toLowerCase()
   const out: Record<string, string> = {
     ...(existing || {}),
     product_code: productCode,
@@ -778,6 +792,9 @@ const buildQuefaSpecValues = (
   }
   if (country) {
     out.country = country
+  }
+  if (mode) {
+    out.fulfillment_mode = mode
   }
   return out
 }
@@ -827,6 +844,7 @@ const loadQuefaCatalog = async (sync: boolean) => {
     const quoteReqMap: Record<string, boolean> = {}
     const supplyMap: Record<string, number> = {}
     const floorMap: Record<string, number> = {}
+    const deliveryModesMap: Record<string, string[]> = {}
 
     const merged: SKUFormItem[] = products.map((item, idx) => {
       const productCode = String(item.product_code || '').trim()
@@ -837,6 +855,9 @@ const loadQuefaCatalog = async (sync: boolean) => {
       const sellable = Boolean(item.available && !quoteRequired && Number.isFinite(supply) && supply > 0)
       availableMap[key] = sellable
       quoteReqMap[key] = quoteRequired
+      if (Array.isArray(item.delivery_modes)) {
+        deliveryModesMap[key] = item.delivery_modes
+      }
       const presetCost = Number.isFinite(supply) && supply > 0 ? roundCurrencyAmount(supply) : undefined
       if (presetCost !== undefined) {
         supplyMap[key] = presetCost
@@ -845,7 +866,7 @@ const loadQuefaCatalog = async (sync: boolean) => {
 
       const existing = old.get(key)
       old.delete(key)
-      const specValues = buildQuefaSpecValues(productCode, item.title, item.payment_country, existing?.spec_values)
+      const specValues = buildQuefaSpecValues(productCode, item.title, item.payment_country, item.fulfillment_mode, existing?.spec_values)
       const defaults = createSKUFormItem({ sku_code: productCode, spec_values: specValues, is_active: false, sort_order: idx }, true)
       const resolvedCost = existing && existing.cost_price_amount !== ''
         ? existing.cost_price_amount
@@ -870,6 +891,7 @@ const loadQuefaCatalog = async (sync: boolean) => {
     quefaQuoteRequired.value = quoteReqMap
     quefaSupplyCostCNY.value = supplyMap
     quefaFloorCNY.value = floorMap
+    quefaDeliveryModes.value = deliveryModesMap
     quefaCatalogStale.value = Boolean(payload?.stale)
     quefaBlockReasons.value = Array.isArray(payload?.readiness?.block_reasons) ? payload.readiness.block_reasons : []
     quefaCatalogSyncedAt.value = payload?.synced_at ? new Date(payload.synced_at).toLocaleString() : ''
@@ -885,7 +907,27 @@ const loadQuefaCatalog = async (sync: boolean) => {
 }
 
 const unknownSKURegion = '__unknown__'
-const skuRegion = (sku: SKUFormItem) => sku.spec_values.country?.trim().toUpperCase() || unknownSKURegion
+const quefaGroupLabels = computed(() => ({
+  ph: t('quefa.groups.ph'),
+  channel2: t('quefa.groups.channel2'),
+  egypt: t('quefa.groups.egypt'),
+  codex: t('quefa.groups.codex'),
+  other: t('quefa.groups.other'),
+}))
+const skuRegion = (sku: SKUFormItem) => (
+  isQuefa.value
+    ? resolveQuefaGroupKey(sku)
+    : (sku.spec_values.country?.trim().toUpperCase() || unknownSKURegion)
+)
+const quefaSKUDeliveryLabel = (sku: SKUFormItem) => {
+  const key = quefaSKUKey(sku)
+  const modeKey = resolveQuefaDeliveryModeKey({
+    sku_code: sku.sku_code,
+    spec_values: sku.spec_values,
+    delivery_modes: quefaDeliveryModes.value[key],
+  })
+  return t(`quefa.deliveryModes.${modeKey}`)
+}
 const indexedSKUs = computed(() => form.skus.map((sku, index) => ({ sku, index })))
 const directSKURegions = computed(() => {
   if (!isDirect.value && !isQuefa.value) return []
@@ -894,14 +936,20 @@ const directSKURegions = computed(() => {
     const region = skuRegion(sku)
     counts.set(region, (counts.get(region) ?? 0) + 1)
   }
+  if (isQuefa.value) {
+    return sortQuefaGroupKeys(counts.keys()).map((key) => ({
+      value: key,
+      label: `${resolveQuefaGroupLabel(key, locale.value, quefaGroupLabels.value)} (${counts.get(key) ?? 0})`,
+    }))
+  }
   const displayNames = new Intl.DisplayNames([locale.value], { type: 'region' })
-  return Array.from(counts.entries(), ([region, count]) => {
+  return Array.from(counts.entries(), ([region]) => {
     const name = region === unknownSKURegion
       ? t('kafuda.unknownRegion')
       : /^[A-Z]{2}$/.test(region) ? (displayNames.of(region) || region) : region
     return {
       value: region,
-      label: isQuefa.value ? `${name} (${count})` : name,
+      label: name,
     }
   })
 })
@@ -912,11 +960,26 @@ watch(directSKURegions, (regions) => {
   }
 })
 
-const visibleSKUs = computed(() => (
-  directSKURegions.value.length
+const visibleSKUs = computed(() => {
+  let rows = directSKURegions.value.length
     ? indexedSKUs.value.filter(({ sku }) => skuRegion(sku) === activeSKURegion.value)
     : indexedSKUs.value
-))
+  if (isQuefa.value) {
+    const q = quefaSearchQuery.value.trim().toLowerCase()
+    if (quefaOnlySellable.value) {
+      rows = rows.filter(({ sku }) => Boolean(quefaAvailability.value[quefaSKUKey(sku)] || sku.is_active))
+    }
+    if (q) {
+      rows = rows.filter(({ sku }) => {
+        const code = String(sku.sku_code || '').toLowerCase()
+        const pcode = String(sku.spec_values?.product_code || '').toLowerCase()
+        const name = String(sku.spec_values?.[currentLang.value] || sku.spec_values?.['zh-CN'] || '').toLowerCase()
+        return code.includes(q) || pcode.includes(q) || name.includes(q)
+      })
+    }
+  }
+  return rows
+})
 
 type DirectOption = {
   sku_code: string
@@ -1518,6 +1581,18 @@ watch(
               {{ t('admin.products.form.skuEmpty') }}
             </div>
 
+            <div v-if="isQuefa && form.skus.length" class="flex flex-wrap items-center justify-between gap-2">
+              <Input
+                v-model="quefaSearchQuery"
+                class="h-8 w-full sm:w-64 text-xs"
+                :placeholder="t('quefa.catalogFilters.searchPlaceholder')"
+              />
+              <label class="inline-flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+                <input v-model="quefaOnlySellable" type="checkbox" class="h-3.5 w-3.5 rounded border-border accent-primary" />
+                <span>{{ t('quefa.catalogFilters.onlySellable') }}</span>
+              </label>
+            </div>
+
             <component :is="directSKURegions.length ? Tabs : 'div'" v-if="form.skus.length" v-model="activeSKURegion">
               <TabsList v-if="directSKURegions.length" :aria-label="t('kafuda.skuRegions')" class="h-auto w-full flex-wrap justify-start gap-1">
                 <TabsTrigger v-for="region in directSKURegions" :key="region.value" :value="region.value" class="flex-none">
@@ -1525,6 +1600,9 @@ watch(
                 </TabsTrigger>
               </TabsList>
               <component :is="directSKURegions.length ? TabsContent : 'div'" v-bind="directSKURegions.length ? { value: activeSKURegion } : {}" class="space-y-4">
+                <div v-if="isQuefa && visibleSKUs.length === 0" class="rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
+                  {{ t('quefa.catalogFilters.noMatches') }}
+                </div>
                 <div v-for="{ sku, index } in visibleSKUs" :key="`sku-${index}-${sku.id || 0}`" class="rounded-lg border border-border bg-background p-4 space-y-3">
                   <div class="flex items-center justify-between">
                     <div class="text-xs font-medium text-muted-foreground">{{ t('admin.products.form.skuItemTitle', { index: index + 1 }) }}</div>
@@ -1548,7 +1626,7 @@ watch(
                       </template>
                       <template v-else-if="isQuefa">
                         <p class="mt-1 text-xs text-muted-foreground">
-                          {{ sku.spec_values.product_code || sku.sku_code }}<template v-if="sku.spec_values.country"> · {{ sku.spec_values.country }}</template><template v-if="quefaSupplyCostCNY[quefaSKUKey(sku)] !== undefined"> · ¥{{ quefaSupplyCostCNY[quefaSKUKey(sku)]?.toFixed(2) }}</template>
+                          {{ sku.spec_values.product_code || sku.sku_code }} · {{ quefaSKUDeliveryLabel(sku) }}<template v-if="quefaSupplyCostCNY[quefaSKUKey(sku)] !== undefined"> · ¥{{ quefaSupplyCostCNY[quefaSKUKey(sku)]?.toFixed(2) }}</template>
                         </p>
                         <p v-if="quefaCatalogStale !== null && quefaQuoteRequired[quefaSKUKey(sku)]" class="text-xs text-amber-600">{{ t('quefa.skuQuoteRequired') }}</p>
                         <p v-else-if="quefaCatalogStale !== null && !quefaAvailability[quefaSKUKey(sku)]" class="text-xs text-amber-600">{{ t('quefa.skuUnavailable') }}</p>

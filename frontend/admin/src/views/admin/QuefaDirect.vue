@@ -24,15 +24,26 @@ import {
 } from '@/components/ui/table'
 import { notifyError, notifySuccess } from '@/utils/notify'
 import { formatDate } from '@/utils/format'
-import { RefreshCw, CheckCircle2, ShieldAlert } from 'lucide-vue-next'
+import {
+  resolveQuefaDeliveryModeKey,
+  resolveQuefaGroupKey,
+  resolveQuefaGroupLabel,
+  sortQuefaGroupKeys,
+} from '@/utils/quefaCatalog'
+import { RefreshCw, CheckCircle2, ShieldAlert, Copy, Check, Search } from 'lucide-vue-next'
 
-const { t, te } = useI18n()
+const { t, te, locale } = useI18n()
 const authStore = useAdminAuthStore()
 
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 const syncing = ref(false)
+const webhookCopied = ref(false)
+
+const activeGroup = ref('all')
+const statusFilter = ref<'all' | 'sellable' | 'quote_required' | 'unavailable'>('all')
+const searchQuery = ref('')
 
 const meta = reactive({
   source: 'config_file',
@@ -70,6 +81,84 @@ const form = reactive({
 const canUpdate = computed(() => authStore.hasPermission('PUT:/admin/quefa/config'))
 const canTest = computed(() => authStore.hasPermission('POST:/admin/quefa/config/test'))
 const canSync = computed(() => authStore.hasPermission('POST:/admin/quefa/catalog/sync'))
+
+const webhookUrl = computed(() => {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return `${window.location.origin}/api/v1/webhooks/quefa`
+  }
+  return '/api/v1/webhooks/quefa'
+})
+
+const groupLabels = computed(() => ({
+  ph: t('quefa.groups.ph'),
+  channel2: t('quefa.groups.channel2'),
+  egypt: t('quefa.groups.egypt'),
+  codex: t('quefa.groups.codex'),
+  other: t('quefa.groups.other'),
+}))
+
+const isProductSellable = (item: QuefaCatalogProduct) =>
+  Boolean(item.available && !item.quote_required && Number(item.supply_price || 0) > 0)
+
+const sellableCount = computed(() => products.value.filter(isProductSellable).length)
+
+const catalogGroups = computed(() => {
+  const counts = new Map<string, number>()
+  for (const item of products.value) {
+    const key = resolveQuefaGroupKey(item)
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  const ordered = sortQuefaGroupKeys(counts.keys())
+  return [
+    { value: 'all', label: `${t('quefa.groups.all')} (${products.value.length})` },
+    ...ordered.map((key) => ({
+      value: key,
+      label: `${resolveQuefaGroupLabel(key, locale.value, groupLabels.value)} (${counts.get(key) ?? 0})`,
+    })),
+  ]
+})
+
+const filteredProducts = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  return products.value.filter((item) => {
+    if (activeGroup.value !== 'all' && resolveQuefaGroupKey(item) !== activeGroup.value) {
+      return false
+    }
+    if (statusFilter.value === 'sellable' && !isProductSellable(item)) return false
+    if (statusFilter.value === 'quote_required' && !item.quote_required) return false
+    if (statusFilter.value === 'unavailable' && item.available) return false
+    if (q) {
+      const code = String(item.product_code || '').toLowerCase()
+      const title = String(item.title || '').toLowerCase()
+      if (!code.includes(q) && !title.includes(q)) return false
+    }
+    return true
+  })
+})
+
+const resetCatalogFilters = () => {
+  activeGroup.value = 'all'
+  statusFilter.value = 'all'
+  searchQuery.value = ''
+}
+
+const productGroupText = (item: QuefaCatalogProduct) =>
+  resolveQuefaGroupLabel(resolveQuefaGroupKey(item), locale.value, groupLabels.value)
+
+const productDeliveryText = (item: QuefaCatalogProduct) =>
+  t(`quefa.deliveryModes.${resolveQuefaDeliveryModeKey(item)}`)
+
+const copyWebhookUrl = async () => {
+  try {
+    await navigator.clipboard.writeText(webhookUrl.value)
+    webhookCopied.value = true
+    setTimeout(() => {
+      webhookCopied.value = false
+    }, 2000)
+  } catch {
+    // Ignore clipboard rejection in restricted contexts.
+  }
+}
 
 const parseDomains = (raw: string): string[] => {
   const seen = new Set<string>()
@@ -246,15 +335,58 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="rounded-xl border border-border bg-card p-4 flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center gap-2">
-        <CheckCircle2 v-if="meta.ready" class="h-5 w-5 text-emerald-600" />
-        <ShieldAlert v-else class="h-5 w-5 text-amber-500" />
-        <span class="text-sm font-medium">
-          {{ meta.ready ? t('quefa.readinessReady') : t('quefa.readinessBlocked') }}
-        </span>
+    <!-- 4-Card Overview Strip (aligned with tibo.ink API access workbench) -->
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div class="rounded-xl border border-border bg-card p-4 space-y-1.5">
+        <div class="text-xs text-muted-foreground">{{ t('quefa.overview.readiness') }}</div>
+        <div class="flex items-center gap-2">
+          <CheckCircle2 v-if="meta.ready" class="h-4 w-4 text-emerald-600 shrink-0" />
+          <ShieldAlert v-else class="h-4 w-4 text-amber-500 shrink-0" />
+          <span class="text-sm font-semibold">
+            {{ meta.ready ? t('quefa.readinessReady') : t('quefa.readinessBlocked') }}
+          </span>
+        </div>
       </div>
-      <div v-if="meta.block_reasons.length > 0" class="flex flex-wrap gap-1.5">
+
+      <div class="rounded-xl border border-border bg-card p-4 space-y-1.5">
+        <div class="text-xs text-muted-foreground">{{ t('quefa.overview.collectionMode') }}</div>
+        <div class="text-sm font-semibold truncate">
+          {{ t(`quefa.collectionModes.${form.collection_mode}`) }}
+        </div>
+      </div>
+
+      <div class="rounded-xl border border-border bg-card p-4 space-y-1.5">
+        <div class="text-xs text-muted-foreground">{{ t('quefa.overview.sellableCount') }}</div>
+        <div class="text-lg font-bold tabular-nums">
+          {{ sellableCount }} <span class="text-xs font-normal text-muted-foreground">/ {{ products.length }}</span>
+        </div>
+      </div>
+
+      <div class="rounded-xl border border-border bg-card p-4 space-y-1.5">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-xs text-muted-foreground">{{ t('quefa.overview.webhookUrl') }}</span>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+            @click="copyWebhookUrl"
+          >
+            <Check v-if="webhookCopied" class="h-3 w-3" />
+            <Copy v-else class="h-3 w-3" />
+            {{ webhookCopied ? t('quefa.overview.copied') : t('quefa.overview.copyWebhook') }}
+          </button>
+        </div>
+        <div class="font-mono text-xs text-foreground truncate" :title="webhookUrl">
+          {{ webhookUrl }}
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="meta.block_reasons.length > 0"
+      class="rounded-xl border border-amber-200 bg-amber-50/70 dark:border-amber-800/60 dark:bg-amber-950/20 p-4 flex flex-wrap items-center gap-2"
+    >
+      <ShieldAlert class="h-4 w-4 text-amber-600 shrink-0" />
+      <div class="flex flex-wrap gap-1.5">
         <Badge v-for="code in meta.block_reasons" :key="code" variant="secondary">
           {{ blockReasonLabel(code) }}
         </Badge>
@@ -349,6 +481,7 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- Catalog Snapshot (grouped by channel/region + search + status filters like tibo.ink store) -->
     <div class="rounded-xl border border-border bg-card p-6 space-y-4">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div>
@@ -362,32 +495,109 @@ onMounted(() => {
         </Badge>
       </div>
 
+      <div v-if="products.length > 0" class="space-y-3">
+        <!-- Channel / Region Category Tabs -->
+        <div class="flex flex-wrap gap-1.5" role="tablist">
+          <button
+            v-for="group in catalogGroups"
+            :key="group.value"
+            type="button"
+            role="tab"
+            :aria-selected="activeGroup === group.value"
+            class="rounded-full border px-3 py-1 text-xs font-medium transition-colors"
+            :class="activeGroup === group.value
+              ? 'border-primary bg-primary text-primary-foreground'
+              : 'border-border bg-background text-muted-foreground hover:text-foreground'"
+            @click="activeGroup = group.value"
+          >
+            {{ group.label }}
+          </button>
+        </div>
+
+        <!-- Search + Status Filter Bar -->
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="relative w-full sm:w-64">
+            <Search class="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              v-model="searchQuery"
+              class="h-8 pl-8 text-xs"
+              :placeholder="t('quefa.catalogFilters.searchPlaceholder')"
+            />
+          </div>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <button
+              v-for="opt in (['all', 'sellable', 'quote_required', 'unavailable'] as const)"
+              :key="opt"
+              type="button"
+              class="rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
+              :class="statusFilter === opt
+                ? 'border-foreground bg-foreground text-background'
+                : 'border-border bg-background text-muted-foreground hover:text-foreground'"
+              @click="statusFilter = opt"
+            >
+              {{ t(`quefa.catalogFilters.${opt === 'quote_required' ? 'quoteRequired' : opt}`) }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <Table>
         <TableHeader>
           <TableRow>
             <TableHead>{{ t('quefa.table.productCode') }}</TableHead>
             <TableHead>{{ t('quefa.table.title') }}</TableHead>
+            <TableHead>{{ t('quefa.table.group') }}</TableHead>
+            <TableHead>{{ t('quefa.table.deliveryMode') }}</TableHead>
             <TableHead>{{ t('quefa.table.supplyPrice') }}</TableHead>
             <TableHead>{{ t('quefa.table.minSalePrice') }}</TableHead>
-            <TableHead>{{ t('quefa.table.currency') }}</TableHead>
             <TableHead>{{ t('quefa.table.status') }}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           <TableRow v-if="products.length === 0">
-            <TableCell colspan="6" class="text-center text-muted-foreground py-6">
+            <TableCell colspan="7" class="text-center text-muted-foreground py-6">
               {{ t('quefa.catalogEmpty') }}
             </TableCell>
           </TableRow>
-          <TableRow v-for="item in products" :key="item.product_code">
+          <TableRow v-else-if="filteredProducts.length === 0">
+            <TableCell colspan="7" class="text-center text-muted-foreground py-6">
+              <div class="space-y-2">
+                <div>{{ t('quefa.catalogFilters.noMatches') }}</div>
+                <Button type="button" size="sm" variant="outline" @click="resetCatalogFilters">
+                  {{ t('quefa.catalogFilters.reset') }}
+                </Button>
+              </div>
+            </TableCell>
+          </TableRow>
+          <TableRow v-for="item in filteredProducts" :key="item.product_code">
             <TableCell class="font-mono text-xs">{{ item.product_code }}</TableCell>
-            <TableCell>{{ item.title }}</TableCell>
-            <TableCell>{{ item.supply_price }}</TableCell>
-            <TableCell>{{ item.min_sale_price || '-' }}</TableCell>
-            <TableCell>{{ item.currency }}</TableCell>
+            <TableCell class="font-medium">{{ item.title }}</TableCell>
             <TableCell>
-              <Badge :variant="item.available ? 'default' : 'secondary'">
-                {{ item.available ? t('quefa.available') : t('quefa.unavailable') }}
+              <Badge variant="outline" class="text-xs">
+                {{ productGroupText(item) }}
+              </Badge>
+            </TableCell>
+            <TableCell class="text-xs text-muted-foreground">
+              {{ productDeliveryText(item) }}
+            </TableCell>
+            <TableCell class="font-mono text-xs">
+              <Badge v-if="item.quote_required" variant="secondary" class="text-amber-700 dark:text-amber-300">
+                {{ t('quefa.quoteRequiredTag') }}
+              </Badge>
+              <span v-else>{{ item.supply_price }} {{ item.currency }}</span>
+            </TableCell>
+            <TableCell class="font-mono text-xs">
+              {{ item.quote_required ? '-' : (item.min_sale_price || '-') }}
+            </TableCell>
+            <TableCell>
+              <Badge v-if="isProductSellable(item)" variant="default">
+                {{ t('quefa.available') }}
+              </Badge>
+              <Badge v-else-if="item.quote_required" variant="secondary">
+                {{ t('quefa.quoteRequiredTag') }}
+              </Badge>
+              <Badge v-else variant="outline">
+                {{ t('quefa.unavailable') }}
               </Badge>
             </TableCell>
           </TableRow>

@@ -16,12 +16,13 @@ import (
 )
 
 type stubGateway struct {
-	productsRaw      json.RawMessage
-	productsErr      error
-	createOrderFn    func(ctx context.Context, req quefacontract.CreateOrderRequest, idem string) (*quefacontract.OrderSnapshot, error)
-	getOrderFn       func(ctx context.Context, id string) (*quefacontract.OrderSnapshot, error)
-	lookupMerchantFn func(ctx context.Context, no string) (*quefacontract.OrderSnapshot, error)
-	getRedemptionFn  func(ctx context.Context, id string) (*quefacontract.RedemptionSnapshot, error)
+	productsRaw        json.RawMessage
+	productsErr        error
+	createOrderFn      func(ctx context.Context, req quefacontract.CreateOrderRequest, idem string) (*quefacontract.OrderSnapshot, error)
+	getOrderFn         func(ctx context.Context, id string) (*quefacontract.OrderSnapshot, error)
+	lookupMerchantFn   func(ctx context.Context, no string) (*quefacontract.OrderSnapshot, error)
+	createRedemptionFn func(ctx context.Context, req quefacontract.CreateRedemptionRequest, idem string) (*quefacontract.RedemptionSnapshot, error)
+	getRedemptionFn    func(ctx context.Context, id string) (*quefacontract.RedemptionSnapshot, error)
 }
 
 func (g *stubGateway) GetProducts(ctx context.Context) (json.RawMessage, quefacontract.PollHints, error) {
@@ -45,6 +46,13 @@ func (g *stubGateway) LookupOrderByMerchantNo(ctx context.Context, no string) (*
 		return nil, &quefacontract.APIError{StatusCode: 404, Category: "not_found"}
 	}
 	return g.lookupMerchantFn(ctx, no)
+}
+
+func (g *stubGateway) CreateRedemption(ctx context.Context, req quefacontract.CreateRedemptionRequest, idem string) (*quefacontract.RedemptionSnapshot, error) {
+	if g.createRedemptionFn == nil {
+		return nil, &quefacontract.APIError{StatusCode: 500, Category: "upstream_error"}
+	}
+	return g.createRedemptionFn(ctx, req, idem)
 }
 
 func (g *stubGateway) GetRedemption(ctx context.Context, id string) (*quefacontract.RedemptionSnapshot, error) {
@@ -356,5 +364,94 @@ func TestProcurementRefundedDoesNotTriggerBuyerRefund(t *testing.T) {
 	adminView, _ := ordSvc.GetAdminStatusByParentOrder(ctx, 300)
 	if adminView.ProcurementRefundRef != "proc_ref_999" || adminView.Stage == string(quefadomain.StageRefunded) || refundedHookCalled != 0 {
 		t.Fatalf("procurement.refunded must only record procurement ref, not refund buyer: view=%+v hook=%d", adminView, refundedHookCalled)
+	}
+}
+
+func TestSubmitRedemptionLifecycleAndRetry(t *testing.T) {
+	var seenIdem []string
+	var callCount int
+	gw := &stubGateway{
+		createRedemptionFn: func(ctx context.Context, req quefacontract.CreateRedemptionRequest, idem string) (*quefacontract.RedemptionSnapshot, error) {
+			callCount++
+			seenIdem = append(seenIdem, idem)
+			if callCount == 1 {
+				return nil, &quefacontract.APIError{StatusCode: 422, Code: "session_invalid", Message: "登录凭据已失效，请重新获取"}
+			}
+			return &quefacontract.RedemptionSnapshot{
+				RedemptionID:       "ful_attempt_2",
+				OrderID:            req.OrderID,
+				AttemptNo:          2,
+				Status:             "queued",
+				ProgressStage:      "queued",
+				ProgressMessage:    "已受理，等待处理",
+				AccountEmailMasked: "b***@example.com",
+			}, nil
+		},
+	}
+	store, _, _, ordSvc := setupAppTest(t, gw)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	_ = store.CreateCheckout(quefacontract.CheckoutInput{
+		OrderID:            401,
+		ParentOrderID:      400,
+		ProductID:          1,
+		SKUID:              2,
+		ProductCode:        "chatgpt_plus_cdk_1m",
+		CollectionMode:     quefadomain.CollectionModePlatformCollect,
+		DeliveryMode:       quefadomain.DeliveryModeAutoRecharge,
+		CostFloorAmount:    money.FromDecimal(decimal.NewFromInt(110)),
+		SettlementCurrency: "CNY",
+		MerchantOrderNo:    "QF-400",
+		CreatedAt:          now,
+	})
+	upID := "QF000000400"
+	_ = store.WithinTransaction(ctx, func(tx quefacontract.Transaction) error {
+		rec, err := tx.GetOrderByOrderIDForUpdate(401)
+		if err != nil {
+			return err
+		}
+		rec.UpstreamOrderID = &upID
+		rec.Stage = quefadomain.StageWaitingSubmit
+		return tx.SaveOrder(rec)
+	})
+
+	// 1. Missing confirmation is rejected locally.
+	if _, err := ordSvc.SubmitRedemption(ctx, 400, quefacontract.SubmitRedemptionInput{
+		CredentialMode:         "session",
+		Session:                `{"accessToken":"tok"}`,
+		CustomerConfirmedEmail: false,
+	}); err == nil {
+		t.Fatalf("expected error when customer_confirmed_email is false")
+	}
+
+	// 2. Upstream 422 rolls back to waiting_submit so buyer can fix & resubmit with a fresh Idempotency-Key.
+	_, err := ordSvc.SubmitRedemption(ctx, 400, quefacontract.SubmitRedemptionInput{
+		CredentialMode:         "session",
+		Session:                `{"accessToken":"expired"}`,
+		CustomerConfirmedEmail: true,
+	})
+	if err == nil {
+		t.Fatalf("expected 422 rejection error")
+	}
+	st, _ := ordSvc.GetBuyerStatusByParentOrder(ctx, 400)
+	if st == nil || st.Stage != string(quefadomain.StageWaitingSubmit) || !st.CanSubmitRedemption {
+		t.Fatalf("expected rollback to waiting_submit after 422, got %+v", st)
+	}
+
+	// 3. Valid retry transitions to recharging with fresh Idempotency-Key and stores masked email.
+	st2, err := ordSvc.SubmitRedemption(ctx, 400, quefacontract.SubmitRedemptionInput{
+		CredentialMode:         "session",
+		Session:                `{"accessToken":"valid"}`,
+		CustomerConfirmedEmail: true,
+	})
+	if err != nil {
+		t.Fatalf("expected retry submit success, got %v", err)
+	}
+	if st2.Stage != string(quefadomain.StageRecharging) || st2.CanSubmitRedemption || st2.AccountEmailMasked != "b***@example.com" {
+		t.Fatalf("unexpected buyer status after submit: %+v", st2)
+	}
+	if len(seenIdem) != 2 || seenIdem[0] == seenIdem[1] {
+		t.Fatalf("expected distinct idempotency keys across attempts, got %v", seenIdem)
 	}
 }

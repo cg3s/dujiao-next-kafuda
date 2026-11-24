@@ -22,7 +22,16 @@ export interface HostedRechargeStatus {
   progress_stage?: string
   progress_message?: string
   progress_updated_at?: string
+  account_email_masked?: string
+  attempt_no?: number
+  paused?: boolean
+  retry_allowed?: boolean
+  next_action?: string
+  error_category?: string
+  failure_code?: string
+  can_submit_redemption: boolean
   can_open_fulfillment: boolean
+  has_hosted_entry?: boolean
   updated_at: string
   completed_at?: string
 }
@@ -82,7 +91,16 @@ export function parseHostedRechargeStatus(input: unknown): HostedRechargeStatus 
     progress_updated_at: typeof raw.progress_updated_at === 'string' && Number.isFinite(Date.parse(raw.progress_updated_at))
       ? raw.progress_updated_at
       : undefined,
+    account_email_masked: typeof raw.account_email_masked === 'string' && raw.account_email_masked ? raw.account_email_masked : undefined,
+    attempt_no: typeof raw.attempt_no === 'number' && Number.isFinite(raw.attempt_no) && raw.attempt_no > 0 ? Math.floor(raw.attempt_no) : undefined,
+    paused: Boolean(raw.paused),
+    retry_allowed: Boolean(raw.retry_allowed),
+    next_action: typeof raw.next_action === 'string' && raw.next_action ? raw.next_action : undefined,
+    error_category: typeof raw.error_category === 'string' && raw.error_category ? raw.error_category : undefined,
+    failure_code: typeof raw.failure_code === 'string' && raw.failure_code ? raw.failure_code : undefined,
+    can_submit_redemption: Boolean(raw.can_submit_redemption),
     can_open_fulfillment: Boolean(raw.can_open_fulfillment),
+    has_hosted_entry: Boolean(raw.has_hosted_entry),
     updated_at: raw.updated_at,
     completed_at: typeof raw.completed_at === 'string' && Number.isFinite(Date.parse(raw.completed_at))
       ? raw.completed_at
@@ -90,8 +108,8 @@ export function parseHostedRechargeStatus(input: unknown): HostedRechargeStatus 
   }
 }
 
-const ACTIVE_POLL_INTERVAL = 8_000
-const SLOW_POLL_INTERVAL = 30_000
+const ACTIVE_POLL_INTERVAL = 5_000
+const SLOW_POLL_INTERVAL = 25_000
 
 type HostedRechargeConnectivity = {
   isOnline: () => boolean

@@ -5,6 +5,7 @@ import { Package } from 'lucide-vue-next'
 import { adminAPI } from '@/api/admin'
 import type { AdminOrder, AdminOrderItem, AdminFulfillment, AdminProcurementOrder, AdminPayment } from '@/api/types'
 import IdCell from '@/components/IdCell.vue'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogScrollContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -43,7 +44,7 @@ const emit = defineEmits<{
   (e: 'openFulfillment', order: AdminOrder, parentId?: number): void
 }>()
 
-const { t, locale } = useI18n()
+const { t, te, locale } = useI18n()
 
 const detailLoading = ref(false)
 const detailError = ref('')
@@ -575,6 +576,19 @@ const submitManualConfirm = async () => {
 
 const quefaStatus = ref<any>(null)
 const quefaSyncing = ref(false)
+const quefaCopiedField = ref('')
+const copyQuefaField = async (field: string, value: string) => {
+  if (!value) return
+  try {
+    await navigator.clipboard.writeText(value)
+    quefaCopiedField.value = field
+    setTimeout(() => {
+      if (quefaCopiedField.value === field) quefaCopiedField.value = ''
+    }, 2000)
+  } catch {
+    // Ignore clipboard rejection in restricted contexts.
+  }
+}
 const hasQuefaItems = (order: AdminOrder | null) => {
   if (!order) return false
   const items = [...(order.items || []), ...(order.children || []).flatMap((c) => c.items || [])]
@@ -893,7 +907,18 @@ onUnmounted(() => { detailSession++ })
 
           <section v-if="quefaStatus" class="rounded-xl border border-border bg-muted/20 p-4 space-y-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
-              <h3 class="text-sm font-semibold text-foreground">{{ t('quefa.orderCardTitle') }}</h3>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-sm font-semibold text-foreground">{{ t('quefa.orderCardTitle') }}</h3>
+                <Badge
+                  :variant="quefaStatus.stage === 'succeeded' ? 'default' : (quefaStatus.stage === 'manual_review' || quefaStatus.stage === 'resubmit_required' || quefaStatus.stage === 'procurement_blocked' ? 'destructive' : 'secondary')"
+                  class="text-xs"
+                >
+                  {{ te(`quefa.orderStages.${quefaStatus.stage}`) ? t(`quefa.orderStages.${quefaStatus.stage}`) : quefaStatus.stage }}
+                </Badge>
+                <Badge v-if="quefaStatus.paused" variant="destructive" class="text-xs">
+                  {{ t('quefa.orderFields.pausedBadge') }}
+                </Badge>
+              </div>
               <Button
                 v-if="auth.hasPermission('POST:/admin/orders/:id/quefa/sync')"
                 size="sm"
@@ -905,15 +930,89 @@ onUnmounted(() => { detailSession++ })
               </Button>
             </div>
             <dl class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.stage') }}</dt><dd class="font-medium mt-0.5">{{ quefaStatus.stage }}</dd></div>
-              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.collectionMode') }}</dt><dd class="font-medium mt-0.5">{{ quefaStatus.collection_mode }}</dd></div>
-              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.productCode') }}</dt><dd class="font-mono mt-0.5">{{ quefaStatus.product_code }}</dd></div>
-              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.upstreamOrderId') }}</dt><dd class="font-mono mt-0.5">{{ quefaStatus.upstream_order_id || '-' }}</dd></div>
-              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.costFloor') }}</dt><dd class="font-medium mt-0.5">{{ quefaStatus.cost_floor_amount }} {{ quefaStatus.settlement_currency }}</dd></div>
-              <div><dt class="text-muted-foreground">{{ t('quefa.orderFields.exceptionCode') }}</dt><dd class="font-medium mt-0.5">{{ quefaStatus.exception_code || '-' }}</dd></div>
-              <div v-if="quefaStatus.refund_ref"><dt class="text-muted-foreground">{{ t('quefa.orderFields.refundRef') }}</dt><dd class="font-mono mt-0.5">{{ quefaStatus.refund_ref }}</dd></div>
-              <div v-if="quefaStatus.procurement_refund_ref"><dt class="text-muted-foreground">{{ t('quefa.orderFields.procurementRefundRef') }}</dt><dd class="font-mono mt-0.5">{{ quefaStatus.procurement_refund_ref }}</dd></div>
+              <div>
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.productCode') }}</dt>
+                <dd class="font-mono mt-0.5">{{ quefaStatus.product_code }}</dd>
+              </div>
+              <div>
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.upstreamOrderId') }}</dt>
+                <dd class="mt-0.5 flex items-center gap-1.5">
+                  <span class="font-mono">{{ quefaStatus.upstream_order_id || '-' }}</span>
+                  <button
+                    v-if="quefaStatus.upstream_order_id"
+                    type="button"
+                    class="rounded border border-border bg-background px-1.5 py-0.5 text-[11px] hover:bg-muted"
+                    @click="copyQuefaField('upstream', quefaStatus.upstream_order_id)"
+                  >
+                    {{ quefaCopiedField === 'upstream' ? t('quefa.orderFields.copied') : t('quefa.orderFields.copy') }}
+                  </button>
+                </dd>
+              </div>
+              <div>
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.latestRedemptionId') }}</dt>
+                <dd class="mt-0.5 flex items-center gap-1.5">
+                  <span class="font-mono">{{ quefaStatus.latest_redemption_id || '-' }}</span>
+                  <button
+                    v-if="quefaStatus.latest_redemption_id"
+                    type="button"
+                    class="rounded border border-border bg-background px-1.5 py-0.5 text-[11px] hover:bg-muted"
+                    @click="copyQuefaField('redemption', quefaStatus.latest_redemption_id)"
+                  >
+                    {{ quefaCopiedField === 'redemption' ? t('quefa.orderFields.copied') : t('quefa.orderFields.copy') }}
+                  </button>
+                </dd>
+              </div>
+              <div>
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.targetAccount') }}</dt>
+                <dd class="font-medium mt-0.5">{{ quefaStatus.account_email_masked || '-' }}</dd>
+              </div>
+              <div>
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.attemptNo') }}</dt>
+                <dd class="font-medium mt-0.5">{{ quefaStatus.attempt_no || 0 }}</dd>
+              </div>
+              <div>
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.retryAllowed') }}</dt>
+                <dd class="font-medium mt-0.5">
+                  {{ quefaStatus.retry_allowed ? t('quefa.orderFields.yes') : t('quefa.orderFields.no') }}
+                  <span v-if="quefaStatus.next_action" class="text-muted-foreground">({{ quefaStatus.next_action }})</span>
+                </dd>
+              </div>
+              <div>
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.collectionMode') }}</dt>
+                <dd class="font-medium mt-0.5">{{ te(`quefa.collectionModes.${quefaStatus.collection_mode}`) ? t(`quefa.collectionModes.${quefaStatus.collection_mode}`) : quefaStatus.collection_mode }}</dd>
+              </div>
+              <div>
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.costFloor') }}</dt>
+                <dd class="font-mono font-medium mt-0.5">{{ quefaStatus.cost_floor_amount }} {{ quefaStatus.settlement_currency }}</dd>
+              </div>
+              <div>
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.saleAmount') }}</dt>
+                <dd class="font-mono font-medium mt-0.5">{{ quefaStatus.sale_amount }} {{ quefaStatus.settlement_currency }}</dd>
+              </div>
+              <div v-if="quefaStatus.progress_stage">
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.progressStage') }}</dt>
+                <dd class="font-mono mt-0.5">{{ quefaStatus.progress_stage }}</dd>
+              </div>
+              <div v-if="quefaStatus.exception_code">
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.exceptionCode') }}</dt>
+                <dd class="font-medium text-destructive mt-0.5">{{ quefaStatus.exception_code }}</dd>
+              </div>
+              <div v-if="quefaStatus.refund_ref">
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.refundRef') }}</dt>
+                <dd class="font-mono mt-0.5">{{ quefaStatus.refund_ref }}</dd>
+              </div>
+              <div v-if="quefaStatus.procurement_refund_ref">
+                <dt class="text-muted-foreground">{{ t('quefa.orderFields.procurementRefundRef') }}</dt>
+                <dd class="font-mono mt-0.5">{{ quefaStatus.procurement_refund_ref }}</dd>
+              </div>
             </dl>
+            <div
+              v-if="quefaStatus.progress_message"
+              class="rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground"
+            >
+              <span class="font-medium text-foreground">{{ t('quefa.orderFields.progressMessage') }}: </span>
+              {{ quefaStatus.progress_message }}
+            </div>
           </section>
 
           <div class="rounded-xl border border-border bg-muted/20 p-4">

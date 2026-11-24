@@ -114,23 +114,47 @@ type OrderSnapshot struct {
 	Hints                     PollHints        `json:"-"`
 }
 
-// RedemptionSnapshot is the normalized response from GET /v1/redemptions/{id}.
+// RedemptionCredential carries buyer-supplied ChatGPT authorization credentials for POST /v1/redemptions.
+// Never log or persist this struct.
+type RedemptionCredential struct {
+	Mode        string `json:"mode"`
+	Session     string `json:"session,omitempty"`
+	AccessToken string `json:"access_token,omitempty"`
+	Email       string `json:"email,omitempty"`
+	Password    string `json:"password,omitempty"`
+}
+
+// CreateRedemptionRequest is the JSON body sent to POST /v1/redemptions (additionalProperties: false).
+type CreateRedemptionRequest struct {
+	Mode                   string               `json:"mode"`
+	OrderID                string               `json:"order_id"`
+	Credential             RedemptionCredential `json:"credential"`
+	CustomerConfirmedEmail bool                 `json:"customer_confirmed_email"`
+}
+
+// RedemptionSnapshot is the normalized response from POST /v1/redemptions or GET /v1/redemptions/{id}.
 type RedemptionSnapshot struct {
-	RedemptionID       string     `json:"redemption_id"`
-	OrderID            string     `json:"order_id"`
-	LatestRedemptionID string     `json:"latest_redemption_id"`
-	Status             string     `json:"status"`
-	ResultCode         string     `json:"result_code"`
-	AttemptNo          int        `json:"attempt_no"`
-	ProgressVersion    int64      `json:"progress_version"`
-	ProgressStage      string     `json:"progress_stage"`
-	ProgressMessage    string     `json:"progress_message"`
-	ProgressUpdatedAt  *time.Time `json:"progress_updated_at,omitempty"`
-	RetryAllowed       bool       `json:"retry_allowed"`
-	NextAction         string     `json:"next_action"`
-	RecoveryAction     string     `json:"recovery_action"`
-	FulfillmentURL     string     `json:"fulfillment_url"`
-	Hints              PollHints  `json:"-"`
+	RedemptionID              string     `json:"redemption_id"`
+	OrderID                   string     `json:"order_id"`
+	LatestRedemptionID        string     `json:"latest_redemption_id"`
+	LatestAttemptNo           int        `json:"latest_attempt_no"`
+	Status                    string     `json:"status"`
+	Paused                    bool       `json:"paused"`
+	FailureCode               string     `json:"failure_code"`
+	ErrorCategory             string     `json:"error_category"`
+	ResultCode                string     `json:"result_code"`
+	AttemptNo                 int        `json:"attempt_no"`
+	ProgressVersion           int64      `json:"progress_version"`
+	ProgressStage             string     `json:"progress_stage"`
+	ProgressMessage           string     `json:"progress_message"`
+	ProgressUpdatedAt         *time.Time `json:"progress_updated_at,omitempty"`
+	AccountEmailMasked        string     `json:"account_email_masked"`
+	FallbackRechargeAvailable bool       `json:"fallback_recharge_available"`
+	RetryAllowed              bool       `json:"retry_allowed"`
+	NextAction                string     `json:"next_action"`
+	RecoveryAction            string     `json:"recovery_action"`
+	FulfillmentURL            string     `json:"fulfillment_url"`
+	Hints                     PollHints  `json:"-"`
 }
 
 // Gateway defines the outbound Quefa Partner API V1 port.
@@ -140,5 +164,6 @@ type Gateway interface {
 	CreateOrderPaymentCode(ctx context.Context, upstreamOrderID string, idempotencyKey string) (*PaymentCodeSnapshot, error)
 	GetOrder(ctx context.Context, upstreamOrderID string) (*OrderSnapshot, error)
 	LookupOrderByMerchantNo(ctx context.Context, merchantOrderNo string) (*OrderSnapshot, error)
+	CreateRedemption(ctx context.Context, req CreateRedemptionRequest, idempotencyKey string) (*RedemptionSnapshot, error)
 	GetRedemption(ctx context.Context, redemptionID string) (*RedemptionSnapshot, error)
 }
