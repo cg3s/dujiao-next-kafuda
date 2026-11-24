@@ -114,9 +114,13 @@ export function useCheckout() {
       ? orderPaymentChannels.value
       : appStore.config?.payment_channels
     if (!Array.isArray(list)) return []
+    const hasHostedItem = cartItems.value.some((item) => isHostedRechargeType(item.fulfillmentType))
     let filtered = list.filter((channel: any) => {
       const providerType = String(channel?.provider_type || '').toLowerCase()
       const channelType = String(channel?.channel_type || '').toLowerCase()
+      if (!hasHostedItem && providerType === 'quefa') {
+        return false
+      }
       if (providerType === 'epay') {
         return ['wechat', 'wxpay', 'alipay', 'qqpay'].includes(channelType)
       }

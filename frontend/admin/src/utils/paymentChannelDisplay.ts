@@ -29,6 +29,7 @@ export const providerTypeLabel = (t: TranslateFn, value?: string) => {
     bepusdt: t('admin.paymentChannels.providerTypes.bepusdt'),
     epusdt: t('admin.paymentChannels.providerTypes.epusdt'),
     tokenpay: t('admin.paymentChannels.providerTypes.tokenpay'),
+    quefa: t('admin.paymentChannels.providerTypes.quefa'),
     wallet: t('admin.paymentChannels.providerTypes.wallet'),
   }
   if (!value) return '-'

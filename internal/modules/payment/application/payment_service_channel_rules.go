@@ -200,24 +200,87 @@ func (s *PaymentService) GetAllowedChannelIDsForOrder(items []orderdomain.OrderI
 	if len(items) == 0 {
 		return nil
 	}
+	hasQuefa := false
 	productIDSet := make(map[uint]struct{})
 	for _, item := range items {
+		if item.FulfillmentType == constants.FulfillmentTypeQuefaHosted {
+			hasQuefa = true
+		}
 		if item.ProductID > 0 {
 			productIDSet[item.ProductID] = struct{}{}
 		}
 	}
-	if len(productIDSet) == 0 {
-		return nil
+	var products []productdomain.Product
+	if len(productIDSet) > 0 && s.productRepo != nil {
+		productIDs := make([]uint, 0, len(productIDSet))
+		for id := range productIDSet {
+			productIDs = append(productIDs, id)
+		}
+		var err error
+		products, err = s.productRepo.ListByIDs(productIDs)
+		if err != nil {
+			return nil
+		}
+		for _, p := range products {
+			if p.FulfillmentType == constants.FulfillmentTypeQuefaHosted {
+				hasQuefa = true
+				break
+			}
+		}
 	}
-	productIDs := make([]uint, 0, len(productIDSet))
-	for id := range productIDSet {
-		productIDs = append(productIDs, id)
+	productAllowed := computeProductChannelIntersection(products)
+
+	channels, _, chErr := s.ListChannels(paymentcontract.ChannelListFilter{
+		Page:       1,
+		PageSize:   200,
+		ActiveOnly: true,
+	})
+	if chErr != nil {
+		return productAllowed
 	}
-	products, err := s.productRepo.ListByIDs(productIDs)
-	if err != nil {
-		return nil
+
+	mode := ""
+	if s.quefaCollectionMode != nil {
+		mode = s.quefaCollectionMode()
 	}
-	return computeProductChannelIntersection(products)
+
+	var scoped []paymentdomain.PaymentChannel
+	enforceScope := false
+	if hasQuefa && mode == "platform_collect" {
+		scoped = filterOnlyQuefaChannels(channels)
+		enforceScope = true
+	} else {
+		for _, ch := range channels {
+			if ch.ProviderType == constants.PaymentProviderQuefa {
+				enforceScope = true
+				break
+			}
+		}
+		if enforceScope {
+			scoped = filterOutQuefaChannels(channels)
+		}
+	}
+	if !enforceScope {
+		return productAllowed
+	}
+
+	var allowedSet map[uint]struct{}
+	if productAllowed != nil {
+		allowedSet = make(map[uint]struct{}, len(productAllowed))
+		for _, id := range productAllowed {
+			allowedSet[id] = struct{}{}
+		}
+	}
+	ids := make([]uint, 0, len(scoped))
+	for _, ch := range scoped {
+		if allowedSet != nil {
+			if _, ok := allowedSet[ch.ID]; !ok {
+				continue
+			}
+		}
+		ids = append(ids, ch.ID)
+	}
+	return ids
 }
 
 // AvailablePaymentChannelFilter 可用支付渠道过滤参数。
@@ -237,6 +300,9 @@ func (s *PaymentService) GetAvailableChannels(filter AvailablePaymentChannelFilt
 	customerFeeEnabled := s.settingService != nil && s.settingService.GetPaymentFeeConfig().CustomerFeeEnabled
 	available := make([]map[string]interface{}, 0, len(channels))
 	for _, channel := range channels {
+		if filter.PaymentType == constants.PaymentTypeWallet && channel.ProviderType == constants.PaymentProviderQuefa {
+			continue
+		}
 		if !matchesChannelAmount(channel, filter.TargetAmount) ||
 			!matchesChannelRole(channel, filter.User) ||
 			!matchesChannelMemberLevel(channel, filter.User) ||

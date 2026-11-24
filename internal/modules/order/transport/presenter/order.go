@@ -82,7 +82,7 @@ type OrderDetail struct {
 	PaidAt                   *time.Time        `json:"paid_at"`
 	CanceledAt               *time.Time        `json:"canceled_at"`
 	CreatedAt                time.Time         `json:"created_at"`
-	AllowedPaymentChannelIDs []uint            `json:"allowed_payment_channel_ids,omitempty"`
+	AllowedPaymentChannelIDs *[]uint           `json:"allowed_payment_channel_ids,omitempty"`
 	RefundRecords            []OrderRefundResp `json:"refund_records,omitempty"`
 	Items                    []OrderItemResp   `json:"items,omitempty"`
 	Fulfillment              *FulfillmentResp  `json:"fulfillment,omitempty"`

@@ -127,17 +127,21 @@ export function usePayment() {
 
   const filterChannelsByOrder = (list: any[]) => {
     if (!Array.isArray(list)) return []
+    const hostedOrder = isHostedRechargeOrder(order.value)
     let filtered = list.filter((channel: any) => {
       const providerType = String(channel?.provider_type || '').toLowerCase()
       const channelType = String(channel?.channel_type || '').toLowerCase()
+      if (!hostedOrder && providerType === 'quefa') {
+        return false
+      }
       if (providerType === 'epay') {
         return ['wechat', 'wxpay', 'alipay', 'qqpay'].includes(channelType)
       }
       return true
     })
-    // 按订单中商品允许的支付渠道过滤
+    // 按订单中商品允许的支付渠道过滤（空数组表示严格限制为无可用渠道）
     const allowedIds = order.value?.allowed_payment_channel_ids
-    if (Array.isArray(allowedIds) && allowedIds.length > 0) {
+    if (Array.isArray(allowedIds)) {
       const allowedSet = new Set(allowedIds.map(Number))
       filtered = filtered.filter((ch: any) => allowedSet.has(Number(ch?.id)))
     }

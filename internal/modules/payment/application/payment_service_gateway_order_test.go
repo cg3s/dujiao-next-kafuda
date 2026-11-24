@@ -1698,3 +1698,63 @@ func TestCreateWalletRechargeGatewayFailureAfterEarlyCallbackKeepsSuccess(t *tes
 		t.Fatalf("credited recharge was overwritten: payment=%s recharge=%s", payment.Status, recharge.Status)
 	}
 }
+
+func TestGetAllowedChannelIDsForOrderIsolatesQuefaChannels(t *testing.T) {
+	svc, db := setupPaymentServiceWalletTest(t)
+	normalCh := &paymentdomain.PaymentChannel{
+		Name:            "Alipay Epay",
+		ProviderType:    constants.PaymentProviderEpay,
+		ChannelType:     constants.PaymentChannelTypeAlipay,
+		InteractionMode: constants.PaymentInteractionQR,
+		IsActive:        true,
+	}
+	quefaCh := &paymentdomain.PaymentChannel{
+		Name:            "Quefa Alipay",
+		ProviderType:    constants.PaymentProviderQuefa,
+		ChannelType:     constants.PaymentChannelTypeAlipay,
+		InteractionMode: constants.PaymentInteractionQR,
+		IsActive:        true,
+	}
+	if err := db.Create(normalCh).Error; err != nil {
+		t.Fatalf("create normal channel failed: %v", err)
+	}
+	if err := db.Create(quefaCh).Error; err != nil {
+		t.Fatalf("create quefa channel failed: %v", err)
+	}
+
+	mode := "platform_collect"
+	svc.SetQuefaIntegration(func() string { return mode }, nil)
+
+	quefaItem := []orderdomain.OrderItem{{FulfillmentType: constants.FulfillmentTypeQuefaHosted}}
+	normalItem := []orderdomain.OrderItem{{FulfillmentType: constants.FulfillmentTypeAuto}}
+
+	// platform_collect: Quefa order only gets quefaCh
+	got := svc.GetAllowedChannelIDsForOrder(quefaItem)
+	if len(got) != 1 || got[0] != quefaCh.ID {
+		t.Fatalf("platform_collect quefa order expected [%d], got %v", quefaCh.ID, got)
+	}
+
+	// Normal order excludes quefaCh
+	gotNormal := svc.GetAllowedChannelIDsForOrder(normalItem)
+	if len(gotNormal) != 1 || gotNormal[0] != normalCh.ID {
+		t.Fatalf("normal order expected [%d], got %v", normalCh.ID, gotNormal)
+	}
+
+	// agent_collect: Quefa order uses shop's normal channels and excludes quefaCh
+	mode = "agent_collect"
+	gotAgent := svc.GetAllowedChannelIDsForOrder(quefaItem)
+	if len(gotAgent) != 1 || gotAgent[0] != normalCh.ID {
+		t.Fatalf("agent_collect quefa order expected [%d], got %v", normalCh.ID, gotAgent)
+	}
+
+	// Wallet recharge excludes quefaCh
+	walletChs, err := svc.GetAvailableChannels(AvailablePaymentChannelFilter{PaymentType: constants.PaymentTypeWallet})
+	if err != nil {
+		t.Fatalf("GetAvailableChannels(wallet) failed: %v", err)
+	}
+	for _, ch := range walletChs {
+		if ch["provider_type"] == constants.PaymentProviderQuefa {
+			t.Fatalf("wallet recharge must not expose quefa channel: %+v", ch)
+		}
+	}
+}

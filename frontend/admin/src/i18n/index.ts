@@ -1666,6 +1666,7 @@ const messages = {
           okpay: 'OKPAY',
           dujiaopay: 'DujiaoPay',
           tokenpay: 'TokenPay',
+          quefa: 'Quefa 托管代收',
           wallet: '钱包余额',
         },
         channelTypes: {
@@ -6712,6 +6713,7 @@ const messages = {
           okpay: 'OKPAY',
           dujiaopay: 'DujiaoPay',
           tokenpay: 'TokenPay',
+          quefa: 'Quefa 託管代收',
           wallet: '錢包餘額',
         },
         channelTypes: {
@@ -11758,6 +11760,7 @@ const messages = {
           okpay: 'OKPAY',
           dujiaopay: 'DujiaoPay',
           tokenpay: 'TokenPay',
+          quefa: 'Quefa Hosted Collect',
           wallet: 'Wallet Balance',
         },
         channelTypes: {

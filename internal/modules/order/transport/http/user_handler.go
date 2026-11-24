@@ -611,8 +611,8 @@ func enrichOrderWithAllowedChannels(payments PaymentChannelPolicy, order *orderd
 		allItems = append(allItems, child.Items...)
 	}
 	allowed := payments.GetAllowedChannelIDsForOrder(allItems)
-	if len(allowed) > 0 {
-		detail.AllowedPaymentChannelIDs = allowed
+	if allowed != nil {
+		detail.AllowedPaymentChannelIDs = &allowed
 	}
 }
 

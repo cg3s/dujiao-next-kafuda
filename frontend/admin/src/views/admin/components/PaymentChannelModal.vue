@@ -213,6 +213,11 @@ const okpayChannelOptions = [
   { value: 'trx', label: 'admin.paymentChannels.channelTypes.trx' },
 ]
 
+const quefaChannelOptions = [
+  { value: 'alipay', label: 'admin.paymentChannels.channelTypes.alipay' },
+  { value: 'usdt', label: 'admin.paymentChannels.channelTypes.usdt' },
+]
+
 // DujiaoPay 的 token_id 由管理员手动填写（形如 tron-usdt），不在前端维护固定列表，
 // 上游新增链或代币时无需同步改代码。默认值仅用于新建渠道时的初始填充。
 const dujiaopayDefaultTokenID = 'tron-usdt'
@@ -253,11 +258,20 @@ const formChannelOptions = computed(() => {
   if (form.provider_type === 'okpay') {
     return okpayChannelOptions
   }
+  if (form.provider_type === 'quefa') {
+    return quefaChannelOptions
+  }
   return channelOptions
 })
 
 const interactionModeOptions = computed(() => {
   if (form.provider_type === 'epay') {
+    return [
+      { value: 'qr', label: 'admin.paymentChannels.interactionModes.qr' },
+      { value: 'redirect', label: 'admin.paymentChannels.interactionModes.redirect' },
+    ]
+  }
+  if (form.provider_type === 'quefa') {
     return [
       { value: 'qr', label: 'admin.paymentChannels.interactionModes.qr' },
       { value: 'redirect', label: 'admin.paymentChannels.interactionModes.redirect' },
@@ -890,6 +904,13 @@ watch(
       }
     } else if (value === 'tokenpay') {
       form.channel_type = 'usdt'
+    } else if (value === 'quefa') {
+      const allowed = quefaChannelOptions.map((option) => option.value)
+      if (!allowed.includes(form.channel_type)) {
+        form.channel_type = allowed[0] || 'alipay'
+      }
+      form.fee_rate = '0'
+      form.fixed_fee = '0'
     }
     const allowedInteractionModes = interactionModeOptions.value.map((item) => item.value)
     if (!allowedInteractionModes.includes(form.interaction_mode)) {
@@ -1278,6 +1299,7 @@ const closeModal = () => {
                 <SelectItem value="epusdt">{{ t('admin.paymentChannels.providerTypes.epusdt') }}</SelectItem>
                 <SelectItem value="okpay">{{ t('admin.paymentChannels.providerTypes.okpay') }}</SelectItem>
                 <SelectItem value="tokenpay">{{ t('admin.paymentChannels.providerTypes.tokenpay') }}</SelectItem>
+                <SelectItem value="quefa">{{ t('admin.paymentChannels.providerTypes.quefa') }}</SelectItem>
               </SelectContent>
             </Select>
           </div>
