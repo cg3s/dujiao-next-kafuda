@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -53,12 +54,15 @@ type CatalogView struct {
 
 // CatalogService manages Quefa catalog caching, synchronization, and sellability checks.
 type CatalogService struct {
-	mu          sync.RWMutex
-	store       quefacontract.Store
-	configSvc   *ConfigService
-	profile     string
-	workerReady func(context.Context) bool
-	now         func() time.Time
+	mu             sync.RWMutex
+	refreshMu      sync.Mutex
+	store          quefacontract.Store
+	configSvc      *ConfigService
+	profile        string
+	workerReady    func(context.Context) bool
+	now            func() time.Time
+	nextRefresh    time.Time
+	rateLimitUntil time.Time
 }
 
 var _ quefacontract.CommercePolicy = (*CatalogService)(nil)
@@ -159,6 +163,140 @@ func (s *CatalogService) Sync(ctx context.Context) (*CatalogView, error) {
 		return nil, err
 	}
 	return s.Read(ctx)
+}
+
+// ResetRefreshSchedule clears the in-memory next-refresh pacing timestamp (preserving any active 429 backoff)
+// so updated TTL or refresh interval settings take effect promptly on the next worker tick.
+func (s *CatalogService) ResetRefreshSchedule() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.nextRefresh = s.rateLimitUntil
+	s.mu.Unlock()
+}
+
+// RefreshBeforeExpiry refreshes the Quefa catalog when missing or approaching TTL expiry,
+// returning the newly synced CatalogView when an upstream sync occurred.
+func (s *CatalogService) RefreshBeforeExpiry(ctx context.Context, interval time.Duration) (*CatalogView, error) {
+	if s == nil {
+		return nil, nil
+	}
+	snap := s.currentConfig()
+	ttl := snap.Config.CatalogTTL()
+	if snap.Gateway == nil || snap.GatewayConfigInvalid || snap.LoadError || ttl <= 0 || !s.refreshMu.TryLock() {
+		return nil, nil
+	}
+	defer s.refreshMu.Unlock()
+
+	now := s.now().UTC()
+	if s.beforeRefreshWindow(now) {
+		return nil, nil
+	}
+	lead := min(ttl/2, max(interval*2, 2*time.Minute))
+	s.setNextRefresh(now.Add(min(time.Minute, max(time.Second, lead/2))))
+
+	row, err := s.store.GetCatalog(ctx, s.profile)
+	if err != nil {
+		return nil, err
+	}
+	parsed, _ := s.decodeCatalog(row, ttl)
+	if parsed != nil && parsed.SyncedAt != nil {
+		expiresAt := parsed.SyncedAt.UTC().Add(ttl)
+		if expiresAt.After(now.Add(lead)) {
+			s.setNextRefresh(expiresAt.Add(-lead))
+			return nil, nil
+		}
+	}
+	synced, err := s.Sync(ctx)
+	if err != nil {
+		s.applyRateLimitBackoff(err)
+		return nil, err
+	}
+	s.setNextRefresh(now.Add(ttl - lead))
+	return synced, nil
+}
+
+// RefreshOnInterval refreshes the Quefa catalog on a fixed schedule while respecting
+// upstream 429 Retry-After backoff and skipping redundant fetches when a recent manual
+// or scheduled sync already completed within the interval.
+func (s *CatalogService) RefreshOnInterval(ctx context.Context, interval time.Duration) (*CatalogView, error) {
+	if s == nil {
+		return nil, nil
+	}
+	snap := s.currentConfig()
+	ttl := snap.Config.CatalogTTL()
+	if snap.Gateway == nil || snap.GatewayConfigInvalid || snap.LoadError || ttl <= 0 || interval <= 0 || !s.refreshMu.TryLock() {
+		return nil, nil
+	}
+	defer s.refreshMu.Unlock()
+
+	now := s.now().UTC()
+	if s.beforeRefreshWindow(now) {
+		return nil, nil
+	}
+	jitter := min(interval/10, 5*time.Second)
+	s.setNextRefresh(now.Add(min(time.Minute, max(time.Second, interval/2))))
+
+	row, err := s.store.GetCatalog(ctx, s.profile)
+	if err != nil {
+		return nil, err
+	}
+	parsed, _ := s.decodeCatalog(row, ttl)
+	lead := min(ttl/2, max(interval/2, time.Minute))
+	if parsed != nil && parsed.SyncedAt != nil {
+		dueAt := parsed.SyncedAt.UTC().Add(interval)
+		expiresAt := parsed.SyncedAt.UTC().Add(ttl)
+		if expiryDue := expiresAt.Add(-lead); expiryDue.Before(dueAt) {
+			dueAt = expiryDue
+		}
+		if dueAt.After(now.Add(jitter)) {
+			s.setNextRefresh(dueAt.Add(-jitter))
+			return nil, nil
+		}
+	}
+	synced, err := s.Sync(ctx)
+	if err != nil {
+		s.applyRateLimitBackoff(err)
+		return nil, err
+	}
+	nextDue := now.Add(interval - jitter)
+	if expiryDue := now.Add(ttl - lead); expiryDue.Before(nextDue) {
+		nextDue = expiryDue
+	}
+	s.setNextRefresh(nextDue)
+	return synced, nil
+}
+
+func (s *CatalogService) beforeRefreshWindow(now time.Time) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return now.Before(s.nextRefresh) || now.Before(s.rateLimitUntil)
+}
+
+func (s *CatalogService) setNextRefresh(t time.Time) {
+	s.mu.Lock()
+	if t.After(s.rateLimitUntil) {
+		s.nextRefresh = t
+	} else {
+		s.nextRefresh = s.rateLimitUntil
+	}
+	s.mu.Unlock()
+}
+
+func (s *CatalogService) applyRateLimitBackoff(err error) {
+	var apiErr *quefacontract.APIError
+	if errors.As(err, &apiErr) && apiErr != nil && apiErr.StatusCode == http.StatusTooManyRequests && apiErr.Hints.RetryAfter > 0 {
+		retryAt := s.now().UTC().Add(apiErr.Hints.RetryAfter)
+		s.mu.Lock()
+		if retryAt.After(s.rateLimitUntil) {
+			s.rateLimitUntil = retryAt
+		}
+		if retryAt.After(s.nextRefresh) {
+			s.nextRefresh = retryAt
+		}
+		s.mu.Unlock()
+	}
 }
 
 func (s *CatalogService) SalesReadiness(ctx context.Context) quefacontract.SalesReadiness {

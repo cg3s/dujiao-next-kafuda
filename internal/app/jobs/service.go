@@ -84,10 +84,11 @@ func registerPeriodicTasks(scheduler *asynq.Scheduler, consumer *jobconsumer.Con
 		}
 	}
 	if consumer.Quefa != nil {
-		pollInterval := 10 * time.Second
+		fallbackPoll := 10 * time.Second
 		if consumer.Config != nil {
-			pollInterval = consumer.Config.QuefaPollInterval()
+			fallbackPoll = consumer.Config.QuefaPollInterval()
 		}
+		pollInterval := consumer.Quefa.PollInterval(fallbackPoll)
 		task := queue.NewQuefaPollOrdersTask()
 		uniqueTTL := min(pollInterval, time.Minute)
 		entryID, err := scheduler.Register("@every "+pollInterval.String(), task, asynq.Queue(queue.DefaultQueue), asynq.Unique(uniqueTTL))
@@ -95,6 +96,32 @@ func registerPeriodicTasks(scheduler *asynq.Scheduler, consumer *jobconsumer.Con
 			logger.Warnw("scheduler_register_quefa_poll_orders_failed", "error", err, "interval", pollInterval.String())
 		} else {
 			logger.Infow("scheduler_register_quefa_poll_orders_ok", "entry_id", entryID, "interval", pollInterval.String())
+		}
+	}
+	if quefaCatalogRefreshConfigured(consumer) {
+		var fallbackInterval time.Duration
+		var fallbackFixed bool
+		if consumer.Config != nil {
+			fallbackInterval = consumer.Config.QuefaCatalogRefreshInterval()
+			fallbackFixed = consumer.Config.QuefaCatalogFixedRefresh()
+		}
+		interval, fixed := consumer.Quefa.CatalogRefreshSchedule(fallbackInterval, fallbackFixed)
+		mode := "before_expiry"
+		if fixed {
+			mode = "fixed_interval"
+		}
+		scheduleInterval := interval
+		if scheduleInterval <= 0 {
+			scheduleInterval = time.Minute
+			mode = "standby"
+		}
+		task := queue.NewQuefaRefreshCatalogTask()
+		uniqueTTL := min(scheduleInterval, time.Minute)
+		entryID, err := scheduler.Register("@every "+scheduleInterval.String(), task, asynq.Queue(queue.DefaultQueue), asynq.Unique(uniqueTTL))
+		if err != nil {
+			logger.Warnw("scheduler_register_quefa_refresh_catalog_failed", "error", err, "interval", scheduleInterval.String(), "mode", mode)
+		} else {
+			logger.Infow("scheduler_register_quefa_refresh_catalog_ok", "entry_id", entryID, "interval", scheduleInterval.String(), "mode", mode)
 		}
 	}
 	if consumer.AffiliateService != nil {
@@ -185,6 +212,37 @@ func kafudaCatalogRefreshActive(consumer *jobconsumer.Consumer) bool {
 	return consumer.KafudaGPT.GatewayRef() != nil && interval > 0
 }
 
+func quefaCatalogRefreshConfigured(consumer *jobconsumer.Consumer) bool {
+	if consumer == nil || consumer.Container == nil || consumer.Quefa == nil || consumer.Quefa.Catalog == nil {
+		return false
+	}
+	if consumer.Quefa.Config != nil {
+		return true
+	}
+	var fallbackInterval time.Duration
+	var fallbackFixed bool
+	if consumer.Config != nil {
+		fallbackInterval = consumer.Config.QuefaCatalogRefreshInterval()
+		fallbackFixed = consumer.Config.QuefaCatalogFixedRefresh()
+	}
+	interval, _ := consumer.Quefa.CatalogRefreshSchedule(fallbackInterval, fallbackFixed)
+	return consumer.Quefa.HasGateway() && interval > 0
+}
+
+func quefaCatalogRefreshActive(consumer *jobconsumer.Consumer) bool {
+	if consumer == nil || consumer.Container == nil || consumer.Quefa == nil || consumer.Quefa.Catalog == nil {
+		return false
+	}
+	var fallbackInterval time.Duration
+	var fallbackFixed bool
+	if consumer.Config != nil {
+		fallbackInterval = consumer.Config.QuefaCatalogRefreshInterval()
+		fallbackFixed = consumer.Config.QuefaCatalogFixedRefresh()
+	}
+	interval, _ := consumer.Quefa.CatalogRefreshSchedule(fallbackInterval, fallbackFixed)
+	return consumer.Quefa.HasGateway() && interval > 0
+}
+
 // Name 服务名称
 func (s *Service) Name() string {
 	if s == nil || s.name == "" {
@@ -212,7 +270,8 @@ func (s *Service) startScheduler(ctx context.Context) {
 	}
 	recoverConfigured := kafudaRecoveryConfigured(s.consumer)
 	refreshConfigured := kafudaCatalogRefreshActive(s.consumer)
-	if !recoverConfigured && !refreshConfigured {
+	quefaRefreshConfigured := quefaCatalogRefreshActive(s.consumer)
+	if !recoverConfigured && !refreshConfigured && !quefaRefreshConfigured {
 		return
 	}
 	// Recover existing work and warm the catalog cache at startup before the first periodic tick.
@@ -226,6 +285,11 @@ func (s *Service) startScheduler(ctx context.Context) {
 	if refreshConfigured {
 		if err := s.consumer.QueueClient.EnqueueKafudaRefreshCatalog(enqueueCtx); err != nil {
 			logger.Warnw("scheduler_enqueue_kafuda_refresh_catalog_failed", "error", err)
+		}
+	}
+	if quefaRefreshConfigured {
+		if err := s.consumer.QueueClient.EnqueueQuefaRefreshCatalog(enqueueCtx); err != nil {
+			logger.Warnw("scheduler_enqueue_quefa_refresh_catalog_failed", "error", err)
 		}
 	}
 }

@@ -86,6 +86,7 @@ describe('QuefaDirect', () => {
         sales_enabled: true,
         allowed_pay_domains: ['pay.example.com'],
         catalog_ttl_seconds: 300,
+        catalog_refresh_interval_seconds: 120,
         poll_interval_seconds: 10,
         poll_review_after_seconds: 86400,
         webhook_max_skew_seconds: 300,
@@ -122,6 +123,16 @@ describe('QuefaDirect', () => {
     expect(host.textContent).toContain('gpt-plus-1m')
     expect(host.textContent).toContain('GPT Plus 1M')
 
+    // Advanced cache & polling section starts collapsed and expands on toggle.
+    expect(host.querySelector('#quefa-catalog-refresh')).toBeNull()
+    const toggleAdvancedBtn = findButton('quefa.advanced.toggleShow')
+    expect(toggleAdvancedBtn).toBeTruthy()
+    toggleAdvancedBtn!.click()
+    await flush()
+    const refreshInput = host.querySelector('#quefa-catalog-refresh') as HTMLInputElement | null
+    expect(refreshInput).toBeTruthy()
+    expect(refreshInput!.value).toBe('120')
+
     const saveBtn = findButton('quefa.saveConfig')
     expect(saveBtn).toBeTruthy()
     saveBtn!.click()
@@ -135,6 +146,7 @@ describe('QuefaDirect', () => {
     expect(payload.client_secret).toBeUndefined()
     expect(payload.webhook_secret).toBeUndefined()
     expect(payload.allowed_pay_domains).toEqual(['pay.example.com'])
+    expect(payload.catalog_refresh_interval_seconds).toBe(120)
     expect(notify.notifySuccess).toHaveBeenCalledWith('quefa.saveSuccess')
   })
 

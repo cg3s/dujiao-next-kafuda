@@ -59,6 +59,10 @@ kafuda_gpt:
   sales_enabled: false                 # 仅控制新购，关停后仍处理已付订单
   reference_lookup_verified: false     # 验证控制台按 reference 人工查单渠道后设为 true
   catalog_ttl_seconds: 3600             # 目录缓存有效期（秒）
+  catalog_refresh_interval_seconds: 0   # 定时刷新直充目录间隔（秒）；0=按有效期临期自动刷新，>0=固定周期刷新（5–86400），<0=关闭自动刷新
+  poll_review_after_seconds: 86400      # 直充尝试迟迟无结论时转待核对，继续查单
+  poll_interval_seconds: 10             # 周期扫描与正常查单间隔，限制在 5–900 秒
+  review_after_seconds: 900
 
 # Quefa 托管直充：以下配置作为默认兜底值，也可在后台「对接管理 -> Quefa 直充」中动态配置（密钥 AES-256-GCM 加密入库）。
 quefa:
@@ -70,14 +74,11 @@ quefa:
   collection_mode: platform_collect     # platform_collect 或 agent_collect
   sales_enabled: false                  # 默认关闭销售，停售后在途订单继续同步
   allowed_pay_domains: []               # 允许的白标收银台/支付渠道域名白名单，严禁包含 tibo.ink 或 quefa
-  catalog_ttl_seconds: 3600
-  poll_interval_seconds: 10
-  poll_review_after_seconds: 86400
-  webhook_max_skew_seconds: 300
+  catalog_ttl_seconds: 3600             # 目录缓存有效期（秒）
   catalog_refresh_interval_seconds: 0   # 定时刷新直充目录间隔（秒）；0=按有效期临期自动刷新，>0=固定周期刷新（5–86400），<0=关闭自动刷新
-  poll_review_after_seconds: 86400      # 直充尝试迟迟无结论时转待核对，继续查单
-  poll_interval_seconds: 10            # 周期扫描与正常查单间隔，限制在 5–900 秒
-  review_after_seconds: 900
+  poll_interval_seconds: 10             # 周期扫描与正常查单间隔，限制在 5–900 秒
+  poll_review_after_seconds: 86400      # 订单迟迟无结论时转待核对，继续查单
+  webhook_max_skew_seconds: 300         # Webhook 时间戳允许偏差窗口（秒）
 
 telegram_auth:
   enabled: false

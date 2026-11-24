@@ -41,18 +41,19 @@ type Config struct {
 // QuefaConfig is deployment-side fallback configuration for Quefa hosted direct recharge.
 // Runtime settings are persisted encrypted in database and override these defaults.
 type QuefaConfig struct {
-	APIBaseURL             string   `mapstructure:"api_base_url"`
-	PartnerID              string   `mapstructure:"partner_id"`
-	KeyID                  string   `mapstructure:"key_id"`
-	ClientSecret           string   `mapstructure:"client_secret" json:"-"`
-	WebhookSecret          string   `mapstructure:"webhook_secret" json:"-"`
-	CollectionMode         string   `mapstructure:"collection_mode"`
-	SalesEnabled           bool     `mapstructure:"sales_enabled"`
-	AllowedPayDomains      []string `mapstructure:"allowed_pay_domains"`
-	CatalogTTLSeconds      int      `mapstructure:"catalog_ttl_seconds"`
-	PollIntervalSeconds    int      `mapstructure:"poll_interval_seconds"`
-	PollReviewAfterSeconds int      `mapstructure:"poll_review_after_seconds"`
-	WebhookMaxSkewSeconds  int      `mapstructure:"webhook_max_skew_seconds"`
+	APIBaseURL                    string   `mapstructure:"api_base_url"`
+	PartnerID                     string   `mapstructure:"partner_id"`
+	KeyID                         string   `mapstructure:"key_id"`
+	ClientSecret                  string   `mapstructure:"client_secret" json:"-"`
+	WebhookSecret                 string   `mapstructure:"webhook_secret" json:"-"`
+	CollectionMode                string   `mapstructure:"collection_mode"`
+	SalesEnabled                  bool     `mapstructure:"sales_enabled"`
+	AllowedPayDomains             []string `mapstructure:"allowed_pay_domains"`
+	CatalogTTLSeconds             int      `mapstructure:"catalog_ttl_seconds"`
+	CatalogRefreshIntervalSeconds int      `mapstructure:"catalog_refresh_interval_seconds"`
+	PollIntervalSeconds           int      `mapstructure:"poll_interval_seconds"`
+	PollReviewAfterSeconds        int      `mapstructure:"poll_review_after_seconds"`
+	WebhookMaxSkewSeconds         int      `mapstructure:"webhook_max_skew_seconds"`
 }
 
 // QuefaPollInterval is the minimum delay between scheduled Quefa status lookups.
@@ -62,6 +63,29 @@ func (c *Config) QuefaPollInterval() time.Duration {
 	}
 	seconds := max(5, min(900, c.Quefa.PollIntervalSeconds))
 	return time.Duration(seconds) * time.Second
+}
+
+// QuefaCatalogRefreshInterval lets the worker refresh the Quefa catalog
+// independently of order polling and sales_enabled.
+//   - CatalogRefreshIntervalSeconds < 0: disabled (returns 0)
+//   - CatalogRefreshIntervalSeconds > 0: fixed refresh interval (clamped to 5s–86400s)
+//   - CatalogRefreshIntervalSeconds == 0: auto-derived freshness check from CatalogTTLSeconds
+func (c *Config) QuefaCatalogRefreshInterval() time.Duration {
+	if c == nil || c.Quefa.CatalogTTLSeconds <= 0 || c.Quefa.CatalogRefreshIntervalSeconds < 0 {
+		return 0
+	}
+	if c.Quefa.CatalogRefreshIntervalSeconds > 0 {
+		seconds := max(5, min(86400, c.Quefa.CatalogRefreshIntervalSeconds))
+		return time.Duration(seconds) * time.Second
+	}
+	seconds := max(1, min(60, c.Quefa.CatalogTTLSeconds/4))
+	return time.Duration(seconds) * time.Second
+}
+
+// QuefaCatalogFixedRefresh reports whether Quefa catalog refresh runs on an explicit
+// fixed schedule rather than only refreshing before TTL expiry.
+func (c *Config) QuefaCatalogFixedRefresh() bool {
+	return c != nil && c.Quefa.CatalogTTLSeconds > 0 && c.Quefa.CatalogRefreshIntervalSeconds > 0
 }
 
 // KafudaGPTConfig is deployment-only merchant configuration. Closing sales does
@@ -527,6 +551,19 @@ func Load() *Config {
 	viper.SetDefault("kafuda_gpt.poll_review_after_seconds", 86400)
 	viper.SetDefault("kafuda_gpt.poll_interval_seconds", 10)
 	viper.SetDefault("kafuda_gpt.review_after_seconds", 900)
+	viper.SetDefault("quefa.api_base_url", "https://tibo.ink")
+	viper.SetDefault("quefa.partner_id", "")
+	viper.SetDefault("quefa.key_id", "")
+	viper.SetDefault("quefa.client_secret", "")
+	viper.SetDefault("quefa.webhook_secret", "")
+	viper.SetDefault("quefa.collection_mode", "platform_collect")
+	viper.SetDefault("quefa.sales_enabled", false)
+	viper.SetDefault("quefa.allowed_pay_domains", []string{})
+	viper.SetDefault("quefa.catalog_ttl_seconds", 3600)
+	viper.SetDefault("quefa.catalog_refresh_interval_seconds", 0)
+	viper.SetDefault("quefa.poll_interval_seconds", 10)
+	viper.SetDefault("quefa.poll_review_after_seconds", 86400)
+	viper.SetDefault("quefa.webhook_max_skew_seconds", 300)
 
 	// 环境变量支持
 	viper.AutomaticEnv()                                   // 自动读取环境变量

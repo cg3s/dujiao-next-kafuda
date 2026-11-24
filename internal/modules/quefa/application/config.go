@@ -40,36 +40,38 @@ type GatewayFactory func(baseURL, partnerID, keyID, clientSecret string) (quefac
 
 // RuntimeConfig holds the effective runtime parameters for Quefa hosted direct recharge.
 type RuntimeConfig struct {
-	APIBaseURL             string
-	PartnerID              string
-	KeyID                  string
-	ClientSecret           string
-	WebhookSecret          string
-	CollectionMode         string
-	SalesEnabled           bool
-	AllowedPayDomains      []string
-	CatalogTTLSeconds      int
-	PollIntervalSeconds    int
-	PollReviewAfterSeconds int
-	WebhookMaxSkewSeconds  int
+	APIBaseURL                    string
+	PartnerID                     string
+	KeyID                         string
+	ClientSecret                  string
+	WebhookSecret                 string
+	CollectionMode                string
+	SalesEnabled                  bool
+	AllowedPayDomains             []string
+	CatalogTTLSeconds             int
+	CatalogRefreshIntervalSeconds int
+	PollIntervalSeconds           int
+	PollReviewAfterSeconds        int
+	WebhookMaxSkewSeconds         int
 }
 
 // ConfigPatch represents an admin update payload for global Quefa settings.
 type ConfigPatch struct {
-	APIBaseURL             *string   `json:"api_base_url"`
-	PartnerID              *string   `json:"partner_id"`
-	KeyID                  *string   `json:"key_id"`
-	ClientSecret           *string   `json:"client_secret"`
-	ClearClientSecret      bool      `json:"clear_client_secret"`
-	WebhookSecret          *string   `json:"webhook_secret"`
-	ClearWebhookSecret     bool      `json:"clear_webhook_secret"`
-	CollectionMode         *string   `json:"collection_mode"`
-	SalesEnabled           *bool     `json:"sales_enabled"`
-	AllowedPayDomains      *[]string `json:"allowed_pay_domains"`
-	CatalogTTLSeconds      *int      `json:"catalog_ttl_seconds"`
-	PollIntervalSeconds    *int      `json:"poll_interval_seconds"`
-	PollReviewAfterSeconds *int      `json:"poll_review_after_seconds"`
-	WebhookMaxSkewSeconds  *int      `json:"webhook_max_skew_seconds"`
+	APIBaseURL                    *string   `json:"api_base_url"`
+	PartnerID                     *string   `json:"partner_id"`
+	KeyID                         *string   `json:"key_id"`
+	ClientSecret                  *string   `json:"client_secret"`
+	ClearClientSecret             bool      `json:"clear_client_secret"`
+	WebhookSecret                 *string   `json:"webhook_secret"`
+	ClearWebhookSecret            bool      `json:"clear_webhook_secret"`
+	CollectionMode                *string   `json:"collection_mode"`
+	SalesEnabled                  *bool     `json:"sales_enabled"`
+	AllowedPayDomains             *[]string `json:"allowed_pay_domains"`
+	CatalogTTLSeconds             *int      `json:"catalog_ttl_seconds"`
+	CatalogRefreshIntervalSeconds *int      `json:"catalog_refresh_interval_seconds"`
+	PollIntervalSeconds           *int      `json:"poll_interval_seconds"`
+	PollReviewAfterSeconds        *int      `json:"poll_review_after_seconds"`
+	WebhookMaxSkewSeconds         *int      `json:"webhook_max_skew_seconds"`
 }
 
 // ConfigSnapshot is an immutable view of active Quefa configuration.
@@ -86,21 +88,22 @@ type ConfigSnapshot struct {
 
 // AdminConfigView is the safe response returned to admin endpoints (never includes plaintext secrets).
 type AdminConfigView struct {
-	APIBaseURL              string    `json:"api_base_url"`
-	PartnerID               string    `json:"partner_id"`
-	KeyID                   string    `json:"key_id"`
-	ClientSecretConfigured  bool      `json:"client_secret_configured"`
-	WebhookSecretConfigured bool      `json:"webhook_secret_configured"`
-	CollectionMode          string    `json:"collection_mode"`
-	SalesEnabled            bool      `json:"sales_enabled"`
-	AllowedPayDomains       []string  `json:"allowed_pay_domains"`
-	CatalogTTLSeconds       int       `json:"catalog_ttl_seconds"`
-	PollIntervalSeconds     int       `json:"poll_interval_seconds"`
-	PollReviewAfterSeconds  int       `json:"poll_review_after_seconds"`
-	WebhookMaxSkewSeconds   int       `json:"webhook_max_skew_seconds"`
-	Source                  string    `json:"source"`
-	Version                 int64     `json:"version"`
-	UpdatedAt               time.Time `json:"updated_at"`
+	APIBaseURL                    string    `json:"api_base_url"`
+	PartnerID                     string    `json:"partner_id"`
+	KeyID                         string    `json:"key_id"`
+	ClientSecretConfigured        bool      `json:"client_secret_configured"`
+	WebhookSecretConfigured       bool      `json:"webhook_secret_configured"`
+	CollectionMode                string    `json:"collection_mode"`
+	SalesEnabled                  bool      `json:"sales_enabled"`
+	AllowedPayDomains             []string  `json:"allowed_pay_domains"`
+	CatalogTTLSeconds             int       `json:"catalog_ttl_seconds"`
+	CatalogRefreshIntervalSeconds int       `json:"catalog_refresh_interval_seconds"`
+	PollIntervalSeconds           int       `json:"poll_interval_seconds"`
+	PollReviewAfterSeconds        int       `json:"poll_review_after_seconds"`
+	WebhookMaxSkewSeconds         int       `json:"webhook_max_skew_seconds"`
+	Source                        string    `json:"source"`
+	Version                       int64     `json:"version"`
+	UpdatedAt                     time.Time `json:"updated_at"`
 }
 
 func (c RuntimeConfig) Clone() RuntimeConfig {
@@ -165,6 +168,9 @@ func (c RuntimeConfig) Validate() error {
 	if c.CatalogTTLSeconds < 10 || c.CatalogTTLSeconds > 86400 {
 		return ErrConfigInvalid
 	}
+	if c.CatalogRefreshIntervalSeconds < -1 || (c.CatalogRefreshIntervalSeconds > 0 && (c.CatalogRefreshIntervalSeconds < 5 || c.CatalogRefreshIntervalSeconds > 86400)) {
+		return ErrConfigInvalid
+	}
 	if c.PollIntervalSeconds < 5 || c.PollIntervalSeconds > 900 {
 		return ErrConfigInvalid
 	}
@@ -184,11 +190,34 @@ func (c RuntimeConfig) CatalogTTL() time.Duration {
 	return time.Duration(c.CatalogTTLSeconds) * time.Second
 }
 
+// CatalogRefreshInterval computes the background catalog refresh cadence (matching config.Config.QuefaCatalogRefreshInterval).
+func (c RuntimeConfig) CatalogRefreshInterval() time.Duration {
+	ttlSeconds := c.CatalogTTLSeconds
+	if ttlSeconds <= 0 {
+		ttlSeconds = DefaultCatalogTTLSeconds
+	}
+	if c.CatalogRefreshIntervalSeconds < 0 {
+		return 0
+	}
+	if c.CatalogRefreshIntervalSeconds > 0 {
+		seconds := max(5, min(86400, c.CatalogRefreshIntervalSeconds))
+		return time.Duration(seconds) * time.Second
+	}
+	seconds := max(1, min(60, ttlSeconds/4))
+	return time.Duration(seconds) * time.Second
+}
+
+// CatalogFixedRefresh reports whether catalog refresh runs on an explicit fixed schedule.
+func (c RuntimeConfig) CatalogFixedRefresh() bool {
+	return c.CatalogRefreshIntervalSeconds > 0
+}
+
 func (c RuntimeConfig) PollInterval() time.Duration {
 	if c.PollIntervalSeconds <= 0 {
 		return time.Duration(DefaultPollIntervalSeconds) * time.Second
 	}
-	return time.Duration(c.PollIntervalSeconds) * time.Second
+	seconds := max(5, min(900, c.PollIntervalSeconds))
+	return time.Duration(seconds) * time.Second
 }
 
 func (c RuntimeConfig) WebhookMaxSkew() time.Duration {
@@ -277,21 +306,22 @@ func (s *ConfigService) AdminView(ctx context.Context) AdminConfigView {
 	s.RefreshIfStale(ctx)
 	snap := s.Snapshot()
 	return AdminConfigView{
-		APIBaseURL:              snap.Config.APIBaseURL,
-		PartnerID:               snap.Config.PartnerID,
-		KeyID:                   snap.Config.KeyID,
-		ClientSecretConfigured:  snap.Config.ClientSecret != "",
-		WebhookSecretConfigured: snap.Config.WebhookSecret != "",
-		CollectionMode:          snap.Config.CollectionMode,
-		SalesEnabled:            snap.Config.SalesEnabled,
-		AllowedPayDomains:       append([]string(nil), snap.Config.AllowedPayDomains...),
-		CatalogTTLSeconds:       snap.Config.CatalogTTLSeconds,
-		PollIntervalSeconds:     snap.Config.PollIntervalSeconds,
-		PollReviewAfterSeconds:  snap.Config.PollReviewAfterSeconds,
-		WebhookMaxSkewSeconds:   snap.Config.WebhookMaxSkewSeconds,
-		Source:                  snap.Source,
-		Version:                 snap.Version,
-		UpdatedAt:               snap.UpdatedAt,
+		APIBaseURL:                    snap.Config.APIBaseURL,
+		PartnerID:                     snap.Config.PartnerID,
+		KeyID:                         snap.Config.KeyID,
+		ClientSecretConfigured:        snap.Config.ClientSecret != "",
+		WebhookSecretConfigured:       snap.Config.WebhookSecret != "",
+		CollectionMode:                snap.Config.CollectionMode,
+		SalesEnabled:                  snap.Config.SalesEnabled,
+		AllowedPayDomains:             append([]string(nil), snap.Config.AllowedPayDomains...),
+		CatalogTTLSeconds:             snap.Config.CatalogTTLSeconds,
+		CatalogRefreshIntervalSeconds: snap.Config.CatalogRefreshIntervalSeconds,
+		PollIntervalSeconds:           snap.Config.PollIntervalSeconds,
+		PollReviewAfterSeconds:        snap.Config.PollReviewAfterSeconds,
+		WebhookMaxSkewSeconds:         snap.Config.WebhookMaxSkewSeconds,
+		Source:                        snap.Source,
+		Version:                       snap.Version,
+		UpdatedAt:                     snap.UpdatedAt,
 	}
 }
 
@@ -370,6 +400,9 @@ func (s *ConfigService) Update(ctx context.Context, patch ConfigPatch) (AdminCon
 	if patch.CatalogTTLSeconds != nil {
 		next.CatalogTTLSeconds = *patch.CatalogTTLSeconds
 	}
+	if patch.CatalogRefreshIntervalSeconds != nil {
+		next.CatalogRefreshIntervalSeconds = *patch.CatalogRefreshIntervalSeconds
+	}
 	if patch.PollIntervalSeconds != nil {
 		next.PollIntervalSeconds = *patch.PollIntervalSeconds
 	}
@@ -405,21 +438,22 @@ func (s *ConfigService) Update(ctx context.Context, patch ConfigPatch) (AdminCon
 		nextVersion = 1
 	}
 	row := &quefadomain.Setting{
-		Profile:                s.profile,
-		APIBaseURL:             next.APIBaseURL,
-		PartnerID:              next.PartnerID,
-		KeyID:                  next.KeyID,
-		ClientSecretEncrypted:  encClient,
-		WebhookSecretEncrypted: encWebhook,
-		CollectionMode:         next.CollectionMode,
-		SalesEnabled:           next.SalesEnabled,
-		AllowedPayDomains:      next.AllowedPayDomains,
-		CatalogTTLSeconds:      next.CatalogTTLSeconds,
-		PollIntervalSeconds:    next.PollIntervalSeconds,
-		PollReviewAfterSeconds: next.PollReviewAfterSeconds,
-		WebhookMaxSkewSeconds:  next.WebhookMaxSkewSeconds,
-		Version:                nextVersion,
-		UpdatedAt:              now,
+		Profile:                       s.profile,
+		APIBaseURL:                    next.APIBaseURL,
+		PartnerID:                     next.PartnerID,
+		KeyID:                         next.KeyID,
+		ClientSecretEncrypted:         encClient,
+		WebhookSecretEncrypted:        encWebhook,
+		CollectionMode:                next.CollectionMode,
+		SalesEnabled:                  next.SalesEnabled,
+		AllowedPayDomains:             next.AllowedPayDomains,
+		CatalogTTLSeconds:             next.CatalogTTLSeconds,
+		CatalogRefreshIntervalSeconds: next.CatalogRefreshIntervalSeconds,
+		PollIntervalSeconds:           next.PollIntervalSeconds,
+		PollReviewAfterSeconds:        next.PollReviewAfterSeconds,
+		WebhookMaxSkewSeconds:         next.WebhookMaxSkewSeconds,
+		Version:                       nextVersion,
+		UpdatedAt:                     now,
 	}
 	if err := s.store.SaveSetting(ctx, row); err != nil {
 		return AdminConfigView{}, ErrConfigSaveFailed
@@ -559,17 +593,18 @@ func (s *ConfigService) decodeSetting(row *quefadomain.Setting) (RuntimeConfig, 
 		return RuntimeConfig{}, err
 	}
 	return RuntimeConfig{
-		APIBaseURL:             row.APIBaseURL,
-		PartnerID:              row.PartnerID,
-		KeyID:                  row.KeyID,
-		ClientSecret:           clientSecret,
-		WebhookSecret:          webhookSecret,
-		CollectionMode:         row.CollectionMode,
-		SalesEnabled:           row.SalesEnabled,
-		AllowedPayDomains:      append([]string(nil), row.AllowedPayDomains...),
-		CatalogTTLSeconds:      row.CatalogTTLSeconds,
-		PollIntervalSeconds:    row.PollIntervalSeconds,
-		PollReviewAfterSeconds: row.PollReviewAfterSeconds,
-		WebhookMaxSkewSeconds:  row.WebhookMaxSkewSeconds,
+		APIBaseURL:                    row.APIBaseURL,
+		PartnerID:                     row.PartnerID,
+		KeyID:                         row.KeyID,
+		ClientSecret:                  clientSecret,
+		WebhookSecret:                 webhookSecret,
+		CollectionMode:                row.CollectionMode,
+		SalesEnabled:                  row.SalesEnabled,
+		AllowedPayDomains:             append([]string(nil), row.AllowedPayDomains...),
+		CatalogTTLSeconds:             row.CatalogTTLSeconds,
+		CatalogRefreshIntervalSeconds: row.CatalogRefreshIntervalSeconds,
+		PollIntervalSeconds:           row.PollIntervalSeconds,
+		PollReviewAfterSeconds:        row.PollReviewAfterSeconds,
+		WebhookMaxSkewSeconds:         row.WebhookMaxSkewSeconds,
 	}.Normalize(), nil
 }

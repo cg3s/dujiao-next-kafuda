@@ -30,7 +30,7 @@ import {
   resolveQuefaGroupLabel,
   sortQuefaGroupKeys,
 } from '@/utils/quefaCatalog'
-import { RefreshCw, CheckCircle2, ShieldAlert, Copy, Check, Search } from 'lucide-vue-next'
+import { RefreshCw, CheckCircle2, ShieldAlert, Copy, Check, Search, ChevronDown, ChevronRight } from 'lucide-vue-next'
 
 const { t, te, locale } = useI18n()
 const authStore = useAdminAuthStore()
@@ -40,6 +40,7 @@ const saving = ref(false)
 const testing = ref(false)
 const syncing = ref(false)
 const webhookCopied = ref(false)
+const showAdvanced = ref(false)
 
 const activeGroup = ref('all')
 const statusFilter = ref<'all' | 'sellable' | 'quote_required' | 'unavailable'>('all')
@@ -73,6 +74,7 @@ const form = reactive({
   sales_enabled: false,
   allowed_pay_domains_text: '',
   catalog_ttl_seconds: 3600,
+  catalog_refresh_interval_seconds: 0,
   poll_interval_seconds: 10,
   poll_review_after_seconds: 86400,
   webhook_max_skew_seconds: 300,
@@ -199,6 +201,10 @@ const applyConfig = (cfg: QuefaConfigData, readiness?: { ready: boolean; block_r
   form.sales_enabled = Boolean(cfg.sales_enabled)
   form.allowed_pay_domains_text = (cfg.allowed_pay_domains || []).join('\n')
   form.catalog_ttl_seconds = Number(cfg.catalog_ttl_seconds || 3600)
+  form.catalog_refresh_interval_seconds =
+    cfg.catalog_refresh_interval_seconds !== undefined && cfg.catalog_refresh_interval_seconds !== null
+      ? Number(cfg.catalog_refresh_interval_seconds)
+      : 0
   form.poll_interval_seconds = Number(cfg.poll_interval_seconds || 10)
   form.poll_review_after_seconds = Number(cfg.poll_review_after_seconds || 86400)
   form.webhook_max_skew_seconds = Number(cfg.webhook_max_skew_seconds || 300)
@@ -239,6 +245,7 @@ const buildPatch = (): QuefaConfigUpdatePayload => {
     sales_enabled: form.sales_enabled,
     allowed_pay_domains: parseDomains(form.allowed_pay_domains_text),
     catalog_ttl_seconds: Number(form.catalog_ttl_seconds),
+    catalog_refresh_interval_seconds: Number(form.catalog_refresh_interval_seconds),
     poll_interval_seconds: Number(form.poll_interval_seconds),
     poll_review_after_seconds: Number(form.poll_review_after_seconds),
     webhook_max_skew_seconds: Number(form.webhook_max_skew_seconds),
@@ -453,25 +460,6 @@ onMounted(() => {
         <p class="text-xs text-muted-foreground">{{ t('quefa.allowedPayDomainsHint') }}</p>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div class="space-y-1.5">
-          <Label>{{ t('quefa.fields.catalogTtl') }}</Label>
-          <Input v-model.number="form.catalog_ttl_seconds" type="number" min="10" max="86400" />
-        </div>
-        <div class="space-y-1.5">
-          <Label>{{ t('quefa.fields.pollInterval') }}</Label>
-          <Input v-model.number="form.poll_interval_seconds" type="number" min="5" max="900" />
-        </div>
-        <div class="space-y-1.5">
-          <Label>{{ t('quefa.fields.pollReviewAfter') }}</Label>
-          <Input v-model.number="form.poll_review_after_seconds" type="number" min="60" max="604800" />
-        </div>
-        <div class="space-y-1.5">
-          <Label>{{ t('quefa.fields.webhookMaxSkew') }}</Label>
-          <Input v-model.number="form.webhook_max_skew_seconds" type="number" min="30" max="3600" />
-        </div>
-      </div>
-
       <div class="flex items-center justify-between rounded-lg border border-border p-3">
         <div>
           <div class="text-sm font-medium">{{ t('quefa.fields.salesEnabled') }}</div>
@@ -603,6 +591,94 @@ onMounted(() => {
           </TableRow>
         </TableBody>
       </Table>
+    </div>
+
+    <!-- Collapsible Advanced Cache & Polling Settings (aligned with KafudaDirect) -->
+    <div class="rounded-xl border border-border bg-card p-6 space-y-4">
+      <div class="flex items-center justify-between gap-4">
+        <div>
+          <h2 class="text-base font-semibold">{{ t('quefa.advanced.title') }}</h2>
+          <p class="mt-1 text-xs text-muted-foreground">{{ t('quefa.advanced.subtitle') }}</p>
+        </div>
+        <Button type="button" variant="ghost" size="sm" @click="showAdvanced = !showAdvanced">
+          <ChevronDown v-if="showAdvanced" class="mr-1 h-4 w-4" />
+          <ChevronRight v-else class="mr-1 h-4 w-4" />
+          {{ showAdvanced ? t('quefa.advanced.toggleHide') : t('quefa.advanced.toggleShow') }}
+        </Button>
+      </div>
+
+      <div v-if="showAdvanced" class="space-y-4 border-t pt-4">
+        <div class="grid gap-5 md:grid-cols-2">
+          <div class="space-y-1.5">
+            <Label for="quefa-catalog-ttl">{{ t('quefa.advanced.catalogTtlSeconds') }}</Label>
+            <Input
+              id="quefa-catalog-ttl"
+              v-model.number="form.catalog_ttl_seconds"
+              type="number"
+              min="10"
+              max="86400"
+              :disabled="!canUpdate"
+            />
+            <p class="text-xs text-muted-foreground">{{ t('quefa.advanced.catalogTtlHint') }}</p>
+          </div>
+
+          <div class="space-y-1.5">
+            <Label for="quefa-catalog-refresh">{{ t('quefa.advanced.catalogRefreshIntervalSeconds') }}</Label>
+            <Input
+              id="quefa-catalog-refresh"
+              v-model.number="form.catalog_refresh_interval_seconds"
+              type="number"
+              min="-1"
+              max="86400"
+              :disabled="!canUpdate"
+            />
+            <p class="text-xs text-muted-foreground">{{ t('quefa.advanced.catalogRefreshHint') }}</p>
+          </div>
+
+          <div class="space-y-1.5">
+            <Label for="quefa-poll-interval">{{ t('quefa.advanced.pollIntervalSeconds') }}</Label>
+            <Input
+              id="quefa-poll-interval"
+              v-model.number="form.poll_interval_seconds"
+              type="number"
+              min="5"
+              max="900"
+              :disabled="!canUpdate"
+            />
+            <p class="text-xs text-muted-foreground">{{ t('quefa.advanced.pollIntervalHint') }}</p>
+          </div>
+
+          <div class="space-y-1.5">
+            <Label for="quefa-poll-review-after">{{ t('quefa.advanced.pollReviewAfterSeconds') }}</Label>
+            <Input
+              id="quefa-poll-review-after"
+              v-model.number="form.poll_review_after_seconds"
+              type="number"
+              min="60"
+              max="604800"
+              :disabled="!canUpdate"
+            />
+            <p class="text-xs text-muted-foreground">{{ t('quefa.advanced.pollReviewAfterHint') }}</p>
+          </div>
+
+          <div class="space-y-1.5">
+            <Label for="quefa-webhook-max-skew">{{ t('quefa.advanced.webhookMaxSkewSeconds') }}</Label>
+            <Input
+              id="quefa-webhook-max-skew"
+              v-model.number="form.webhook_max_skew_seconds"
+              type="number"
+              min="30"
+              max="3600"
+              :disabled="!canUpdate"
+            />
+            <p class="text-xs text-muted-foreground">{{ t('quefa.advanced.webhookMaxSkewHint') }}</p>
+          </div>
+        </div>
+
+        <div class="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+          {{ t('quefa.advanced.workerRestartHint') }}
+        </div>
+      </div>
     </div>
   </div>
 </template>

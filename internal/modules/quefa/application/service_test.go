@@ -3,6 +3,8 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 type stubGateway struct {
 	productsRaw        json.RawMessage
 	productsErr        error
+	productsCalls      int
 	createOrderFn      func(ctx context.Context, req quefacontract.CreateOrderRequest, idem string) (*quefacontract.OrderSnapshot, error)
 	getOrderFn         func(ctx context.Context, id string) (*quefacontract.OrderSnapshot, error)
 	lookupMerchantFn   func(ctx context.Context, no string) (*quefacontract.OrderSnapshot, error)
@@ -26,6 +29,7 @@ type stubGateway struct {
 }
 
 func (g *stubGateway) GetProducts(ctx context.Context) (json.RawMessage, quefacontract.PollHints, error) {
+	g.productsCalls++
 	return g.productsRaw, quefacontract.PollHints{}, g.productsErr
 }
 
@@ -453,5 +457,143 @@ func TestSubmitRedemptionLifecycleAndRetry(t *testing.T) {
 	}
 	if len(seenIdem) != 2 || seenIdem[0] == seenIdem[1] {
 		t.Fatalf("expected distinct idempotency keys across attempts, got %v", seenIdem)
+	}
+}
+
+func TestConfigCatalogRefreshIntervalPersistenceAndValidation(t *testing.T) {
+	gw := &stubGateway{productsRaw: json.RawMessage(`{"products":[{"product_code":"plus_1m","supply_price":"100.00","currency":"CNY","available":true}]}`)}
+	store, cfgSvc, _, _ := setupAppTest(t, gw)
+	ctx := context.Background()
+
+	// Invalid refresh intervals must be rejected.
+	for _, bad := range []int{-2, 1, 4, 86401} {
+		v := bad
+		if _, err := cfgSvc.Update(ctx, ConfigPatch{CatalogRefreshIntervalSeconds: &v}); !errors.Is(err, ErrConfigInvalid) {
+			t.Fatalf("expected ErrConfigInvalid for %d, got %v", bad, err)
+		}
+	}
+
+	// Fixed interval saves and reloads cleanly.
+	fixed := 300
+	view, err := cfgSvc.Update(ctx, ConfigPatch{CatalogRefreshIntervalSeconds: &fixed})
+	if err != nil {
+		t.Fatalf("Update fixed interval failed: %v", err)
+	}
+	if view.CatalogRefreshIntervalSeconds != 300 {
+		t.Fatalf("expected 300 in AdminView, got %d", view.CatalogRefreshIntervalSeconds)
+	}
+	snap := cfgSvc.Snapshot()
+	if snap.Config.CatalogRefreshInterval() != 5*time.Minute || !snap.Config.CatalogFixedRefresh() {
+		t.Fatalf("unexpected fixed schedule: interval=%v fixed=%v", snap.Config.CatalogRefreshInterval(), snap.Config.CatalogFixedRefresh())
+	}
+
+	// Verify DB reload preserves the persisted value.
+	reloaded := NewConfigService(ctx, ConfigServiceOptions{
+		Store:        store,
+		Profile:      quefadomain.DefaultProfile,
+		AppSecretKey: "test-app-secret-key-32-bytes-ok!",
+	})
+	if reloaded.Snapshot().Config.CatalogRefreshIntervalSeconds != 300 {
+		t.Fatalf("expected reloaded value 300, got %d", reloaded.Snapshot().Config.CatalogRefreshIntervalSeconds)
+	}
+
+	// -1 disables auto-refresh cleanly.
+	disabled := -1
+	view, err = cfgSvc.Update(ctx, ConfigPatch{CatalogRefreshIntervalSeconds: &disabled})
+	if err != nil || view.CatalogRefreshIntervalSeconds != -1 {
+		t.Fatalf("Update disabled interval failed: view=%+v err=%v", view, err)
+	}
+	if cfgSvc.Snapshot().Config.CatalogRefreshInterval() != 0 || cfgSvc.Snapshot().Config.CatalogFixedRefresh() {
+		t.Fatalf("expected disabled refresh schedule")
+	}
+}
+
+func TestCatalogRefreshBeforeExpiryAndRateLimitBackoff(t *testing.T) {
+	gw := &stubGateway{
+		productsRaw: json.RawMessage(`{"products":[{"product_code":"chatgpt_plus_1m","title":"Plus 1M","supply_price":"105.00","min_sale_price":"110.00","currency":"CNY","collection_modes":["platform_collect"],"delivery_modes":["auto_recharge"],"available":true}]}`),
+	}
+	_, _, catSvc, _ := setupAppTest(t, gw)
+	ctx := context.Background()
+
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	catSvc.now = func() time.Time { return now }
+
+	// 1. 429 Retry-After sets backoff and skips upstream calls during backoff window.
+	rateErr := &quefacontract.APIError{
+		StatusCode: http.StatusTooManyRequests,
+		Category:   "rate_limited",
+		Hints:      quefacontract.PollHints{RetryAfter: 5 * time.Minute},
+	}
+	gw.productsErr = rateErr
+	if synced, err := catSvc.RefreshBeforeExpiry(ctx, time.Minute); synced != nil || !errors.Is(err, rateErr) {
+		t.Fatalf("expected 429 error, got synced=%v err=%v", synced, err)
+	}
+	if gw.productsCalls != 1 {
+		t.Fatalf("expected 1 upstream call, got %d", gw.productsCalls)
+	}
+
+	// Still inside 5m Retry-After window -> must skip without calling upstream.
+	now = now.Add(2 * time.Minute)
+	gw.productsErr = nil
+	if synced, err := catSvc.RefreshBeforeExpiry(ctx, time.Minute); synced != nil || err != nil || gw.productsCalls != 1 {
+		t.Fatalf("expected backoff skip, synced=%v err=%v calls=%d", synced, err, gw.productsCalls)
+	}
+
+	// 2. Once backoff expires, empty cache triggers sync.
+	now = now.Add(4 * time.Minute)
+	synced, err := catSvc.RefreshBeforeExpiry(ctx, time.Minute)
+	if err != nil || synced == nil || len(synced.Products) != 1 || gw.productsCalls != 2 {
+		t.Fatalf("expected sync after backoff, synced=%v err=%v calls=%d", synced, err, gw.productsCalls)
+	}
+
+	// 3. Fresh snapshot skips refresh.
+	now = now.Add(10 * time.Minute)
+	if skipped, err := catSvc.RefreshBeforeExpiry(ctx, time.Minute); skipped != nil || err != nil || gw.productsCalls != 2 {
+		t.Fatalf("expected fresh snapshot skip, skipped=%v err=%v calls=%d", skipped, err, gw.productsCalls)
+	}
+
+	// 4. Near TTL expiry (3600s TTL, 2m lead -> 59m elapsed) triggers refresh.
+	now = now.Add(49 * time.Minute)
+	refreshed, err := catSvc.RefreshBeforeExpiry(ctx, time.Minute)
+	if err != nil || refreshed == nil || gw.productsCalls != 3 {
+		t.Fatalf("expected near-expiry refresh, refreshed=%v err=%v calls=%d", refreshed, err, gw.productsCalls)
+	}
+}
+
+func TestCatalogRefreshOnIntervalAndResetSchedule(t *testing.T) {
+	gw := &stubGateway{
+		productsRaw: json.RawMessage(`{"products":[{"product_code":"chatgpt_plus_1m","title":"Plus 1M","supply_price":"105.00","min_sale_price":"110.00","currency":"CNY","collection_modes":["platform_collect"],"delivery_modes":["auto_recharge"],"available":true}]}`),
+	}
+	_, _, catSvc, _ := setupAppTest(t, gw)
+	ctx := context.Background()
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	catSvc.now = func() time.Time { return now }
+
+	// Initial empty cache syncs immediately on fixed interval.
+	synced, err := catSvc.RefreshOnInterval(ctx, 5*time.Minute)
+	if err != nil || synced == nil || gw.productsCalls != 1 {
+		t.Fatalf("expected initial fixed sync, synced=%v err=%v calls=%d", synced, err, gw.productsCalls)
+	}
+
+	// Within 5m interval -> skips.
+	now = now.Add(2 * time.Minute)
+	if skipped, err := catSvc.RefreshOnInterval(ctx, 5*time.Minute); skipped != nil || err != nil || gw.productsCalls != 1 {
+		t.Fatalf("expected skip within fixed interval, skipped=%v err=%v calls=%d", skipped, err, gw.productsCalls)
+	}
+
+	// After 5m interval elapses -> syncs again.
+	now = now.Add(3 * time.Minute)
+	refreshed, err := catSvc.RefreshOnInterval(ctx, 5*time.Minute)
+	if err != nil || refreshed == nil || gw.productsCalls != 2 {
+		t.Fatalf("expected refresh after fixed interval, refreshed=%v err=%v calls=%d", refreshed, err, gw.productsCalls)
+	}
+
+	// Shortening interval + ResetRefreshSchedule allows immediate refresh once new interval elapsed.
+	now = now.Add(1 * time.Minute)
+	catSvc.ResetRefreshSchedule()
+	refreshed2, err := catSvc.RefreshOnInterval(ctx, 30*time.Second)
+	if err != nil || refreshed2 == nil || gw.productsCalls != 3 {
+		t.Fatalf("expected refresh after schedule reset, refreshed=%v err=%v calls=%d", refreshed2, err, gw.productsCalls)
 	}
 }

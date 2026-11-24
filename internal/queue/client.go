@@ -179,6 +179,18 @@ func (c *Client) EnqueueQuefaPollOrders(ctx context.Context) error {
 	return err
 }
 
+// EnqueueQuefaRefreshCatalog triggers an initial Quefa catalog refresh when a worker starts.
+func (c *Client) EnqueueQuefaRefreshCatalog(ctx context.Context) error {
+	if !c.Enabled() {
+		return nil
+	}
+	_, err := c.client.EnqueueContext(ctx, NewQuefaRefreshCatalogTask(), asynq.Queue(c.defaultQueue), asynq.Unique(time.Minute))
+	if errors.Is(err, asynq.ErrDuplicateTask) {
+		return nil
+	}
+	return err
+}
+
 // EnqueueOrderStatusEmail 推送订单状态邮件任务
 func (c *Client) EnqueueOrderStatusEmail(payload OrderStatusEmailPayload, opts ...asynq.Option) error {
 	if !c.Enabled() {

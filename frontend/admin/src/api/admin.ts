@@ -402,6 +402,7 @@ export interface QuefaConfigData {
   sales_enabled: boolean
   allowed_pay_domains: string[]
   catalog_ttl_seconds: number
+  catalog_refresh_interval_seconds: number
   poll_interval_seconds: number
   poll_review_after_seconds: number
   webhook_max_skew_seconds: number
@@ -422,6 +423,7 @@ export interface QuefaConfigUpdatePayload {
   sales_enabled?: boolean
   allowed_pay_domains?: string[]
   catalog_ttl_seconds?: number
+  catalog_refresh_interval_seconds?: number
   poll_interval_seconds?: number
   poll_review_after_seconds?: number
   webhook_max_skew_seconds?: number

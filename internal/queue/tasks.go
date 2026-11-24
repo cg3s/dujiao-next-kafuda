@@ -42,6 +42,8 @@ const (
 	TaskQuefaSyncOrder = constants.TaskQuefaSyncOrder
 	// TaskQuefaPollOrders 定时扫描到期在途 Quefa 订单与待发通知。
 	TaskQuefaPollOrders = constants.TaskQuefaPollOrders
+	// TaskQuefaRefreshCatalog 定时刷新 Quefa 直充目录。
+	TaskQuefaRefreshCatalog = constants.TaskQuefaRefreshCatalog
 	// TaskDownstreamCallback 下游回调通知任务
 	TaskDownstreamCallback = constants.TaskDownstreamCallback
 	// TaskReconciliationRun 对账执行任务
@@ -208,6 +210,11 @@ func NewQuefaSyncOrderTask(payload QuefaSyncOrderPayload) (*asynq.Task, error) {
 // NewQuefaPollOrdersTask creates the periodic Quefa recovery/polling sweep task.
 func NewQuefaPollOrdersTask() *asynq.Task {
 	return asynq.NewTask(TaskQuefaPollOrders, nil)
+}
+
+// NewQuefaRefreshCatalogTask refreshes the Quefa catalog with the worker's configured gateway.
+func NewQuefaRefreshCatalogTask() *asynq.Task {
+	return asynq.NewTask(TaskQuefaRefreshCatalog, nil)
 }
 
 // NewUpstreamSyncStockTask 创建上游库存同步任务

@@ -424,6 +424,7 @@ const (
 	TaskKafudaRefreshCatalog        = "kafuda_gpt:refresh_catalog"
 	TaskQuefaSyncOrder              = "quefa:sync_order"
 	TaskQuefaPollOrders             = "quefa:poll_orders"
+	TaskQuefaRefreshCatalog         = "quefa:refresh_catalog"
 	TaskUpstreamSyncProducts        = "upstream:sync_products"
 	TaskUpstreamSyncStock           = "upstream:sync_stock"
 	TaskReconciliationRun           = "reconciliation:run"
