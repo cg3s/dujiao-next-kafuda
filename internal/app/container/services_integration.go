@@ -105,6 +105,24 @@ func (c *Container) initIntegrationServices() {
 		Deliverer:   downstreamcallbackclient.New(),
 	})
 	c.PaymentService = paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{
+		QuefaCollectionMode: func() string {
+			if c.Quefa == nil || c.Quefa.Orders == nil || c.Quefa.Config == nil {
+				return ""
+			}
+			return c.Quefa.Config.Snapshot().Config.CollectionMode
+		},
+		QuefaPaidHook: func(parentOrderID uint) {
+			if c.Quefa == nil || c.Quefa.Orders == nil {
+				return
+			}
+			rec, err := c.Quefa.Orders.GetOrderByParentOrder(context.Background(), parentOrderID)
+			if err != nil || rec == nil || rec.CollectionMode != quefadomain.CollectionModeAgentCollect {
+				return
+			}
+			if c.QueueClient != nil && c.QueueClient.Enabled() {
+				_ = c.QueueClient.EnqueueQuefaSyncOrder(context.Background(), rec.OrderID, 0)
+			}
+		},
 		OrderStore:              c.OrderStore,
 		ProductRepo:             c.ProductRepo,
 		ProductSKURepo:          c.ProductSKURepo,
@@ -178,25 +196,6 @@ func (c *Container) wireQuefaLifecycle() {
 					_ = c.QueueClient.EnqueueQuefaSyncOrder(context.Background(), rec.OrderID, 0)
 				}
 				return true
-			},
-		)
-	}
-	if c.PaymentService != nil {
-		c.PaymentService.SetQuefaIntegration(
-			func() string {
-				if c.Quefa.Config == nil {
-					return ""
-				}
-				return c.Quefa.Config.Snapshot().Config.CollectionMode
-			},
-			func(parentOrderID uint) {
-				rec, err := c.Quefa.Orders.GetOrderByParentOrder(context.Background(), parentOrderID)
-				if err != nil || rec == nil || rec.CollectionMode != quefadomain.CollectionModeAgentCollect {
-					return
-				}
-				if c.QueueClient != nil && c.QueueClient.Enabled() {
-					_ = c.QueueClient.EnqueueQuefaSyncOrder(context.Background(), rec.OrderID, 0)
-				}
 			},
 		)
 	}

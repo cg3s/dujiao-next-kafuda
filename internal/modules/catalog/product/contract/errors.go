@@ -14,6 +14,7 @@ var (
 	ErrFulfillmentInvalid           = errors.New("fulfillment invalid")
 	ErrManualStockInvalid           = errors.New("manual stock invalid")
 	ErrProductSKUInvalid            = errors.New("product sku invalid")
+	ErrProductAffiliateRateInvalid  = errors.New("product affiliate rate invalid")
 	ErrProductSKUHasCardSecretStock = errors.New("product sku has card secret stock")
 	ErrManualStockReserved          = errors.New("product has reserved manual stock")
 	ErrProductHasStock              = errors.New("product has stock")

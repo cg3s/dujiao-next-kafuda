@@ -203,6 +203,7 @@ func prepareDirectSKUs(inputs []ProductSKUInput, existing map[uint]productdomain
 			if input.IsActive != nil {
 				active = *input.IsActive
 			}
+			item.AffiliateRatePercent, item.AffiliateRatePercentSet = input.AffiliateRatePercent, input.AffiliateRatePercentSet
 			inputSpec = input.SpecValuesJSON
 		}
 		if !option.Available {
@@ -243,7 +244,8 @@ func prepareDirectSKUs(inputs []ProductSKUInput, existing map[uint]productdomain
 				spec = buildDirectSpecValues(plan, country, "", map[string]interface{}(old.SpecValuesJSON), input.SpecValuesJSON, true)
 			}
 		}
-		result = append(result, ProductSKUInput{ID: old.ID, SKUCode: code, SpecValuesJSON: spec, PriceAmount: old.PriceAmount.Decimal, CostPriceAmount: old.CostPriceAmount.Decimal, CostPriceProvided: old.DirectCostConfigured, DirectCatalogRevision: &revision, IsActive: &active, SortOrder: old.SortOrder})
+		input := provided[key]
+		result = append(result, ProductSKUInput{AffiliateRatePercent: input.AffiliateRatePercent, AffiliateRatePercentSet: input.AffiliateRatePercentSet, ID: old.ID, SKUCode: code, SpecValuesJSON: spec, PriceAmount: old.PriceAmount.Decimal, CostPriceAmount: old.CostPriceAmount.Decimal, CostPriceProvided: old.DirectCostConfigured, DirectCatalogRevision: &revision, IsActive: &active, SortOrder: old.SortOrder})
 		seen[key] = true
 	}
 	for key := range provided {

@@ -121,7 +121,7 @@ func (s *PaymentService) GetAllowedChannelsForProducts(productIDs []uint) ([]pay
 		return nil, err
 	}
 	if len(productIDs) == 0 {
-		return filterOutQuefaChannels(channels), nil
+		return paymentdomain.WithoutQuefaChannels(channels), nil
 	}
 	products, err := s.productRepo.ListByIDs(productIDs)
 	if err != nil {
@@ -140,12 +140,12 @@ func (s *PaymentService) GetAllowedChannelsForProducts(productIDs []uint) ([]pay
 			mode = s.quefaCollectionMode()
 		}
 		if mode == "platform_collect" {
-			channels = filterOnlyQuefaChannels(channels)
+			channels = paymentdomain.OnlyQuefaChannels(channels)
 		} else {
-			channels = filterOutQuefaChannels(channels)
+			channels = paymentdomain.WithoutQuefaChannels(channels)
 		}
 	} else {
-		channels = filterOutQuefaChannels(channels)
+		channels = paymentdomain.WithoutQuefaChannels(channels)
 	}
 	allowed := computeProductChannelIntersection(products)
 	if allowed == nil {
@@ -174,7 +174,7 @@ func (s *PaymentService) GetWalletRechargeChannels() ([]paymentdomain.PaymentCha
 	if err != nil {
 		return nil, err
 	}
-	channels = filterOutQuefaChannels(channels)
+	channels = paymentdomain.WithoutQuefaChannels(channels)
 	if s.settingService == nil {
 		return channels, nil
 	}
@@ -247,7 +247,7 @@ func (s *PaymentService) GetAllowedChannelIDsForOrder(items []orderdomain.OrderI
 	var scoped []paymentdomain.PaymentChannel
 	enforceScope := false
 	if hasQuefa && mode == "platform_collect" {
-		scoped = filterOnlyQuefaChannels(channels)
+		scoped = paymentdomain.OnlyQuefaChannels(channels)
 		enforceScope = true
 	} else {
 		for _, ch := range channels {
@@ -257,7 +257,7 @@ func (s *PaymentService) GetAllowedChannelIDsForOrder(items []orderdomain.OrderI
 			}
 		}
 		if enforceScope {
-			scoped = filterOutQuefaChannels(channels)
+			scoped = paymentdomain.WithoutQuefaChannels(channels)
 		}
 	}
 	if !enforceScope {

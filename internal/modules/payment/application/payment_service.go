@@ -112,6 +112,8 @@ func (s *PaymentService) SetMemberLevelService(svc MemberLevelProgressor) {
 
 // PaymentServiceOptions 支付服务构造参数
 type PaymentServiceOptions struct {
+	QuefaCollectionMode     func() string
+	QuefaPaidHook           func(uint)
 	OrderStore              ordercontract.Store
 	ProductRepo             productcontract.Repository
 	ProductSKURepo          productcontract.SKURepository
@@ -134,6 +136,8 @@ type PaymentServiceOptions struct {
 // NewPaymentService 创建支付服务
 func NewPaymentService(opts PaymentServiceOptions) *PaymentService {
 	return &PaymentService{
+		quefaCollectionMode:     opts.QuefaCollectionMode,
+		quefaPaidHook:           opts.QuefaPaidHook,
 		orderRepo:               opts.OrderStore,
 		productRepo:             opts.ProductRepo,
 		productSKURepo:          opts.ProductSKURepo,

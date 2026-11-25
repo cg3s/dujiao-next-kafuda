@@ -120,11 +120,13 @@ type SKUFormItem = {
   manual_stock_total: number
   // 打开编辑框时的库存；保存时未改动则不提交，后端保留期间被下单预占后的实时库存
   original_manual_stock_total: number | null
+  // 返利比例（%）：空字符串表示继承商品/全站比例，0 表示该规格不参与返利
+  affiliate_rate_percent: number | ''
   is_active: boolean
   sort_order: number
 }
 
-const originalDirectSKUs = new Map<string, Pick<SKUFormItem, 'sku_code' | 'spec_values' | 'price_amount' | 'cost_price_amount' | 'is_active' | 'sort_order' | 'direct_catalog_revision'>>()
+const originalDirectSKUs = new Map<string, Pick<SKUFormItem, 'sku_code' | 'spec_values' | 'price_amount' | 'cost_price_amount' | 'is_active' | 'sort_order' | 'affiliate_rate_percent' | 'direct_catalog_revision'>>()
 const directCostConfirmations = reactive(new Map<string, number>())
 let originalDirectProductActive: boolean | undefined
 
@@ -181,6 +183,23 @@ const buildDirectSpecValues = (option: { plan: string; country: string; label?: 
 const directSKULocalesEqual = (a?: Record<string, string>, b?: Record<string, string>) =>
   directSpecLocales.every((code) => String(a?.[code] || '').trim() === String(b?.[code] || '').trim())
 
+type AffiliateMode = 'inherit' | 'disabled' | 'custom'
+
+// 后端用 NULL 表示继承、0 表示不参与，接口以两位小数字符串返回，缺省/null 都视为继承。
+const parseOptionalRate = (raw: unknown): number | '' => {
+  if (raw === null || raw === undefined || raw === '') return ''
+  const value = Number(raw)
+  return Number.isFinite(value) ? value : ''
+}
+
+const resolveAffiliateMode = (raw: unknown): AffiliateMode => {
+  const rate = parseOptionalRate(raw)
+  if (rate === '') return 'inherit'
+  return rate === 0 ? 'disabled' : 'custom'
+}
+
+const isValidAffiliateRate = (value: number) => Number.isFinite(value) && value >= 0 && value <= 100
+
 type ManualFormField = {
   key: string
   type: string
@@ -232,6 +251,7 @@ const createSKUFormItem = (raw?: Partial<AdminProductSKU>, direct = false): SKUF
   cost_price_amount: direct && !raw?.direct_cost_configured && Number(raw?.cost_price_amount || 0) === 0 ? '' : Number(raw?.cost_price_amount || 0),
   manual_stock_total: toSafeStockTotal(raw?.manual_stock_total),
   original_manual_stock_total: raw?.id ? toSafeStockTotal(raw?.manual_stock_total) : null,
+  affiliate_rate_percent: parseOptionalRate(raw?.affiliate_rate_percent),
   is_active: raw?.is_active ?? true,
   sort_order: Number(raw?.sort_order || 0),
 })
@@ -257,7 +277,8 @@ const form = reactive({
   skus: [] as SKUFormItem[],
   category_id: null as number | null,
   payment_channel_ids: [] as number[],
-  is_affiliate_enabled: false,
+  affiliate_mode: 'disabled' as AffiliateMode,
+  affiliate_rate_percent: '' as number | '',
   is_active: true,
   sort_order: 0,
   manual_form_schema: { fields: [] as ManualFormField[] },
@@ -528,6 +549,18 @@ const removeSKU = (index: number) => {
   form.skus.splice(index, 1)
 }
 
+// 商品级返利比例：继承 → null，不参与 → 0，自定义 → 校验后的数值。
+// 必须显式提交 null：后端把缺省/null 都视为继承，但 0 必须与它区分开。
+const resolveAffiliateRateForSubmit = (): number | null => {
+  if (form.affiliate_mode === 'inherit') return null
+  if (form.affiliate_mode === 'disabled') return 0
+  const rate = Number(form.affiliate_rate_percent)
+  if (form.affiliate_rate_percent === '' || !isValidAffiliateRate(rate)) {
+    throw new Error(t('admin.products.errors.affiliateRateInvalid'))
+  }
+  return rate
+}
+
 const normalizeSKUsForSubmit = () => {
   if (!form.skus.length) {
     return []
@@ -564,6 +597,10 @@ const normalizeSKUsForSubmit = () => {
     const manualStockTotal = form.fulfillment_type === 'manual' ? toSafeStockTotal(item.manual_stock_total) : 0
     const stockUnchanged = item.id > 0 && form.fulfillment_type === 'manual' && manualStockTotal === item.original_manual_stock_total
     const specValues = normalizeSpecValues(item.spec_values)
+    const skuAffiliateRate = parseOptionalRate(item.affiliate_rate_percent)
+    if (skuAffiliateRate !== '' && !isValidAffiliateRate(skuAffiliateRate)) {
+      throw new Error(t('admin.products.errors.skuAffiliateRateInvalid', { index: index + 1 }))
+    }
 
     return {
       id: item.id > 0 ? item.id : undefined,
@@ -573,6 +610,7 @@ const normalizeSKUsForSubmit = () => {
       cost_price_amount: costPriceAmount,
       direct_catalog_revision: isDirect.value ? item.direct_catalog_revision : undefined,
       manual_stock_total: stockUnchanged ? undefined : manualStockTotal,
+      affiliate_rate_percent: skuAffiliateRate === '' ? null : skuAffiliateRate,
       is_active: isActive,
       sort_order: Number(item.sort_order) || 0,
     }
@@ -608,10 +646,12 @@ const directSKUChanges = (skus: NormalizedSKU[]) => skus.flatMap<Partial<Normali
   const includeCost = costConfirmed || sku.cost_price_amount !== (original.cost_price_amount === '' ? undefined : original.cost_price_amount)
   const priceChanged = sku.price_amount !== original.price_amount
   const sortChanged = sku.sort_order !== original.sort_order
-  if (!codeChanged && !specChanged && !activeChanged && !includeCost && !priceChanged && !sortChanged) return []
+  const rateChanged = sku.affiliate_rate_percent !== (original.affiliate_rate_percent === '' ? null : original.affiliate_rate_percent)
+  if (!rateChanged && !codeChanged && !specChanged && !activeChanged && !includeCost && !priceChanged && !sortChanged) return []
   if (!sku.id) return [sku]
   return [{
     ...sku,
+    affiliate_rate_percent: rateChanged ? sku.affiliate_rate_percent : undefined,
     is_active: activeChanged ? sku.is_active : undefined,
     cost_price_amount: includeCost ? sku.cost_price_amount : undefined,
     price_amount: priceChanged ? sku.price_amount : undefined,
@@ -676,7 +716,8 @@ const resetForm = () => {
     skus: [],
     category_id: null,
     payment_channel_ids: [],
-    is_affiliate_enabled: false,
+    affiliate_mode: 'disabled',
+    affiliate_rate_percent: '',
     is_active: true,
     sort_order: 0,
     manual_form_schema: { fields: [] },
@@ -725,7 +766,8 @@ const populateForm = (product: AdminProduct) => {
     skus: resolveEditableSKURows(product),
     category_id: Number(product.category_id || 0) || null,
     payment_channel_ids: parsePaymentChannelIDs(product.payment_channel_ids),
-    is_affiliate_enabled: Boolean(product.is_affiliate_enabled),
+    affiliate_mode: resolveAffiliateMode(product.affiliate_rate_percent),
+    affiliate_rate_percent: resolveAffiliateMode(product.affiliate_rate_percent) === 'custom' ? parseOptionalRate(product.affiliate_rate_percent) : '',
     is_active: product.is_active ?? true,
     sort_order: Number(product.sort_order || 0),
     manual_form_schema: parseManualFormSchemaForEdit(product.manual_form_schema),
@@ -1189,7 +1231,7 @@ const handleSubmit = async () => {
       manual_stock_total: productStockUnchanged ? undefined : effectiveManualStockTotal,
       skus: editingDirect && submittedSKUs.length === 0 ? undefined : submittedSKUs,
       payment_channel_ids: form.payment_channel_ids.length > 0 ? form.payment_channel_ids : [],
-      is_affiliate_enabled: form.is_affiliate_enabled,
+      affiliate_rate_percent: resolveAffiliateRateForSubmit(),
       is_active: editingDirect && form.is_active === originalDirectProductActive ? undefined : form.is_active,
       sort_order: Number(form.sort_order) || 0,
       manual_form_schema: normalizeManualFormSchemaForSubmit(),
@@ -1655,6 +1697,11 @@ watch(
                       <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuManualStock') }}</label>
                       <Input v-model.number="sku.manual_stock_total" type="number" min="-1" :placeholder="t('admin.products.form.skuManualStockPlaceholder')" />
                     </div>
+                    <div class="md:col-span-1">
+                      <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuAffiliateRate') }}</label>
+                      <Input v-model.number="sku.affiliate_rate_percent" type="number" min="0" max="100" step="0.01" :placeholder="t('admin.products.form.skuAffiliateRatePlaceholder')" :disabled="form.affiliate_mode === 'disabled'" />
+                      <p class="mt-1 text-xs text-muted-foreground">{{ t('admin.products.form.skuAffiliateRateTip') }}</p>
+                    </div>
                     <div class="md:col-span-1 grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div>
                         <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.skuSort') }}</label>
@@ -1767,11 +1814,26 @@ watch(
             <p class="mt-1 text-xs text-muted-foreground">{{ t('admin.products.form.paymentChannelsTip') }}</p>
           </div>
 
+          <div class="col-span-1">
+            <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.affiliateMode') }}</label>
+            <Select v-model="form.affiliate_mode">
+              <SelectTrigger class="h-9 w-full">
+                <SelectValue :placeholder="t('admin.products.form.affiliateModeInherit')" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="inherit">{{ t('admin.products.form.affiliateModeInherit') }}</SelectItem>
+                <SelectItem value="disabled">{{ t('admin.products.form.affiliateModeDisabled') }}</SelectItem>
+                <SelectItem value="custom">{{ t('admin.products.form.affiliateModeCustom') }}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div v-if="form.affiliate_mode === 'custom'" class="col-span-1">
+            <label class="block text-xs font-medium text-muted-foreground mb-1.5">{{ t('admin.products.form.affiliateRate') }}</label>
+            <Input v-model.number="form.affiliate_rate_percent" type="number" min="0.01" max="100" step="0.01" />
+            <p class="mt-1 text-xs text-muted-foreground">{{ t('admin.products.form.affiliateRateHint') }}</p>
+          </div>
+
           <div class="col-span-1 md:col-span-2 flex flex-col items-start gap-4 border-t border-border pt-4 sm:flex-row sm:flex-wrap sm:items-center sm:gap-6">
-            <div class="inline-flex items-center gap-2">
-              <Switch id="is_affiliate_enabled" v-model="form.is_affiliate_enabled" />
-              <Label for="is_affiliate_enabled" class="text-sm text-muted-foreground select-none">{{ t('admin.products.form.affiliateEnabled') }}</Label>
-            </div>
             <div class="inline-flex items-center gap-2">
               <Switch id="is_active" v-model="form.is_active" />
               <Label for="is_active" class="text-sm text-muted-foreground select-none">{{ t('admin.products.form.activeNow') }}</Label>

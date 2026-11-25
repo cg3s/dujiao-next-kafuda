@@ -2364,7 +2364,7 @@ func newDirectCheckoutFixture(t *testing.T) directCheckoutFixture {
 
 func seedDirectCheckoutFixture(t *testing.T, f couponLimitRaceFixture) directCheckoutFixture {
 	t.Helper()
-	if err := f.db.AutoMigrate(&kafudadomain.Catalog{}, &kafudadomain.Recharge{}); err != nil {
+	if err := f.db.AutoMigrate(&kafudadomain.Catalog{}, &kafudadomain.Recharge{}, &paymentdomain.PaymentChannel{}); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -2636,7 +2636,10 @@ func TestDirectCheckoutMainHTTPStoresPrivateSnapshot(t *testing.T) {
 		t.Run(locale, func(t *testing.T) {
 			f := newDirectCheckoutFixture(t)
 			svc := orderapp.NewOrderService(f.options)
-			payments := paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{ProductRepo: productstore.NewProductStore(f.db)})
+			payments := paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{
+				ProductRepo:  productstore.NewProductStore(f.db),
+				ChannelStore: paymentstore.NewChannelStore(f.db),
+			})
 			handlers := orderwiring.New(&container.Container{OrderService: svc, PaymentService: payments})
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
@@ -2726,7 +2729,10 @@ func TestDirectGuestPreviewAndCheckoutHTTP(t *testing.T) {
 			t.Fatal(err)
 		}
 		svc := orderapp.NewOrderService(f.options)
-		payments := paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{ProductRepo: productstore.NewProductStore(f.db)})
+		payments := paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{
+			ProductRepo:  productstore.NewProductStore(f.db),
+			ChannelStore: paymentstore.NewChannelStore(f.db),
+		})
 		handlers := orderwiring.New(&container.Container{OrderService: svc, PaymentService: payments})
 
 		// Non-storefront direct guest calls remain rejected even when product allows guest purchase.
@@ -2802,7 +2808,10 @@ func TestDirectGuestPreviewAndCheckoutHTTP(t *testing.T) {
 	t.Run("member_purchase_type_rejected_for_guest_http", func(t *testing.T) {
 		f := newDirectCheckoutFixture(t)
 		svc := orderapp.NewOrderService(f.options)
-		payments := paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{ProductRepo: productstore.NewProductStore(f.db)})
+		payments := paymentapp.NewPaymentService(paymentapp.PaymentServiceOptions{
+			ProductRepo:  productstore.NewProductStore(f.db),
+			ChannelStore: paymentstore.NewChannelStore(f.db),
+		})
 		handlers := orderwiring.New(&container.Container{OrderService: svc, PaymentService: payments})
 		body := fmt.Sprintf(`{"email":"guest@example.test","order_password":"password123","items":[{"product_id":%d,"sku_id":%d,"quantity":1}]}`, f.product.ID, f.sku.ID)
 

@@ -33,6 +33,7 @@ import { buildSkuDisplayText, normalizeSkuId, resolveLocalizedSpecName } from '.
 import { resolveSkuAvailableStock, resolveSkuStockDisplay, type PublicStockDisplay } from '../utils/publicStock'
 import { useLocalized, useProductLabels } from './useProduct'
 import { toast } from './useToast'
+import { useAffiliateProductLink } from './useAffiliateProductLink'
 
 /**
  * 商品详情页的全部业务逻辑（数据加载、SKU/数量、促销/会员/批发定价、库存约束、
@@ -82,6 +83,11 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
   const isGptDirect = computed(() => isDirectFulfillmentType(product.value?.fulfillment_type))
   const isHostedRecharge = computed(() => isHostedRechargeType(product.value?.fulfillment_type))
   const isDirect = computed(() => isSingleItemDirectType(product.value?.fulfillment_type))
+  const selectedSkuId = ref(0)
+  const { canShareAffiliateLink, copyAffiliateLink, affiliateRateHint } = useAffiliateProductLink(
+    computed(() => String(product.value?.slug || '')),
+    { productId: () => Number(product.value?.id || 0), skuId: () => selectedSkuId.value },
+  )
   const relatedPosts = computed<any[]>(() => product.value?.related_posts || [])
   const formatRelatedPostDate = (dateString: string) => {
     if (!dateString) return ''
@@ -89,7 +95,6 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
     return date.toLocaleDateString(appStore.locale, { year: 'numeric', month: 'long', day: 'numeric' })
   }
   const currentImage = ref<string>('')
-  const selectedSkuId = ref(0)
   const activeSkuSpec = ref('')
   const quantity = ref(1)
   const purchaseWarning = ref('')
@@ -903,6 +908,8 @@ export function useProductDetail(options: { onLoaded?: () => void } = {}) {
     backToListTo,
     // 动作
     addToCart, buyNow, goLogin, loadProduct,
+    // 推广返利：复制带推广码的单品链接
+    canShareAffiliateLink, copyAffiliateLink, affiliateRateHint,
     // 移动端购买条
     mobileBarShowMemberPrice, mobileBarMemberPriceDisplay,
     mobileBarShowSkuPromotionPrice, mobileBarSkuPromotionPriceDisplay,

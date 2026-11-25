@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	productdomain "github.com/dujiao-next/internal/modules/catalog/product/domain"
+	kafudacontract "github.com/dujiao-next/internal/modules/kafudagpt/contract"
 
 	"github.com/dujiao-next/internal/constants"
 	productcontract "github.com/dujiao-next/internal/modules/catalog/product/contract"
@@ -382,4 +383,116 @@ func TestUpdateMappedProductPreservesUpstreamManualForm(t *testing.T) {
 	}
 }
 
+// 多规格带返利比例 → 切单规格：存续行不能残留比例。
+// 切回单规格后这行 SKU 在后台编辑框里是隐藏的（只有一行且编码为 DEFAULT），
+// 残留比例既看不到也清不掉，却仍会被 ResolveAffiliateRate 优先采用去发佣金。
+func TestSyncSingleProductSKUSingleModeClearsSurvivingAffiliateRate(t *testing.T) {
+	service := NewWriteService(Options{})
+	repo := newSyncSingleSKURepo(t)
+	productID := uint(2011)
+
+	rate := money.FromDecimal(decimal.NewFromInt(50))
+	withRate := productdomain.ProductSKU{
+		ProductID:            productID,
+		SKUCode:              "A",
+		PriceAmount:          money.FromDecimal(decimal.NewFromInt(20)),
+		ManualStockTotal:     2,
+		IsActive:             true,
+		AffiliateRatePercent: &rate,
+	}
+	if err := repo.Create(&withRate); err != nil {
+		t.Fatalf("create sku with affiliate rate failed: %v", err)
+	}
+
+	targetPrice := decimal.NewFromInt(20)
+	if err := service.syncSingleProductSKU(repo, nil, productID, targetPrice, decimal.Zero, stockPtr(5)); err != nil {
+		t.Fatalf("sync single sku failed: %v", err)
+	}
+
+	skus, err := repo.ListByProduct(productID, false)
+	if err != nil {
+		t.Fatalf("list sku failed: %v", err)
+	}
+	if len(skus) != 1 {
+		t.Fatalf("expected exactly one sku after collapsing to single spec, got %d: %+v", len(skus), skus)
+	}
+	if skus[0].AffiliateRatePercent != nil {
+		t.Fatalf("expected surviving sku affiliate rate cleared, got %s", skus[0].AffiliateRatePercent.String())
+	}
+}
+
 func stockPtr(value int) *int { return &value }
+
+func TestPrepareDirectSKUsDefaultsAndCustomEdits(t *testing.T) {
+	option := kafudacontract.SKUOption{
+		CatalogRevision: 2,
+		SKUCode:         kafudacontract.SKUCode("plus", "US"),
+		Plan:            "plus",
+		Country:         "US",
+		Label:           "ChatGPT Plus (US)",
+		Available:       true,
+	}
+
+	// 1. Create with no explicit inputs: defaults SKUCode to GPT-PLUS-US and localized spec names to option.Label.
+	created, err := prepareDirectSKUs(nil, nil, []kafudacontract.SKUOption{option})
+	if err != nil {
+		t.Fatalf("prepareDirectSKUs create failed: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("expected 1 SKU, got %d", len(created))
+	}
+	if created[0].SKUCode != "GPT-PLUS-US" {
+		t.Fatalf("default SKUCode = %q, want GPT-PLUS-US", created[0].SKUCode)
+	}
+	if created[0].SpecValuesJSON["zh-CN"] != "ChatGPT Plus (US)" ||
+		created[0].SpecValuesJSON["zh-TW"] != "ChatGPT Plus (US)" ||
+		created[0].SpecValuesJSON["en-US"] != "ChatGPT Plus (US)" ||
+		created[0].SpecValuesJSON["plan"] != "plus" ||
+		created[0].SpecValuesJSON["country"] != "US" {
+		t.Fatalf("unexpected default SpecValuesJSON: %#v", created[0].SpecValuesJSON)
+	}
+
+	// 2. Edit an existing legacy KGPT_ SKU: allow custom SKUCode and custom localized spec names,
+	// while preserving plan/country and dropping unknown private keys.
+	existing := map[uint]productdomain.ProductSKU{
+		7: {
+			ID:                    7,
+			SKUCode:               "KGPT_legacyhash",
+			SpecValuesJSON:        jsonmap.JSON{"plan": "plus", "country": "US"},
+			PriceAmount:           money.FromDecimal(decimal.NewFromInt(120)),
+			CostPriceAmount:       money.FromDecimal(decimal.NewFromInt(80)),
+			DirectCostConfigured:  true,
+			DirectCatalogRevision: 2,
+			IsActive:              true,
+		},
+	}
+	active := true
+	rev := uint64(2)
+	updated, err := prepareDirectSKUs([]ProductSKUInput{
+		{
+			ID:                    7,
+			SKUCode:               "MY-GPT-PLUS-US",
+			SpecValuesJSON:        map[string]interface{}{"plan": "plus", "country": "US", "zh-CN": "美区 Plus 月卡", "en-US": "US Plus Monthly", "merchant_cost": "secret"},
+			PriceAmount:           decimal.NewFromInt(120),
+			CostPriceAmount:       decimal.NewFromInt(80),
+			CostPriceProvided:     true,
+			DirectCatalogRevision: &rev,
+			IsActive:              &active,
+		},
+	}, existing, []kafudacontract.SKUOption{option})
+	if err != nil {
+		t.Fatalf("prepareDirectSKUs update failed: %v", err)
+	}
+	if len(updated) != 1 {
+		t.Fatalf("expected 1 SKU, got %d", len(updated))
+	}
+	if updated[0].ID != 7 || updated[0].SKUCode != "MY-GPT-PLUS-US" {
+		t.Fatalf("updated SKU = (%d, %q), want (7, MY-GPT-PLUS-US)", updated[0].ID, updated[0].SKUCode)
+	}
+	if updated[0].SpecValuesJSON["zh-CN"] != "美区 Plus 月卡" || updated[0].SpecValuesJSON["en-US"] != "US Plus Monthly" {
+		t.Fatalf("localized spec names not preserved: %#v", updated[0].SpecValuesJSON)
+	}
+	if _, leaked := updated[0].SpecValuesJSON["merchant_cost"]; leaked {
+		t.Fatalf("private key leaked into SpecValuesJSON: %#v", updated[0].SpecValuesJSON)
+	}
+}

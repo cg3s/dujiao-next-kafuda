@@ -1723,7 +1723,7 @@ func TestGetAllowedChannelIDsForOrderIsolatesQuefaChannels(t *testing.T) {
 	}
 
 	mode := "platform_collect"
-	svc.SetQuefaIntegration(func() string { return mode }, nil)
+	svc.quefaCollectionMode = func() string { return mode }
 
 	quefaItem := []orderdomain.OrderItem{{FulfillmentType: constants.FulfillmentTypeQuefaHosted}}
 	normalItem := []orderdomain.OrderItem{{FulfillmentType: constants.FulfillmentTypeAuto}}

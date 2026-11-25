@@ -131,6 +131,7 @@ func (r *SKUStore) UpdateForProductEdit(item *productdomain.ProductSKU, manualSt
 		"spec_values_json":        item.SpecValuesJSON,
 		"price_amount":            item.PriceAmount,
 		"cost_price_amount":       item.CostPriceAmount,
+		"affiliate_rate_percent":  item.AffiliateRatePercent,
 		"direct_cost_configured":  item.DirectCostConfigured,
 		"direct_catalog_revision": item.DirectCatalogRevision,
 		"is_active":               item.IsActive,

@@ -19,6 +19,7 @@ import (
 	kafudadomain "github.com/dujiao-next/internal/modules/kafudagpt/domain"
 	kafudastore "github.com/dujiao-next/internal/modules/kafudagpt/infrastructure/gormstore"
 	"github.com/dujiao-next/internal/shared/jsonmap"
+	"github.com/dujiao-next/internal/shared/money"
 	"github.com/shopspring/decimal"
 )
 
@@ -639,6 +640,14 @@ func TestDirectProductRequiresReviewAfterCatalogOnlyRemoval(t *testing.T) {
 	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
 		t.Fatal(err)
 	}
+	rate := money.FromDecimal(decimal.NewFromInt(12))
+	input.SKUs = []productwrite.ProductSKUInput{{
+		ID: first.ID, SKUCode: first.SKUCode, DirectCatalogRevision: &revision,
+		KeepPriceAmount: true, KeepSortOrder: true, AffiliateRatePercent: &rate, AffiliateRatePercentSet: true,
+	}}
+	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
+		t.Fatal(err)
+	}
 	input.SKUs = nil
 	if _, err := svc.Write.Update(fmt.Sprint(product.ID), input); err != nil {
 		t.Fatal(err)
@@ -648,10 +657,52 @@ func TestDirectProductRequiresReviewAfterCatalogOnlyRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	sku := product.SKUs[0]
-	if !sku.IsActive || sku.DirectCatalogRevision != 1 || sku.ID != first.ID || !sku.CostPriceAmount.Equal(decimal.NewFromInt(45)) || !sku.PriceAmount.Equal(decimal.NewFromInt(100)) || sku.SortOrder != 23 {
+	if sku.AffiliateRatePercent == nil || !sku.AffiliateRatePercent.Equal(rate.Decimal) || !sku.IsActive || sku.DirectCatalogRevision != 1 || sku.ID != first.ID || !sku.CostPriceAmount.Equal(decimal.NewFromInt(45)) || !sku.PriceAmount.Equal(decimal.NewFromInt(100)) || sku.SortOrder != 23 {
 		t.Fatalf("review lost configuration: %+v", sku)
 	}
 	if _, err := policy.PurchaseTerms(ctx, "plus", "PH", sku.DirectCatalogRevision); err != nil {
 		t.Fatalf("reviewed variant rejected: %v", err)
+	}
+}
+
+// 创建商品时返利比例的默认值：未携带字段存 0（不参与返利），显式 null 才跟随全站，数值按请求覆盖。
+// API 脚本和仍发送旧字段 is_affiliate_enabled 的客户端不会带 affiliate_rate_percent，不能因此悄悄跟随全站比例。
+func TestProductServiceCreateAffiliateRateDefaults(t *testing.T) {
+	svc, db := newProductServiceForTest(t)
+	category := categorydomain.Category{
+		Slug:     "affiliate-default-category",
+		NameJSON: jsonmap.JSON{"zh-CN": "affiliate-default-category"},
+	}
+	if err := db.Create(&category).Error; err != nil {
+		t.Fatalf("create category failed: %v", err)
+	}
+
+	create := func(t *testing.T, slug string, rate *money.Amount, set bool) *productdomain.Product {
+		t.Helper()
+		product, err := svc.Write.Create(productwrite.CreateProductInput{
+			CategoryID:              category.ID,
+			Slug:                    slug,
+			TitleJSON:               map[string]interface{}{"zh-CN": slug},
+			PriceAmount:             decimal.NewFromInt(10),
+			PurchaseType:            constants.ProductPurchaseMember,
+			FulfillmentType:         constants.FulfillmentTypeAuto,
+			AffiliateRatePercent:    rate,
+			AffiliateRatePercentSet: set,
+		})
+		if err != nil {
+			t.Fatalf("create product %s failed: %v", slug, err)
+		}
+		return product
+	}
+
+	if got := create(t, "affiliate-default-missing", nil, false); got.AffiliateRatePercent == nil || !got.AffiliateRatePercent.IsZero() {
+		t.Fatalf("missing field should default to 0, got %+v", got.AffiliateRatePercent)
+	}
+	if got := create(t, "affiliate-default-null", nil, true); got.AffiliateRatePercent != nil {
+		t.Fatalf("explicit null should follow the site-wide rate, got %+v", got.AffiliateRatePercent)
+	}
+	custom := money.FromDecimal(decimal.NewFromInt(25))
+	if got := create(t, "affiliate-default-custom", &custom, true); got.AffiliateRatePercent == nil || !got.AffiliateRatePercent.Equal(decimal.NewFromInt(25)) {
+		t.Fatalf("explicit rate should be stored, got %+v", got.AffiliateRatePercent)
 	}
 }

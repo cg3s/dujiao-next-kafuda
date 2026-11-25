@@ -3,6 +3,8 @@ package domain
 import (
 	"time"
 
+	"github.com/dujiao-next/internal/constants"
+
 	"github.com/dujiao-next/internal/shared/jsonmap"
 	"github.com/dujiao-next/internal/shared/jsonslice"
 	"github.com/dujiao-next/internal/shared/money"
@@ -35,4 +37,25 @@ type PaymentChannel struct {
 // TableName 指定表名
 func (PaymentChannel) TableName() string {
 	return "payment_channels"
+}
+
+func WithoutQuefaChannels(channels []PaymentChannel) []PaymentChannel {
+	out := make([]PaymentChannel, 0, len(channels))
+	for _, ch := range channels {
+		if ch.ProviderType == constants.PaymentProviderQuefa {
+			continue
+		}
+		out = append(out, ch)
+	}
+	return out
+}
+
+func OnlyQuefaChannels(channels []PaymentChannel) []PaymentChannel {
+	out := make([]PaymentChannel, 0, len(channels))
+	for _, ch := range channels {
+		if ch.ProviderType == constants.PaymentProviderQuefa {
+			out = append(out, ch)
+		}
+	}
+	return out
 }
