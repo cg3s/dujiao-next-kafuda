@@ -147,9 +147,30 @@
                 <span class="prism-step-badge mr-2 font-mono">01</span>
                 <span>{{ t('atelier.stepSku') }}</span>
               </h2>
+              <div
+                v-if="isHostedRecharge && directSkuSpecs.length"
+                role="tablist"
+                :aria-label="t('productDetail.skuTitle')"
+                class="mb-3 flex flex-wrap gap-2"
+              >
+                <button
+                  v-for="spec in directSkuSpecs"
+                  :key="spec.value"
+                  type="button"
+                  role="tab"
+                  :aria-selected="activeSkuSpec === spec.value"
+                  class="rounded-[10px] border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-primary"
+                  :class="activeSkuSpec === spec.value
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-secondary/40 hover:border-primary/40'"
+                  @click="selectSkuSpec(spec.value)"
+                >
+                  {{ spec.label }}
+                </button>
+              </div>
               <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 <button
-                  v-for="sku in activeSkus"
+                  v-for="sku in (isHostedRecharge ? visibleSkus : activeSkus)"
                   :key="sku.id"
                   type="button"
                   class="relative flex min-h-[60px] flex-col items-start rounded-[12px] border-[1.5px] px-3.5 py-3 text-left transition-all focus-visible:outline-2 focus-visible:outline-primary"
@@ -511,7 +532,7 @@ const {
   hasPromotionRules, getPromotionRules,
   formatPromotionRule, formatWholesaleTier, formatRelatedPostDate, normalizeSkuId,
   loading, product, isDirect, isHostedRecharge, relatedPosts, currentImage, selectedSkuId, quantity, purchaseWarning,
-  activeSkus, selectedSku,
+  activeSkus, directSkuSpecs, activeSkuSpec, selectSkuSpec, visibleSkus, selectedSku,
   selectedSkuMemberPrice, hasMemberPrice,
   hasSelectedSkuWholesalePrice, selectedSkuWholesaleFinalIsMember, selectedSkuWholesaleFinalPrice,
   selectedSkuWholesaleRules,
